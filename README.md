@@ -1,7 +1,7 @@
 
 
 # source
-This repo fork from @meowwolf/node-red-contrib-amqp
+This repo fork from [@Stormpass/node-red-contrib-amqp](https://github.com/Stormpass/node-red-contrib-amqp) 
 
 and
 
@@ -10,6 +10,8 @@ and
 + allow reconnect on error
 + manually control node reconnect
 + fixed multi event listener on connection (cause memory leak)
+  
++ fixed error on node flow save
 
 AMQP nodes for node-red
 
