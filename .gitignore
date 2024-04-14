@@ -1,6 +1,7 @@
 node_modules/
-build/
+#build/
 coverage/
 .nyc_output/
 .idea/
 .log
+/build/test/
