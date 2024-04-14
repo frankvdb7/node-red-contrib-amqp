@@ -16,6 +16,7 @@ module.exports = function (RED: NodeRedApp): void {
     let reconnect = null;
     let connection = null;
     let channel = null;
+	let me = this;
 
     RED.events.once('flows:stopped', () => {
       clearTimeout(reconnectTimeout)
@@ -106,18 +107,37 @@ module.exports = function (RED: NodeRedApp): void {
     async function initializeNode(nodeIns) {
       reconnect = async () => {
         // check the channel and clear all the event listener
+		try {
         if (channel && channel.removeAllListeners) {
           channel.removeAllListeners()
-          channel.close();
-          channel = null;
-        }
+			  channel.close()
+				.catch(err => {
+					me.error('Error closing channel:', err);
+				});
 
+			  //channel = null;
+			}
+		} catch (error) {
+		  // catch and suppress error
+		  me.error('Error occurred:', error);
+		}
+          channel = null;
+		
+		try {
         // check the connection and clear all the event listener
         if (connection && connection.removeAllListeners) {
           connection.removeAllListeners()
-          connection.close();
+			  connection.close()
+				.catch(err => {
+					me.error('Error closing connection:', err);
+				});
+			  //connection = null;
+			}
+		} catch (error) {
+		  // catch and suppress error
+		  me.error('Error occurred:', error);
+		}
           connection = null;
-        }
 
         // always clear timer before set it;
         clearTimeout(reconnectTimeout);

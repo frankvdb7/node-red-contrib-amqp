@@ -20,7 +20,7 @@ AMQP nodes for node-red
 Install via the Palette Manager or from within your node-red directory (typically `~/.node-red`) run:
 
 ```
-npm i @stormpass/node-red-contrib-amqp
+npm i @breshinas/node-red-contrib-amqp
 ```
 
 ## Usage
