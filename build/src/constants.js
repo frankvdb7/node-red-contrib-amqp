@@ -7,3 +7,4 @@ exports.NODE_STATUS = Object.freeze({
     Error: { fill: 'red', shape: 'dot', text: 'Error' },
     Invalid: { fill: 'red', shape: 'ring', text: 'Unable to connect' },
 });
+//# sourceMappingURL=constants.js.map

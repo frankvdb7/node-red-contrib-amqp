@@ -40,3 +40,4 @@ var ErrorLocationEnum;
     ErrorLocationEnum["ConnectionErrorEvent"] = "ConnectionErrorEvent";
     ErrorLocationEnum["ChannelErrorEvent"] = "ChannelErrorEvent";
 })(ErrorLocationEnum = exports.ErrorLocationEnum || (exports.ErrorLocationEnum = {}));
+//# sourceMappingURL=types.js.map

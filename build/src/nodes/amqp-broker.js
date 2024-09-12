@@ -22,3 +22,4 @@ module.exports = function (RED) {
         },
     });
 };
+//# sourceMappingURL=amqp-broker.js.map

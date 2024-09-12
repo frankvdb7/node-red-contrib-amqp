@@ -1,7 +1,7 @@
 <script type="text/javascript">
   RED.nodes.registerType('amqp-in', {
     category: 'AMQP',
-    color: '#D1649C',
+    color: '#98b886',
     defaults: {
       name: { value: '' },
       broker: { value: '', type: 'amqp-broker' },
@@ -13,6 +13,7 @@
       exchangeRoutingKey: { value: '' },
       exchangeDurable: { value: true },
       queueName: { value: '' },
+      queueType: { value: 'quorum'},
       queueExclusive: { value: true },
       queueDurable: { value: false },
       queueAutoDelete: { value: true },
@@ -50,6 +51,18 @@
         } else {
           $('.headers-form-input').hide()
         }
+      })
+
+      $("#node-input-queueType").typedInput({
+        types: [
+          {
+            value: "quorum",
+            options: [
+              { value: "quorum", label: "Quorum"},
+              { value: "classic", label: "Classic"}
+            ]
+          }
+        ]
       })
     },
   })
@@ -130,6 +143,10 @@
     <label for="node-input-queueName"><i class="fa fa-tag"></i>&nbsp;&nbsp;Queue Name</label>
     <input type="text" id="node-input-queueName" placeholder="Leave blank to auto-generate">
   </div>
+    <div class="form-row wide-label-amqp-in-manual-ack">
+      <label for="node-input-queueName"><i class="fa fa-tag"></i>&nbsp;&nbsp;Queue Type</label>
+      <input type="text" id="node-input-queueType">
+    </div>
 
   <div class="form-row">
     <label>&nbsp;</label>

@@ -1,7 +1,7 @@
 <script type="text/javascript">
   RED.nodes.registerType('amqp-out', {
     category: 'AMQP',
-    color: '#D1649C',
+    color: '#98b886',
     defaults: {
       name: { value: '' },
       broker: { value: '', type: 'amqp-broker' },
@@ -20,7 +20,7 @@
     inputs: 1,
     outputs: 0,
     align: 'right',
-    icon: 'rabbitmq.svg',
+    icon: 'rabbitmq.png',
     label: function () {
       if (this.name) {
         return this.name

@@ -130,3 +130,4 @@ module.exports = function (RED) {
     // @ts-ignore
     RED.nodes.registerType(types_1.NodeType.AmqpInManualAck, AmqpInManualAck);
 };
+//# sourceMappingURL=amqp-in-manual-ack.js.map

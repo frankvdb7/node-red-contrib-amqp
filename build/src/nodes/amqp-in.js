@@ -77,7 +77,12 @@ module.exports = function (RED) {
                     });
                     // When the channel goes down
                     channel.on('close', async () => {
-                        await reconnect();
+                        try {
+                            //await reconnect(); // why not?
+                        }
+                        catch (e) {
+                            nodeIns.error(`Channel error: ${JSON.stringify(e)}}`, { payload: { error: e, location: types_1.ErrorLocationEnum.ChannelErrorEvent } });
+                        }
                     });
                     // When the channel goes down
                     channel.on('error', async (e) => {
@@ -95,7 +100,7 @@ module.exports = function (RED) {
                 }
                 else {
                     nodeIns.status(constants_1.NODE_STATUS.Error);
-                    nodeIns.error(`AmqpIn() ${e}`, { payload: { error: e, source: 'ConnectionError' } });
+                    nodeIns.error(`AmqpIn() ${JSON.stringify(e)}`, { payload: { error: e, source: 'ConnectionError' } });
                 }
             }
         }
@@ -106,3 +111,4 @@ module.exports = function (RED) {
     // @ts-ignore
     RED.nodes.registerType(types_1.NodeType.AmqpIn, AmqpIn);
 };
+//# sourceMappingURL=amqp-in.js.map

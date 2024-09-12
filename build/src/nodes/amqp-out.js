@@ -157,3 +157,4 @@ module.exports = function (RED) {
     // @ts-ignore
     RED.nodes.registerType(types_1.NodeType.AmqpOut, AmqpOut);
 };
+//# sourceMappingURL=amqp-out.js.map
