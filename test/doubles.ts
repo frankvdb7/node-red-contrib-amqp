@@ -94,6 +94,7 @@ export const nodeConfigFixture: AmqpInNodeDefaults & AmqpOutNodeDefaults = {
   exchangeRoutingKey: 'routing.key',
   exchangeDurable: true,
   queueName: '',
+  queueType: 'quorom',
   queueExclusive: true,
   queueDurable: false,
   queueAutoDelete: true,

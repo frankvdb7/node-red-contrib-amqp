@@ -50,6 +50,7 @@ export default class Amqp {
         exclusive: config.queueExclusive,
         durable: config.queueDurable,
         autoDelete: config.queueAutoDelete,
+        queueType: config.queueType
       },
       amqpProperties: this.parseJson(
         config.amqpProperties,
@@ -326,12 +327,15 @@ export default class Amqp {
 
   private async assertQueue(configParams?: AmqpConfig): Promise<string> {
     const { queue } = configParams || this.config
-    const { name, exclusive, durable, autoDelete } = queue
+    const { name, exclusive, durable, autoDelete, queueType } = queue
 
     this.q = await this.channel.assertQueue(name, {
       exclusive,
       durable,
       autoDelete,
+      arguments: {
+        "x-queue-type": queueType
+      }
     })
 
     return name

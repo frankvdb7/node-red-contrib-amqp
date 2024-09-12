@@ -91,7 +91,12 @@ module.exports = function (RED: NodeRedApp): void {
 
           // When the channel goes down
           channel.on('close', async () => {
-            await reconnect()
+            try {
+              //await reconnect(); // why not?
+            }catch (e) {
+              nodeIns.error(`Channel error: ${JSON.stringify(e)}}`, { payload: { error: e, location: ErrorLocationEnum.ChannelErrorEvent } })
+
+            }
           })
 
           // When the channel goes down
@@ -109,7 +114,7 @@ module.exports = function (RED: NodeRedApp): void {
           nodeIns.error(`AmqpIn() Could not connect to broker ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectError } })
         } else {
           nodeIns.status(NODE_STATUS.Error)
-          nodeIns.error(`AmqpIn() ${e}`, { payload: { error: e, source: 'ConnectionError' } })
+          nodeIns.error(`AmqpIn() ${JSON.stringify(e)}`, { payload: { error: e, source: 'ConnectionError' } })
         }
       }
     }

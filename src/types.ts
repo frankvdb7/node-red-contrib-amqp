@@ -30,6 +30,7 @@ export interface AmqpConfig {
     exclusive: boolean
     durable: boolean
     autoDelete: boolean
+    queueType: string
   }
   amqpProperties: MessageProperties
   headers: GenericJsonObject
@@ -48,6 +49,7 @@ export interface AmqpInNodeDefaults {
   exchangeRoutingKey?: any
   exchangeDurable?: any
   queueName?: any
+  queueType?: any
   queueExclusive?: any
   queueDurable?: any
   queueAutoDelete?: any

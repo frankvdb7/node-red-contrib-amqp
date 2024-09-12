@@ -5,15 +5,10 @@ This repo fork from [@Stormpass/node-red-contrib-amqp](https://github.com/Stormp
 
 and
 
-+ upgrade amqplib so you can use it with node10+
-+ fixed direct routing publish issues
-+ allow reconnect on error
-+ manually control node reconnect
-+ fixed multi event listener on connection (cause memory leak)
-  
 + fixed error on node flow save
++ The nodes are adapted to work with RabbitMQ and their newer Quorom type queues. You can set the additional queue options from the node configuration.
 
-AMQP nodes for node-red
+AMQP nodes for node-red (back pushed changes from @mnn-o/node-red-rabbitmq)
 
 ## Installation
 
@@ -25,7 +20,7 @@ npm i @breshinas/node-red-contrib-amqp
 
 ## Usage
 
-Provides three standard nodes and an amqp broker config node.  
+Provides three nodes and an amqp broker config node.  
 Please see the `Node Help` section from within node-red for more info
 
 ## Development

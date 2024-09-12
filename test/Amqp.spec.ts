@@ -264,7 +264,7 @@ describe('Amqp Class', () => {
 
   it('assertQueue()', async () => {
     const queue = 'queueName'
-    const { queueName, queueExclusive, queueDurable, queueAutoDelete } =
+    const { queueName, queueExclusive, queueDurable, queueAutoDelete, queueType } =
       nodeConfigFixture
     const assertQueueStub = sinon.stub().resolves({ queue })
     amqp.channel = { assertQueue: assertQueueStub }
@@ -276,6 +276,7 @@ describe('Amqp Class', () => {
         exclusive: queueExclusive,
         durable: queueDurable,
         autoDelete: queueAutoDelete,
+        arguments: { "x-queue-type": queueType },
       }),
     ).to.equal(true)
   })

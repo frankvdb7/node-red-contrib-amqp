@@ -1,8 +1,8 @@
 {
   "name": "@breshinas/node-red-contrib-amqp",
   "license": "ISC",
-  "version": "1.5.1",
-  "description": "Amqp nodes for node-red",
+  "version": "1.5.2",
+  "description": "RabbitMQ nodes for node-red",
   "main": "index.js",
   "scripts": {
     "start": "nodemon --exec npm run build",
@@ -19,7 +19,8 @@
   "keywords": [
     "node-red",
     "amqp",
-    "rabbitmq"
+    "rabbitmq",
+    "quorum"
   ],
   "node-red": {
     "nodes": {
