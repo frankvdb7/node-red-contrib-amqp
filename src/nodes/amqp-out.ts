@@ -112,15 +112,8 @@ module.exports = function (RED: NodeRedApp): void {
           channel.removeAllListeners()
 			  channel.close()
 				.catch(err => {
-					try {
-						// bypass known simple messages
-						if (err.message == "Channel closed")
-							return;
-					} catch(e) {
-						// drop
-					}
 					// produce very lengthy messages...
-					me.error(`Error closing channel: ${JSON.stringify(err)}`);
+					//me.error(`Error closing channel: ${JSON.stringify(err)}`);
 				});
 
 			  //channel = null;
