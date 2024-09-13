@@ -1,7 +1,7 @@
 {
   "name": "@breshinas/node-red-contrib-amqp",
   "license": "ISC",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "description": "RabbitMQ nodes for node-red",
   "main": "index.js",
   "scripts": {
@@ -23,13 +23,16 @@
     "quorum"
   ],
   "node-red": {
-	"version": ">=2.0.0",
+	"version": ">=3.0.0",
     "nodes": {
       "amqp-in": "build/src/nodes/amqp-in.js",
       "amqp-out": "build/src/nodes/amqp-out.js",
       "amqp-broker": "build/src/nodes/amqp-broker.js",
       "amqp-in-manual-ack": "build/src/nodes/amqp-in-manual-ack.js"
     }
+  },
+  "engines": {
+   "node": ">=12.0.0"
   },
   "files": [
     "build/src",
