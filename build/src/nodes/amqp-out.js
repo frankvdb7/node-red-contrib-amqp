@@ -75,7 +75,9 @@ module.exports = function (RED) {
                         channel.removeAllListeners();
                         channel.close()
                             .catch(err => {
-                            me.error('Error closing channel:', err);
+                            if (err && !(err.length && err.length == 0))
+                                me.error('Error closing channel:', err);
+                            // otherwise silently drop non-informative error
                         });
                         //channel = null;
                     }
