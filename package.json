@@ -1,5 +1,5 @@
 {
-  "name": "@frankvdb7/node-red-contrib-amqp",
+  "name": "@frankvdb/node-red-contrib-amqp",
   "license": "ISC",
   "version": "1.0.0",
   "description": "RabbitMQ nodes for node-red",
