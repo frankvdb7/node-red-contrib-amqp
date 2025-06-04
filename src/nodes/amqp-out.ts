@@ -152,7 +152,7 @@ module.exports = function (RED: NodeRedApp): void {
       }
   
       try {
-        const connection = await amqp.connect()
+        connection = await amqp.connect()
 
         // istanbul ignore else
         if (connection) {
