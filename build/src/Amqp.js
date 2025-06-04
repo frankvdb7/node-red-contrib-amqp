@@ -83,26 +83,51 @@ class Amqp {
     ack(msg) {
         var _a;
         const allUpTo = !!((_a = msg.manualAck) === null || _a === void 0 ? void 0 : _a.allUpTo);
-        this.channel.ack(msg, allUpTo);
+        try {
+            this.channel.ack(msg, allUpTo);
+        }
+        catch (e) {
+            this.node.error(`Could not ack message: ${e}`);
+        }
     }
     ackAll() {
-        this.channel.ackAll();
+        try {
+            this.channel.ackAll();
+        }
+        catch (e) {
+            this.node.error(`Could not ackAll messages: ${e}`);
+        }
     }
     nack(msg) {
         var _a, _b, _c;
         const allUpTo = !!((_a = msg.manualAck) === null || _a === void 0 ? void 0 : _a.allUpTo);
         const requeue = (_c = (_b = msg.manualAck) === null || _b === void 0 ? void 0 : _b.requeue) !== null && _c !== void 0 ? _c : true;
-        this.channel.nack(msg, allUpTo, requeue);
+        try {
+            this.channel.nack(msg, allUpTo, requeue);
+        }
+        catch (e) {
+            this.node.error(`Could not nack message: ${e}`);
+        }
     }
     nackAll(msg) {
         var _a, _b;
         const requeue = (_b = (_a = msg.manualAck) === null || _a === void 0 ? void 0 : _a.requeue) !== null && _b !== void 0 ? _b : true;
-        this.channel.nackAll(requeue);
+        try {
+            this.channel.nackAll(requeue);
+        }
+        catch (e) {
+            this.node.error(`Could not nackAll messages: ${e}`);
+        }
     }
     reject(msg) {
         var _a, _b;
         const requeue = (_b = (_a = msg.manualAck) === null || _a === void 0 ? void 0 : _a.requeue) !== null && _b !== void 0 ? _b : true;
-        this.channel.reject(msg, requeue);
+        try {
+            this.channel.reject(msg, requeue);
+        }
+        catch (e) {
+            this.node.error(`Could not reject message: ${e}`);
+        }
     }
     async publish(msg, properties) {
         this.parseRoutingKeys().forEach(async (routingKey) => {
