@@ -72,7 +72,8 @@ module.exports = function (RED: NodeRedApp): void {
             RED.util.evaluateJSONataExpression(
               RED.util.prepareJSONataExpression(exchangeRoutingKey, this),
               msg,
-            ),
+              this,
+            ) as unknown as string,
           )
           break
         case 'str':
