@@ -46,7 +46,8 @@
     "Amo DelBello <adelbello@meowwolf.com>",
     "Stormpass <stormpass@qq.com>",
     "Corentin <co.pasquier@gmail.com>",
-    "Breshinas <9035788472@mail.ru>"
+    "Breshinas <9035788472@mail.ru>",
+    "frankvdb7 <5363672+frankvdb7@users.noreply.github.com>"
   ],
   "bugs": "https://github.com/frankvdb7/node-red-contrib-amqp/issues",
   "devDependencies": {
