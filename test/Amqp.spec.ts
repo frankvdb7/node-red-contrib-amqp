@@ -359,4 +359,34 @@ describe('Amqp Class', () => {
       true,
     )
   })
+
+  it('bindQueue() handles errors', async () => {
+    const queue = 'queueName'
+    const error = new Error('bind fail')
+    const bindQueueStub = sinon.stub().rejects(error)
+    const errorStub = sinon.stub()
+    amqp.channel = { bindQueue: bindQueueStub }
+    amqp.q = { queue }
+    amqp.node = { error: errorStub }
+
+    await amqp.bindQueue()
+    expect(errorStub.calledOnce).to.equal(true)
+  })
+
+  it('consume() logs error when bindQueue fails', async () => {
+    const assertQueueStub = sinon.stub().resolves()
+    const bindQueueStub = sinon.stub().rejects(new Error('bind fail'))
+    const consumeStub = sinon.stub()
+    const errorStub = sinon.stub()
+
+    amqp.assertQueue = assertQueueStub
+    amqp.bindQueue = bindQueueStub
+    amqp.channel = { consume: consumeStub }
+    amqp.node = { send: sinon.stub(), error: errorStub }
+    amqp.q = { queue: 'queueName' }
+
+    await amqp.consume()
+    expect(consumeStub.called).to.equal(false)
+    expect(errorStub.calledOnce).to.equal(true)
+  })
 })
