@@ -234,6 +234,30 @@ describe('Amqp Class', () => {
     expect(connectionCloseStub.calledOnce).to.equal(true)
   })
 
+  it('close() logs error if channel.close fails but still closes connection', async () => {
+    const queueName = 'queueName'
+    const unbindQueueStub = sinon.stub()
+    const channelCloseStub = sinon.stub().rejects(new Error('channel fail'))
+    const connectionCloseStub = sinon.stub()
+    const errorStub = sinon.stub()
+    const assertQueueStub = sinon.stub().resolves({ queue: queueName })
+
+    amqp.channel = {
+      unbindQueue: unbindQueueStub,
+      close: channelCloseStub,
+      assertQueue: assertQueueStub,
+    }
+    amqp.connection = { close: connectionCloseStub }
+    amqp.node = { error: errorStub }
+    await amqp.assertQueue()
+
+    await amqp.close()
+
+    expect(channelCloseStub.calledOnce).to.equal(true)
+    expect(connectionCloseStub.calledOnce).to.equal(true)
+    expect(errorStub.calledWithMatch('Error closing AMQP channel')).to.equal(true)
+  })
+
   it('createChannel()', async () => {
     const error = 'error!'
     const result = {
@@ -358,5 +382,35 @@ describe('Amqp Class', () => {
     expect(bindQueueStub.calledWith(queue, exchangeName, '', headers)).to.equal(
       true,
     )
+  })
+
+  it('bindQueue() handles errors', async () => {
+    const queue = 'queueName'
+    const error = new Error('bind fail')
+    const bindQueueStub = sinon.stub().rejects(error)
+    const errorStub = sinon.stub()
+    amqp.channel = { bindQueue: bindQueueStub }
+    amqp.q = { queue }
+    amqp.node = { error: errorStub }
+
+    await amqp.bindQueue()
+    expect(errorStub.calledOnce).to.equal(true)
+  })
+
+  it('consume() logs error when bindQueue fails', async () => {
+    const assertQueueStub = sinon.stub().resolves()
+    const bindQueueStub = sinon.stub().rejects(new Error('bind fail'))
+    const consumeStub = sinon.stub()
+    const errorStub = sinon.stub()
+
+    amqp.assertQueue = assertQueueStub
+    amqp.bindQueue = bindQueueStub
+    amqp.channel = { consume: consumeStub }
+    amqp.node = { send: sinon.stub(), error: errorStub }
+    amqp.q = { queue: 'queueName' }
+
+    await amqp.consume()
+    expect(consumeStub.called).to.equal(false)
+    expect(errorStub.calledOnce).to.equal(true)
   })
 })

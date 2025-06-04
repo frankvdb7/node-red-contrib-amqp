@@ -97,7 +97,7 @@ export default class Amqp {
     try {
       const { noAck } = this.config
       await this.assertQueue()
-      this.bindQueue()
+      await this.bindQueue()
       await this.channel.consume(
         this.q.queue,
         amqpMessage => {
@@ -293,9 +293,26 @@ export default class Amqp {
           console.error('Error unbinding queue: ', e.message)
         }
       }
-      await this.channel.close()
-      await this.connection.close()
-    } catch (e) {} // Need to catch here but nothing further is necessary
+    } catch (e) {
+      /* istanbul ignore next */
+      this.node.error(`Error unbinding queue: ${e}`)
+    }
+
+    if (this.channel) {
+      try {
+        await this.channel.close()
+      } catch (e) {
+        this.node.error(`Error closing AMQP channel: ${e}`)
+      }
+    }
+
+    if (this.connection) {
+      try {
+        await this.connection.close()
+      } catch (e) {
+        this.node.error(`Error closing AMQP connection: ${e}`)
+      }
+    }
   }
 
   private async createChannel(): Promise<Channel> {
@@ -346,21 +363,23 @@ export default class Amqp {
       configParams?.exchange || this.config.exchange
     const { headers } = configParams?.amqpProperties || this.config
 
-    if (this.canHaveRoutingKey(type)) {
-      /* istanbul ignore else */
-      if (name) {
-        this.parseRoutingKeys(routingKey).forEach(async routingKey => {
-          await this.channel.bindQueue(this.q.queue, name, routingKey)
-        })
+    try {
+      if (this.canHaveRoutingKey(type) && name) {
+        const promises = this.parseRoutingKeys(routingKey).map(key =>
+          this.channel.bindQueue(this.q.queue, name, key),
+        )
+        await Promise.all(promises)
       }
-    }
 
-    if (type === ExchangeType.Fanout) {
-      await this.channel.bindQueue(this.q.queue, name, '')
-    }
+      if (type === ExchangeType.Fanout) {
+        await this.channel.bindQueue(this.q.queue, name, '')
+      }
 
-    if (type === ExchangeType.Headers) {
-      await this.channel.bindQueue(this.q.queue, name, '', headers)
+      if (type === ExchangeType.Headers) {
+        await this.channel.bindQueue(this.q.queue, name, '', headers)
+      }
+    } catch (e) {
+      this.node.error(`Could not bind queue: ${e}`)
     }
   }
 

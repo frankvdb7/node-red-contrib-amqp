@@ -40,13 +40,23 @@ module.exports = function (RED) {
                 // check the channel and clear all the event listener
                 if (channel && channel.removeAllListeners) {
                     channel.removeAllListeners();
-                    channel.close();
+                    try {
+                        await channel.close();
+                    }
+                    catch (err) {
+                        nodeIns.error(`Error closing channel: ${err}`);
+                    }
                     channel = null;
                 }
                 // check the connection and clear all the event listener
                 if (connection && connection.removeAllListeners) {
                     connection.removeAllListeners();
-                    connection.close();
+                    try {
+                        await connection.close();
+                    }
+                    catch (err) {
+                        nodeIns.error(`Error closing connection: ${err}`);
+                    }
                     connection = null;
                 }
                 // always clear timer before set it;
