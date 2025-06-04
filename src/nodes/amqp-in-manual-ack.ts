@@ -104,11 +104,11 @@ module.exports = function (RED: NodeRedApp): void {
 
 
       try {
-        const connection = await amqp.connect()
+        connection = await amqp.connect()
 
         // istanbul ignore else
         if (connection) {
-          const channel = await amqp.initialize()
+          channel = await amqp.initialize()
           await amqp.consume()
 
           // When the connection goes down
