@@ -79,7 +79,14 @@ module.exports = function (RED: NodeRedApp): void {
                 }
               })
             })
-            amqp.setRoutingKey(result as string)
+
+            if (typeof result !== 'string') {
+              this.warn(
+                `Routing key JSONata expression returned ${typeof result}; coercing to string`,
+              )
+            }
+
+            amqp.setRoutingKey(String(result))
           } catch (err) {
             this.error(`Failed to evaluate JSONata expression: ${err}`)
           }
