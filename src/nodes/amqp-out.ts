@@ -67,14 +67,31 @@ module.exports = function (RED: NodeRedApp): void {
             ),
           )
           break
-        case 'jsonata':
-          amqp.setRoutingKey(
-            RED.util.evaluateJSONataExpression(
-              RED.util.prepareJSONataExpression(exchangeRoutingKey, this),
-              msg,
-            ),
-          )
+        case 'jsonata': {
+          const expr = RED.util.prepareJSONataExpression(exchangeRoutingKey, this)
+          try {
+            const result = await new Promise<any>((resolve, reject) => {
+              RED.util.evaluateJSONataExpression(expr, msg, (err, value) => {
+                if (err) {
+                  reject(err)
+                } else {
+                  resolve(value)
+                }
+              })
+            })
+
+            if (typeof result !== 'string') {
+              this.warn(
+                `Routing key JSONata expression returned ${typeof result}; coercing to string`,
+              )
+            }
+
+            amqp.setRoutingKey(String(result))
+          } catch (err) {
+            this.error(`Failed to evaluate JSONata expression: ${err}`)
+          }
           break
+        }
         case 'str':
         default:
           if (routingKey) {
