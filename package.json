@@ -40,7 +40,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/frankvdb/node-red-contrib-amqp.git"
+    "url": "git+https://github.com/frankvdb7/node-red-contrib-amqp.git"
   },
   "contributors": [
     "Amo DelBello <adelbello@meowwolf.com>",
