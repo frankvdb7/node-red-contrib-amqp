@@ -12,9 +12,7 @@
     "lint": "eslint \"src/**\"",
     "test": "npm run build && mocha",
     "test:watch": "mocha -w",
-    "test:cov": "npm run build && nyc mocha",
-    "login": "npm login --registry https://registry.npmjs.com --auth-type=web",
-    "publish": "npm publish --registry https://registry.npmjs.com"
+    "test:cov": "npm run build && nyc mocha"
   },
   "keywords": [
     "node-red",
