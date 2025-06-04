@@ -234,6 +234,30 @@ describe('Amqp Class', () => {
     expect(connectionCloseStub.calledOnce).to.equal(true)
   })
 
+  it('close() logs error if channel.close fails but still closes connection', async () => {
+    const queueName = 'queueName'
+    const unbindQueueStub = sinon.stub()
+    const channelCloseStub = sinon.stub().rejects(new Error('channel fail'))
+    const connectionCloseStub = sinon.stub()
+    const errorStub = sinon.stub()
+    const assertQueueStub = sinon.stub().resolves({ queue: queueName })
+
+    amqp.channel = {
+      unbindQueue: unbindQueueStub,
+      close: channelCloseStub,
+      assertQueue: assertQueueStub,
+    }
+    amqp.connection = { close: connectionCloseStub }
+    amqp.node = { error: errorStub }
+    await amqp.assertQueue()
+
+    await amqp.close()
+
+    expect(channelCloseStub.calledOnce).to.equal(true)
+    expect(connectionCloseStub.calledOnce).to.equal(true)
+    expect(errorStub.calledWithMatch('Error closing AMQP channel')).to.equal(true)
+  })
+
   it('createChannel()', async () => {
     const error = 'error!'
     const result = {

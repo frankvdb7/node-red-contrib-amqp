@@ -293,11 +293,26 @@ export default class Amqp {
           console.error('Error unbinding queue: ', e.message)
         }
       }
-      await this.channel.close()
-      await this.connection.close()
     } catch (e) {
-      this.node.error(`Error closing AMQP connection: ${e}`)
-    } // Need to catch here but nothing further is necessary
+      /* istanbul ignore next */
+      this.node.error(`Error unbinding queue: ${e}`)
+    }
+
+    if (this.channel) {
+      try {
+        await this.channel.close()
+      } catch (e) {
+        this.node.error(`Error closing AMQP channel: ${e}`)
+      }
+    }
+
+    if (this.connection) {
+      try {
+        await this.connection.close()
+      } catch (e) {
+        this.node.error(`Error closing AMQP connection: ${e}`)
+      }
+    }
   }
 
   private async createChannel(): Promise<Channel> {
