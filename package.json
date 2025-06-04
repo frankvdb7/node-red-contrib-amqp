@@ -1,5 +1,5 @@
 {
-  "name": "@breshinas/node-red-contrib-amqp",
+  "name": "@frankvdb/node-red-contrib-amqp",
   "license": "ISC",
   "version": "1.5.7",
   "description": "RabbitMQ nodes for node-red",
@@ -40,7 +40,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git@github.com:breshinas/node-red-contrib-amqp.git"
+    "url": "https://github.com/frankvdb/node-red-contrib-amqp.git"
   },
   "contributors": [
     "Amo DelBello <adelbello@meowwolf.com>",
@@ -48,7 +48,7 @@
     "Corentin <co.pasquier@gmail.com>",
     "Breshinas <9035788472@mail.ru>"
   ],
-  "bugs": "https://github.com/breshinas/node-red-contrib-amqp/issues",
+  "bugs": "https://github.com/frankvdb/node-red-contrib-amqp/issues",
   "devDependencies": {
     "@istanbuljs/nyc-config-typescript": "^0.1.3",
     "@types/amqplib": "^0.8.1",
