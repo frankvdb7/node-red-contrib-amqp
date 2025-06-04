@@ -121,27 +121,47 @@ export default class Amqp {
 
   public ack(msg: AssembledMessage): void {
     const allUpTo = !!msg.manualAck?.allUpTo
-    this.channel.ack(msg, allUpTo)
+    try {
+      this.channel.ack(msg, allUpTo)
+    } catch (e) {
+      this.node.error(`Could not ack message: ${e}`)
+    }
   }
 
   public ackAll(): void {
-    this.channel.ackAll()
+    try {
+      this.channel.ackAll()
+    } catch (e) {
+      this.node.error(`Could not ackAll messages: ${e}`)
+    }
   }
 
   public nack(msg: AssembledMessage): void {
     const allUpTo = !!msg.manualAck?.allUpTo
     const requeue = msg.manualAck?.requeue ?? true
-    this.channel.nack(msg, allUpTo, requeue)
+    try {
+      this.channel.nack(msg, allUpTo, requeue)
+    } catch (e) {
+      this.node.error(`Could not nack message: ${e}`)
+    }
   }
 
   public nackAll(msg: AssembledMessage): void {
     const requeue = msg.manualAck?.requeue ?? true
-    this.channel.nackAll(requeue)
+    try {
+      this.channel.nackAll(requeue)
+    } catch (e) {
+      this.node.error(`Could not nackAll messages: ${e}`)
+    }
   }
 
   public reject(msg: AssembledMessage): void {
     const requeue = msg.manualAck?.requeue ?? true
-    this.channel.reject(msg, requeue)
+    try {
+      this.channel.reject(msg, requeue)
+    } catch (e) {
+      this.node.error(`Could not reject message: ${e}`)
+    }
   }
 
   public async publish(
