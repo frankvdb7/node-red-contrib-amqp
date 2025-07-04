@@ -50,7 +50,7 @@
   "bugs": "https://github.com/frankvdb7/node-red-contrib-amqp/issues",
   "devDependencies": {
     "@istanbuljs/nyc-config-typescript": "^1.0.2",
-    "@types/amqplib": "^0.8.1",
+    "@types/amqplib": "^0.10.7",
     "@types/chai": "^5.2.2",
     "@types/lodash.clonedeep": "^4.5.9",
     "@types/mocha": "^10.0.10",
