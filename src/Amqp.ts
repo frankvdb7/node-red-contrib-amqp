@@ -2,7 +2,7 @@ import { NodeRedApp, Node } from 'node-red'
 import { v4 as uuidv4 } from 'uuid'
 import cloneDeep = require('lodash.clonedeep')
 import {
-  Connection,
+  ChannelModel,
   Channel,
   Replies,
   connect,
@@ -24,7 +24,7 @@ import { NODE_STATUS } from './constants'
 export default class Amqp {
   private config: AmqpConfig
   private broker: Node
-  private connection: Connection
+  private connection: ChannelModel
   private channel: Channel
   private q: Replies.AssertQueue
 
@@ -50,7 +50,8 @@ export default class Amqp {
         exclusive: config.queueExclusive,
         durable: config.queueDurable,
         autoDelete: config.queueAutoDelete,
-        queueType: config.queueType
+        queueType: config.queueType,
+        queueArguments: this.parseJson(config.queueArguments)
       },
       amqpProperties: this.parseJson(
         config.amqpProperties,
@@ -61,7 +62,7 @@ export default class Amqp {
     }
   }
 
-  public async connect(): Promise<Connection> {
+  public async connect(): Promise<ChannelModel> {
     const { broker } = this.config
 
     // wtf happened to the types?
@@ -364,15 +365,16 @@ export default class Amqp {
 
   private async assertQueue(configParams?: AmqpConfig): Promise<string> {
     const { queue } = configParams || this.config
-    const { name, exclusive, durable, autoDelete, queueType } = queue
+    const { name, exclusive, durable, autoDelete, queueType, queueArguments } = queue
 
     this.q = await this.channel.assertQueue(name, {
       exclusive,
       durable,
       autoDelete,
       arguments: {
-        "x-queue-type": queueType
-      }
+        "x-queue-type": queueType,
+        ...(queueArguments || {}),
+      },
     })
 
     return name

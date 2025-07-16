@@ -31,6 +31,7 @@ export interface AmqpConfig {
     durable: boolean
     autoDelete: boolean
     queueType: string
+    queueArguments?: GenericJsonObject
   }
   amqpProperties: MessageProperties
   headers: GenericJsonObject
@@ -53,6 +54,7 @@ export interface AmqpInNodeDefaults {
   queueExclusive?: any
   queueDurable?: any
   queueAutoDelete?: any
+  queueArguments?: any
   headers?: any
 }
 
@@ -66,6 +68,7 @@ export interface AmqpOutNodeDefaults {
   amqpProperties?: any
   outputs?: any
   rpcTimeoutMilliseconds?: any
+  queueArguments?: any
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

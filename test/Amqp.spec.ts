@@ -288,12 +288,34 @@ describe('Amqp Class', () => {
 
   it('assertQueue()', async () => {
     const queue = 'queueName'
-    const { queueName, queueExclusive, queueDurable, queueAutoDelete, queueType } =
+    const { queueName, queueExclusive, queueDurable, queueAutoDelete, queueType, queueArguments } =
       nodeConfigFixture
     const assertQueueStub = sinon.stub().resolves({ queue })
     amqp.channel = { assertQueue: assertQueueStub }
 
     await amqp.assertQueue()
+    expect(assertQueueStub.calledOnce).to.equal(true)
+    expect(
+      assertQueueStub.calledWith(queueName, {
+        exclusive: queueExclusive,
+        durable: queueDurable,
+        autoDelete: queueAutoDelete,
+        arguments: { "x-queue-type": queueType, ...queueArguments },
+      }),
+    ).to.equal(true)
+  })
+
+  it('assertQueue() without queueArguments', async () => {
+    const queue = 'queueName'
+    const { queueName, queueExclusive, queueDurable, queueAutoDelete, queueType } =
+      nodeConfigFixture
+    const assertQueueStub = sinon.stub().resolves({ queue })
+    amqp.channel = { assertQueue: assertQueueStub }
+
+    await amqp.assertQueue({
+      ...amqp.config,
+      queue: { ...amqp.config.queue, queueArguments: undefined },
+    } as any)
     expect(assertQueueStub.calledOnce).to.equal(true)
     expect(
       assertQueueStub.calledWith(queueName, {
