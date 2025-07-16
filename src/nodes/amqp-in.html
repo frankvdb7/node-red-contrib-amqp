@@ -17,6 +17,7 @@
       queueExclusive: { value: true },
       queueDurable: { value: false },
       queueAutoDelete: { value: true },
+      queueArguments: { value: '{}' },
       headers: { value: '{}' },
     },
     inputs: 1,
@@ -33,6 +34,11 @@
     },
     oneditprepare: function () {
       $('#node-input-headers').typedInput({
+        type: 'json',
+        types: ['json'],
+      })
+
+      $('#node-input-queueArguments').typedInput({
         type: 'json',
         types: ['json'],
       })
@@ -162,6 +168,10 @@
     <label>&nbsp;</label>
     <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-queueAutoDelete">
     <label style="width:auto; margin-top:7px;" for="node-input-queueAutoDelete">Auto Delete</label>
+  </div>
+  <div class="form-row wide-label-amqp-in">
+    <label for="node-input-queueArguments"><i class="fa fa-tag"></i>&nbsp;&nbsp;Queue Arguments</label>
+    <input type="text" id="node-input-queueArguments">
   </div>
 </script>
 

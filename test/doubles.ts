@@ -98,6 +98,7 @@ export const nodeConfigFixture: AmqpInNodeDefaults & AmqpOutNodeDefaults = {
   queueExclusive: true,
   queueDurable: false,
   queueAutoDelete: true,
+  queueArguments: { 'x-dead-letter-exchange': 'dlx-exchange' },
 }
 
 export const nodeFixture = {
