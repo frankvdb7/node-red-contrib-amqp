@@ -54,7 +54,7 @@
     "@types/chai": "^5.2.2",
     "@types/lodash.clonedeep": "^4.5.9",
     "@types/mocha": "^10.0.10",
-    "@types/node": "^22.15.29",
+    "@types/node": "^24.0.13",
     "@types/node-red": "^1.1.1",
     "@types/node-red-node-test-helper": "^0.3.4",
     "@types/sinon": "^17.0.4",
