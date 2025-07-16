@@ -373,7 +373,7 @@ export default class Amqp {
       autoDelete,
       arguments: {
         "x-queue-type": queueType,
-        ...queueArguments,
+        ...(queueArguments || {}),
       },
     })
 
