@@ -6,7 +6,6 @@
   "reporter": ["lcov", "text"],
   "cache": true,
   "exclude": [
-    "src/nodes/**",
     "coverage/**"
   ],
   "check-coverage": true,
