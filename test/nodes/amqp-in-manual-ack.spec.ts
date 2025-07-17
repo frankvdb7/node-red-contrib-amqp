@@ -146,6 +146,22 @@ describe('amqp-in-manual-ack Node', () => {
     )
   })
 
+  it('handles dns lookup failures', function (done) {
+    const connectStub = sinon
+      .stub(Amqp.prototype, 'connect')
+      .throws(new CustomError(ErrorType.DnsResolve))
+
+    helper.load(
+      [amqpInManualAck, amqpBroker],
+      amqpInManualAckFlowFixture,
+      credentialsFixture,
+      function () {
+        expect(connectStub).to.throw()
+        done()
+      },
+    )
+  })
+
   it('catches a generic exception', function (done) {
     const connectStub = sinon.stub(Amqp.prototype, 'connect').throws()
     helper.load(

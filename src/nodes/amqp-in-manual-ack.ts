@@ -131,7 +131,12 @@ module.exports = function (RED: NodeRedApp): void {
           nodeIns.status(NODE_STATUS.Connected)
         }
       } catch (e) {
-        if (e.code === ErrorType.ConnectionRefused || e.isOperational) {
+        if (
+          e.code === ErrorType.ConnectionRefused ||
+          e.code === ErrorType.DnsResolve ||
+          e.code === ErrorType.HostNotFound ||
+          e.isOperational
+        ) {
           reconnectOnError && (await reconnect())
         } else if (e.code === ErrorType.InvalidLogin) {
           nodeIns.status(NODE_STATUS.Invalid)

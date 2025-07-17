@@ -94,8 +94,10 @@ export enum ManualAckType {
 }
 
 export enum ErrorType {
-  InvalidLogin = 'ENOTFOUND',
+  InvalidLogin = 'EACCES',
   ConnectionRefused = 'ECONNREFUSED',
+  DnsResolve = 'EAI_AGAIN',
+  HostNotFound = 'ENOTFOUND',
 }
 
 export enum NodeType {
