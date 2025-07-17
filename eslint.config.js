@@ -16,9 +16,9 @@ module.exports = [
       prettier: require('eslint-plugin-prettier'),
     },
     rules: {
-      semi: ['error', 'never'],
+      semi: 'off',
       'no-console': 'off',
-      'arrow-parens': ['warn', 'as-needed'],
+      'arrow-parens': 'off',
       'no-lone-blocks': 'off',
       '@typescript-eslint/ban-ts-comment': 'warn',
       '@typescript-eslint/no-unused-expressions': 'off',

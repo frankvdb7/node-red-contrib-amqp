@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { ConsumeMessage, MessageProperties } from 'amqplib'
 
 export interface BrokerConfig extends Node {
@@ -71,7 +70,6 @@ export interface AmqpOutNodeDefaults {
   queueArguments?: any
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type GenericJsonObject = Record<string, any>
 
 export type AssembledMessage = ConsumeMessage & {
