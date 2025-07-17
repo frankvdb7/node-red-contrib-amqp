@@ -5,6 +5,9 @@
   "extension": [".ts", ".tsx", ".html"],
   "reporter": ["lcov", "text"],
   "cache": true,
+  "exclude": [
+    "coverage/**"
+  ],
   "check-coverage": true,
   "statements": 82,
   "branches": 64,

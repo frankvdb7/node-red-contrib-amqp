@@ -116,13 +116,22 @@ module.exports = function (RED: NodeRedApp): void {
           nodeIns.status(NODE_STATUS.Connected)
         }
       } catch (e) {
-        reconnectOnError && (await reconnect())
-        if (e.code === ErrorType.InvalidLogin) {
+        if (
+          e.code === ErrorType.InvalidLogin ||
+          /ACCESS_REFUSED/i.test(e.message || '')
+        ) {
           nodeIns.status(NODE_STATUS.Invalid)
           nodeIns.error(`AmqpIn() Could not connect to broker ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectError } })
+        } else if (
+          e.code === ErrorType.ConnectionRefused ||
+          e.code === ErrorType.DnsResolve ||
+          e.code === ErrorType.HostNotFound ||
+          e.isOperational
+        ) {
+          reconnectOnError && (await reconnect())
         } else {
           nodeIns.status(NODE_STATUS.Error)
-          nodeIns.error(`AmqpIn() ${JSON.stringify(e)}`, { payload: { error: e, source: 'ConnectionError' } })
+          nodeIns.error(`AmqpIn() ${JSON.stringify(e)}`, { payload: { error: e, location: ErrorLocationEnum.ConnectError } })
         }
       }
     }

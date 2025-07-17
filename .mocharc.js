@@ -4,7 +4,7 @@ module.exports = {
   require: ['ts-node/register', 'source-map-support/register'],
   diff: true,
   ui: 'bdd',
-  spec: 'build/test/**/*.spec.js',
+  spec: 'test/**/*.spec.ts',
   // 'watch-files': ['lib/**/*.js', 'test/**/*.js'],
   // 'watch-ignore': ['lib/vendor']
 }

@@ -116,8 +116,8 @@ export const brokerConfigFixture: any & BrokerConfig = {
 }
 
 export class CustomError extends Error {
-  constructor(private readonly code: ErrorType, ...params: undefined[]) {
-    super(...params)
+  constructor(private readonly code: ErrorType, message?: string) {
+    super(message)
 
     // Maintains proper stack trace for where our error was thrown (only available on V8)
     if (Error.captureStackTrace) {
