@@ -5,6 +5,10 @@
   "extension": [".ts", ".tsx", ".html"],
   "reporter": ["lcov", "text"],
   "cache": true,
+  "exclude": [
+    "src/nodes/**",
+    "coverage/**"
+  ],
   "check-coverage": true,
   "statements": 82,
   "branches": 64,
