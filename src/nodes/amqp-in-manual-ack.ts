@@ -138,7 +138,10 @@ module.exports = function (RED: NodeRedApp): void {
           e.isOperational
         ) {
           reconnectOnError && (await reconnect())
-        } else if (e.code === ErrorType.InvalidLogin) {
+        } else if (
+          e.code === ErrorType.InvalidLogin ||
+          /ACCESS_REFUSED/i.test(e.message || '')
+        ) {
           nodeIns.status(NODE_STATUS.Invalid)
           nodeIns.error(`AmqpInManualAck() Could not connect to broker ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectError } })
         } else {

@@ -174,6 +174,20 @@ describe('amqp-out Node', () => {
     )
   })
 
+  it('detects invalid login from message text', function (done) {
+    const err = new CustomError(ErrorType.ConnectionRefused, 'ACCESS_REFUSED - Login failed')
+    const connectStub = sinon.stub(Amqp.prototype, 'connect').throws(err)
+    helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+      function () {
+        expect(connectStub).to.throw()
+        done()
+      },
+    )
+  })
+
   it('handles dns lookup failures', function (done) {
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
