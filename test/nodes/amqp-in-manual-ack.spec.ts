@@ -147,7 +147,7 @@ describe('amqp-in-manual-ack Node', () => {
   })
 
   it('detects invalid login from message text', function (done) {
-    const err = new CustomError(ErrorType.ConnectionRefused, 'ACCESS_REFUSED - Login failed')
+    const err = new Error('ACCESS_REFUSED - Login failed');
     const connectStub = sinon.stub(Amqp.prototype, 'connect').throws(err)
     helper.load(
       [amqpInManualAck, amqpBroker],
@@ -158,6 +158,7 @@ describe('amqp-in-manual-ack Node', () => {
         done()
       },
     )
+  })
   })
 
   it('handles dns lookup failures', function (done) {
