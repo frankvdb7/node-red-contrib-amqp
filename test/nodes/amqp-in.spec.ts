@@ -5,6 +5,7 @@ import * as sinon from 'sinon'
 import Amqp from '../../src/Amqp'
 import { ErrorType, NodeType } from '../../src/types'
 import { CustomError, amqpInFlowFixture, credentialsFixture } from '../doubles'
+import { NODE_STATUS } from '../../src/constants'
 
 const helper = require('node-red-node-test-helper')
 const amqpIn = require('../../src/nodes/amqp-in')
@@ -119,6 +120,45 @@ describe('amqp-in Node', () => {
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
       .throws(new CustomError(ErrorType.InvalidLogin))
+    helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+      function () {
+        expect(connectStub).to.throw()
+        done()
+      },
+    )
+  })
+
+  it('detects invalid login from message text', function (done) {
+    const err = new CustomError(ErrorType.ConnectionRefused, 'ACCESS_REFUSED - Login failed')
+    const connectStub = sinon.stub(Amqp.prototype, 'connect').throws(err)
+    helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+      function () {
+        const amqpInNode = helper.getNode('n1')
+        amqpInNode.on('call:status', call => {
+          if (call.args[0].text === NODE_STATUS.Invalid.text) {
+            try {
+              expect(call.args[0]).to.deep.equal(NODE_STATUS.Invalid)
+              expect(connectStub).to.throw()
+              done()
+            } catch (err) {
+              done(err)
+            }
+          }
+        })
+      },
+    )
+  })
+
+  it('handles dns lookup failures', function (done) {
+    const connectStub = sinon
+      .stub(Amqp.prototype, 'connect')
+      .throws(new CustomError(ErrorType.DnsResolve))
     helper.load(
       [amqpIn, amqpBroker],
       amqpInFlowFixture,

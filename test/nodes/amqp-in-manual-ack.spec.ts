@@ -9,6 +9,7 @@ import {
   amqpInManualAckFlowFixture,
   credentialsFixture,
 } from '../doubles'
+import { NODE_STATUS } from '../../src/constants'
 const helper = require('node-red-node-test-helper')
 const amqpInManualAck = require('../../src/nodes/amqp-in-manual-ack')
 const amqpBroker = require('../../src/nodes/amqp-broker')
@@ -135,6 +136,46 @@ describe('amqp-in-manual-ack Node', () => {
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
       .throws(new CustomError(ErrorType.InvalidLogin))
+    helper.load(
+      [amqpInManualAck, amqpBroker],
+      amqpInManualAckFlowFixture,
+      credentialsFixture,
+      function () {
+        expect(connectStub).to.throw()
+        done()
+      },
+    )
+  })
+
+  it('detects invalid login from message text', function (done) {
+    const err = new CustomError(ErrorType.ConnectionRefused, 'ACCESS_REFUSED - Login failed')
+    const connectStub = sinon.stub(Amqp.prototype, 'connect').throws(err)
+    helper.load(
+      [amqpInManualAck, amqpBroker],
+      amqpInManualAckFlowFixture,
+      credentialsFixture,
+      function () {
+        const amqpInManualAckNode = helper.getNode('n1')
+        amqpInManualAckNode.on('call:status', call => {
+          if (call.args[0].text === NODE_STATUS.Invalid.text) {
+            try {
+              expect(call.args[0]).to.deep.equal(NODE_STATUS.Invalid)
+              expect(connectStub).to.throw()
+              done()
+            } catch (err) {
+              done(err)
+            }
+          }
+        })
+      },
+    )
+  })
+
+  it('handles dns lookup failures', function (done) {
+    const connectStub = sinon
+      .stub(Amqp.prototype, 'connect')
+      .throws(new CustomError(ErrorType.DnsResolve))
+
     helper.load(
       [amqpInManualAck, amqpBroker],
       amqpInManualAckFlowFixture,
