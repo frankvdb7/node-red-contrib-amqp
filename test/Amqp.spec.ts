@@ -74,7 +74,7 @@ describe('Amqp Class', () => {
 
   it('connect() logs attempts', async () => {
     const error = 'error!'
-    const result = { on: (): string => error }
+    const result = { on: sinon.stub() }
 
     // @ts-ignore
     const connectStub = sinon.stub(amqplib, 'connect').resolves(result)
@@ -92,6 +92,26 @@ describe('Amqp Class', () => {
     ).to.be.true
     expect(logStub.calledWithMatch(/Connected to AMQP broker/)).to.be.true
     expect(warnStub.called).to.be.false
+  })
+
+  it('connect() logs events', async () => {
+    const events: { [key: string]: Function } = {}
+    const result = { on: (ev: string, cb: Function): void => { events[ev] = cb } }
+
+    // @ts-ignore
+    sinon.stub(amqplib, 'connect').resolves(result)
+
+    const logStub = sinon.stub()
+    const warnStub = sinon.stub()
+    amqp.node = { ...nodeFixture, log: logStub, warn: warnStub }
+
+    await amqp.connect()
+
+    events['error']('err')
+    events['close']()
+
+    expect(warnStub.calledWithMatch('AMQP connection error')).to.be.true
+    expect(logStub.calledWithMatch('AMQP Connection closed')).to.be.true
   })
 
   it('initialize()', async () => {
@@ -272,7 +292,7 @@ describe('Amqp Class', () => {
   it('createChannel()', async () => {
     const error = 'error!'
     const result = {
-      on: (): string => error,
+      on: sinon.stub(),
       prefetch: (): null => null,
     }
     const createChannelStub = sinon.stub().returns(result)
@@ -281,6 +301,33 @@ describe('Amqp Class', () => {
     await amqp.createChannel()
     expect(createChannelStub.calledOnce).to.equal(true)
     expect(amqp.channel).to.eq(result)
+  })
+
+  it('createChannel() logs events', async () => {
+    const events: { [key: string]: Function } = {}
+    const result = {
+      on: (ev: string, cb: Function): void => {
+        events[ev] = cb
+      },
+      prefetch: sinon.stub(),
+    }
+    const createChannelStub = sinon.stub().resolves(result)
+    amqp.connection = { createChannel: createChannelStub }
+
+    const logStub = sinon.stub()
+    const warnStub = sinon.stub()
+    const errorStub = sinon.stub()
+    amqp.node = { ...nodeFixture, log: logStub, warn: warnStub, error: errorStub }
+
+    await amqp.createChannel()
+
+    events['close']()
+    events['return']()
+    events['error']('oops')
+
+    expect(logStub.calledWithMatch('AMQP Channel closed')).to.be.true
+    expect(warnStub.calledWithMatch('AMQP Message returned')).to.be.true
+    expect(errorStub.calledWithMatch('AMQP Connection Error')).to.be.true
   })
 
   it('assertExchange()', async () => {

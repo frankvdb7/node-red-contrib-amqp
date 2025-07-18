@@ -88,6 +88,7 @@ export default class Amqp {
     this.connection.on('error', (e): void => {
       // Set node to disconnected status
       this.node.status(NODE_STATUS.Disconnected)
+      this.node.warn(`AMQP connection error ${e}`)
     })
 
     /* istanbul ignore next */
@@ -358,6 +359,17 @@ export default class Amqp {
       // Set node to disconnected status
       this.node.status(NODE_STATUS.Disconnected)
       this.node.error(`AMQP Connection Error ${e}`, { payload: { error: e, source: 'Amqp' } })
+    })
+
+    /* istanbul ignore next */
+    this.channel.on('close', (): void => {
+      this.node.status(NODE_STATUS.Disconnected)
+      this.node.log('AMQP Channel closed')
+    })
+
+    /* istanbul ignore next */
+    this.channel.on('return', (): void => {
+      this.node.warn('AMQP Message returned')
     })
 
     return this.channel;
