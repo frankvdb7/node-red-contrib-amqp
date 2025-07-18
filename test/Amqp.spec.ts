@@ -72,15 +72,26 @@ describe('Amqp Class', () => {
     expect(amqp.config.exchange.name).to.eq(DefaultExchangeName.Headers)
   })
 
-  it('connect()', async () => {
+  it('connect() logs attempts', async () => {
     const error = 'error!'
     const result = { on: (): string => error }
 
     // @ts-ignore
-    sinon.stub(amqplib, 'connect').resolves(result)
+    const connectStub = sinon.stub(amqplib, 'connect').resolves(result)
+
+    const logStub = sinon.stub()
+    const warnStub = sinon.stub()
+    amqp.node = { ...nodeFixture, log: logStub, warn: warnStub }
 
     const connection = await amqp.connect()
+
     expect(connection).to.eq(result)
+    expect(connectStub.calledOnce).to.be.true
+    expect(
+      logStub.calledWithMatch(/Connecting to AMQP broker/),
+    ).to.be.true
+    expect(logStub.calledWithMatch(/Connected to AMQP broker/)).to.be.true
+    expect(warnStub.called).to.be.false
   })
 
   it('initialize()', async () => {

@@ -71,7 +71,18 @@ export default class Amqp {
     this.broker = this.RED.nodes.getNode(broker)
 
     const brokerUrl = this.getBrokerUrl(this.broker)
-    this.connection = await connect(brokerUrl, { heartbeat: 2 })
+    const { host, port, vhost } = this.broker as unknown as BrokerConfig
+
+    const brokerInfo = `${host}:${port}${vhost ? `/${vhost}` : ''}`
+    this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
+
+    try {
+      this.connection = await connect(brokerUrl, { heartbeat: 2 })
+      this.node.log(`Connected to AMQP broker ${brokerInfo}`)
+    } catch (err) {
+      this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
+      throw err
+    }
 
     /* istanbul ignore next */
     this.connection.on('error', (e): void => {
