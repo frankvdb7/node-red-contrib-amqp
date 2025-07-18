@@ -70,6 +70,12 @@ export default class Amqp {
     // @ts-ignore
     this.broker = this.RED.nodes.getNode(broker)
 
+    if (!this.broker) {
+      const err = new Error(`AMQP broker node not found: ${broker}`)
+      this.node.error(err.message)
+      throw err
+    }
+
     const brokerUrl = this.getBrokerUrl(this.broker)
     const { host, port, vhost } = this.broker as unknown as BrokerConfig
 

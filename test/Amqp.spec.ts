@@ -114,6 +114,21 @@ describe('Amqp Class', () => {
     expect(logStub.calledWithMatch('AMQP Connection closed')).to.be.true
   })
 
+  it('connect() errors when broker missing', async () => {
+    // no broker node returned
+    RED.nodes.getNode.returns(undefined)
+
+    const errorStub = sinon.stub()
+    amqp.node = { ...nodeFixture, error: errorStub }
+
+    try {
+      await amqp.connect()
+      expect.fail('connect did not throw')
+    } catch (err) {
+      expect(errorStub.calledWithMatch('AMQP broker node not found')).to.be.true
+    }
+  })
+
   it('initialize()', async () => {
     const createChannelStub = sinon.stub()
     const assertExchangeStub = sinon.stub()
