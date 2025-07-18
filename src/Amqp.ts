@@ -70,13 +70,31 @@ export default class Amqp {
     // @ts-ignore
     this.broker = this.RED.nodes.getNode(broker)
 
+    if (!this.broker) {
+      const err = new Error(`AMQP broker node not found: ${broker}`)
+      this.node.error(err.message)
+      throw err
+    }
+
     const brokerUrl = this.getBrokerUrl(this.broker)
-    this.connection = await connect(brokerUrl, { heartbeat: 2 })
+    const { host, port, vhost } = this.broker as unknown as BrokerConfig
+
+    const brokerInfo = `${host}:${port}${vhost ? `/${vhost}` : ''}`
+    this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
+
+    try {
+      this.connection = await connect(brokerUrl, { heartbeat: 2 })
+      this.node.log(`Connected to AMQP broker ${brokerInfo}`)
+    } catch (err) {
+      this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
+      throw err
+    }
 
     /* istanbul ignore next */
     this.connection.on('error', (e): void => {
       // Set node to disconnected status
       this.node.status(NODE_STATUS.Disconnected)
+      this.node.warn(`AMQP connection error ${e}`)
     })
 
     /* istanbul ignore next */
@@ -347,6 +365,17 @@ export default class Amqp {
       // Set node to disconnected status
       this.node.status(NODE_STATUS.Disconnected)
       this.node.error(`AMQP Connection Error ${e}`, { payload: { error: e, source: 'Amqp' } })
+    })
+
+    /* istanbul ignore next */
+    this.channel.on('close', (): void => {
+      this.node.status(NODE_STATUS.Disconnected)
+      this.node.log('AMQP Channel closed')
+    })
+
+    /* istanbul ignore next */
+    this.channel.on('return', (): void => {
+      this.node.warn('AMQP Message returned')
     })
 
     return this.channel;
