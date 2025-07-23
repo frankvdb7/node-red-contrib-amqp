@@ -10,9 +10,6 @@ module.exports = function (RED: NodeRedApp): void {
     let connection = null;
     let channel = null;
 
-    RED.events.once('flows:stopped', () => {
-      clearTimeout(reconnectTimeout)
-    })
 
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore
@@ -63,6 +60,7 @@ module.exports = function (RED: NodeRedApp): void {
     this.on('input', inputListener)
     // When the server goes down
     this.on('close', async (done: () => void): Promise<void> => {
+      clearTimeout(reconnectTimeout)
       await amqp.close()
       done && done()
     })

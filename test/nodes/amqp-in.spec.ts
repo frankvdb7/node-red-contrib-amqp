@@ -67,6 +67,23 @@ describe('amqp-in Node', () => {
     )
   })
 
+  it('does not register flows:stopped listener', function (done) {
+    sinon.stub(Amqp.prototype, 'connect').resolves(true as any)
+    sinon.stub(Amqp.prototype, 'initialize')
+
+    helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+      function () {
+        expect(helper._events.listenerCount('flows:stopped')).to.equal(0)
+        const amqpInNode = helper.getNode('n1')
+        amqpInNode.close()
+        done()
+      },
+    )
+  })
+
   it('should reconnect to the server', function (done) {
     // @ts-ignore
     Amqp.prototype.channel = {

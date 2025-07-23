@@ -199,4 +199,21 @@ describe('amqp-in-manual-ack Node', () => {
       },
     )
   })
+
+  it('does not register flows:stopped listener', function (done) {
+    sinon.stub(Amqp.prototype, 'connect').resolves(true as any)
+    sinon.stub(Amqp.prototype, 'initialize')
+
+    helper.load(
+      [amqpInManualAck, amqpBroker],
+      amqpInManualAckFlowFixture,
+      credentialsFixture,
+      function () {
+        expect(helper._events.listenerCount('flows:stopped')).to.equal(0)
+        const node = helper.getNode('n1')
+        node.close()
+        done()
+      },
+    )
+  })
 })

@@ -69,6 +69,23 @@ describe('amqp-out Node', () => {
     )
   })
 
+  it('does not register flows:stopped listener', function (done) {
+    sinon.stub(Amqp.prototype, 'connect').resolves(true as any)
+    sinon.stub(Amqp.prototype, 'initialize')
+
+    helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+      function () {
+        expect(helper._events.listenerCount('flows:stopped')).to.equal(0)
+        const n1 = helper.getNode('n1')
+        n1.close()
+        done()
+      },
+    )
+  })
+
   it('should connect to the server and send some messages with a dynamic routing key from `msg`', function (done) {
     // @ts-ignore
     Amqp.prototype.channel = {
