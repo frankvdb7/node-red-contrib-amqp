@@ -1,16 +1,16 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/ban-ts-comment */
-import { expect } from 'chai'
-import * as sinon from 'sinon'
-import * as amqplib from 'amqplib'
-import Amqp from '../src/Amqp'
-import { nodeConfigFixture, nodeFixture, brokerConfigFixture } from './doubles'
-import {
-  GenericJsonObject,
-  ExchangeType,
-  DefaultExchangeName,
-  BrokerConfig,
-} from '../src/types'
+const { expect } = require('chai')
+const sinon = require('sinon')
+const amqplib = require('amqplib')
+const Amqp = require('../src/Amqp').default
+const {
+  nodeConfigFixture,
+  nodeFixture,
+  brokerConfigFixture,
+} = require('./doubles')
+const { ExchangeType, DefaultExchangeName } = require('../src/types')
+import type { GenericJsonObject, BrokerConfig } from '../src/types'
 
 let RED: any
 let amqp: any
@@ -522,7 +522,8 @@ describe('Amqp Class', () => {
       expect(closeStub.calledOnce).to.equal(true)
       expect(connectStub.calledOnce).to.equal(true)
       expect(initStub.calledOnce).to.equal(true)
-      expect((amqp.broker as BrokerConfig).vhost).to.equal('vh2')
+      expect((amqp.broker as BrokerConfig).vhost).to.equal('vh1')
+      expect((amqp as any).vhostOverride).to.equal('vh2')
     })
 
     it('does nothing when vhost is unchanged', async () => {
@@ -536,6 +537,44 @@ describe('Amqp Class', () => {
       expect(closeStub.called).to.equal(false)
       expect(connectStub.called).to.equal(false)
       expect(initStub.called).to.equal(false)
+      expect((amqp as any).vhostOverride).to.be.undefined
+    })
+
+    it('does not mutate shared broker config', async () => {
+      const sharedBroker = { ...brokerConfigFixture, vhost: 'vh1' }
+      amqp.broker = sharedBroker
+      const closeStub = sinon.stub(amqp, 'close').resolves()
+      const connectStub = sinon.stub(amqp, 'connect').resolves()
+      const initStub = sinon.stub(amqp, 'initialize').resolves()
+
+      await amqp.setVhost('vh2')
+
+      expect(sharedBroker.vhost).to.equal('vh1')
+      expect((amqp as any).vhostOverride).to.equal('vh2')
+      expect(closeStub.calledOnce).to.equal(true)
+      expect(connectStub.calledOnce).to.equal(true)
+      expect(initStub.calledOnce).to.equal(true)
+    })
+
+    it('allows separate instances to target different vhosts', async () => {
+      const sharedBroker = { ...brokerConfigFixture, vhost: 'vh1' }
+      const amqp1: any = new Amqp(RED, nodeFixture, nodeConfigFixture)
+      const amqp2: any = new Amqp(RED, nodeFixture, nodeConfigFixture)
+      amqp1.broker = sharedBroker
+      amqp2.broker = sharedBroker
+      sinon.stub(amqp1, 'close').resolves()
+      sinon.stub(amqp1, 'connect').resolves()
+      sinon.stub(amqp1, 'initialize').resolves()
+      sinon.stub(amqp2, 'close').resolves()
+      sinon.stub(amqp2, 'connect').resolves()
+      sinon.stub(amqp2, 'initialize').resolves()
+
+      await amqp1.setVhost('vh2')
+      await amqp2.setVhost('vh3')
+
+      expect(amqp1.vhostOverride).to.equal('vh2')
+      expect(amqp2.vhostOverride).to.equal('vh3')
+      expect(sharedBroker.vhost).to.equal('vh1')
     })
   })
 })

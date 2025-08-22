@@ -27,6 +27,7 @@ export default class Amqp {
   private connection: ChannelModel
   private channel: Channel
   private q: Replies.AssertQueue
+  private vhostOverride?: string
 
   constructor(
     private readonly RED: NodeRedApp,
@@ -76,8 +77,14 @@ export default class Amqp {
       throw err
     }
 
-    const brokerUrl = this.getBrokerUrl(this.broker)
-    const { host, port, vhost } = this.broker as unknown as BrokerConfig
+    const brokerConfig: BrokerConfig = {
+      ...(this.broker as unknown as BrokerConfig),
+      vhost:
+        this.vhostOverride ?? (this.broker as unknown as BrokerConfig).vhost,
+    }
+
+    const brokerUrl = this.getBrokerUrl(brokerConfig)
+    const { host, port, vhost } = brokerConfig
 
     const brokerInfo = `${host}:${port}${vhost ? `/${vhost}` : ''}`
     this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
@@ -140,14 +147,15 @@ export default class Amqp {
 
   public async setVhost(newVhost: string): Promise<void> {
     const broker = this.broker as unknown as BrokerConfig
+    const currentVhost = this.vhostOverride ?? broker?.vhost
 
-    if (!broker || broker.vhost === newVhost) {
+    if (!broker || currentVhost === newVhost) {
       return
     }
 
     try {
       await this.close()
-      broker.vhost = newVhost
+      this.vhostOverride = newVhost
       await this.connect()
       await this.initialize()
     } catch (e) {
@@ -464,12 +472,11 @@ export default class Amqp {
     return type === ExchangeType.Direct || type === ExchangeType.Topic
   }
 
-  private getBrokerUrl(broker: Node): string {
+  private getBrokerUrl(broker: BrokerConfig): string {
     let url = ''
 
     if (broker) {
-      const { host, port, vhost, tls, credsFromSettings, credentials } =
-        broker as unknown as BrokerConfig
+      const { host, port, vhost, tls, credsFromSettings, credentials } = broker
 
       const { username, password } = credsFromSettings
         ? this.getCredsFromSettings()

@@ -1,11 +1,11 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 /* eslint-disable @typescript-eslint/ban-ts-comment */
-import { expect } from 'chai'
-import * as sinon from 'sinon'
-import Amqp from '../../src/Amqp'
-import { ErrorType, NodeType } from '../../src/types'
-import { CustomError, amqpInFlowFixture, credentialsFixture } from '../doubles'
-import { NODE_STATUS } from '../../src/constants'
+const { expect } = require('chai')
+const sinon = require('sinon')
+const Amqp = require('../../src/Amqp').default
+const { ErrorType, NodeType } = require('../../src/types')
+const { CustomError, amqpInFlowFixture, credentialsFixture } = require('../doubles')
+const { NODE_STATUS } = require('../../src/constants')
 
 const helper = require('node-red-node-test-helper')
 const amqpIn = require('../../src/nodes/amqp-in')
