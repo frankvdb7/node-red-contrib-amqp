@@ -192,6 +192,58 @@ describe('amqp-out Node', () => {
     )
   })
 
+  it('removes listeners before switching vhost', function (done) {
+    const connectionMock = {
+      removeAllListeners: sinon.spy(),
+      close: (): null => null,
+    }
+    const channelMock = {
+      removeAllListeners: sinon.spy(),
+      unbindQueue: (): null => null,
+      close: (): null => null,
+    }
+
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .callsFake(async function () {
+        // @ts-ignore
+        this.connection = connectionMock
+        return connectionMock as any
+      })
+
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .callsFake(async function () {
+        // @ts-ignore
+        this.channel = channelMock
+        return channelMock as any
+      })
+
+    const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
+
+    helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+      function () {
+        const amqpOutNode = helper.getNode('n1')
+        amqpOutNode.receive({ payload: 'foo', vhost: 'vh2' })
+        setTimeout(() => {
+          sinon.assert.callOrder(
+            connectionMock.removeAllListeners as any,
+            setVhostStub,
+          )
+          sinon.assert.callOrder(
+            channelMock.removeAllListeners as any,
+            setVhostStub,
+          )
+          amqpOutNode.close()
+          done()
+        }, 0)
+      },
+    )
+  })
+
   it('tries to connect but the broker is down', function (done) {
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
