@@ -399,10 +399,10 @@ export default class Amqp {
       }
     }
 
-    this.releaseConnection()
+    await this.releaseConnection()
   }
 
-  private releaseConnection(): void {
+  private async releaseConnection(): Promise<void> {
     const brokerId = this.config.broker
     const broker = this.broker as unknown as BrokerConfig
     const vhost = this.vhostOverride ?? broker?.vhost
@@ -418,10 +418,12 @@ export default class Amqp {
       entry.count -= 1
       if (entry.count <= 0) {
         Amqp.connectionPool.delete(key)
-        entry.connection.close().catch(e => {
+        try {
+          await entry.connection.close()
+        } catch (e) {
           /* istanbul ignore next */
           this.node.error(`Error closing AMQP connection: ${e}`)
-        })
+        }
       }
     }
   }
@@ -524,9 +526,10 @@ export default class Amqp {
         : credentials
 
       const protocol = tls ? /* istanbul ignore next */ 'amqps' : 'amqp'
+      const vhostPath = vhost ? `/${encodeURIComponent(vhost)}` : '/'
       url = `${protocol}://${encodeURIComponent(username)}:${encodeURIComponent(
         password,
-      )}@${host}:${port}/${vhost}`
+      )}@${host}:${port}${vhostPath}`
     }
 
     return url

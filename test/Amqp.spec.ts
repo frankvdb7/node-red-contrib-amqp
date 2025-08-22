@@ -133,6 +133,33 @@ describe('Amqp Class', () => {
     }
   })
 
+  describe('getBrokerUrl()', () => {
+    it('encodes credentials and vhost', () => {
+      const broker = {
+        host: 'localhost',
+        port: 5672,
+        vhost: 'foo/bar',
+        tls: false,
+        credsFromSettings: false,
+        credentials: { username: 'user@name', password: 'p@ss/word' },
+      }
+
+      const url = (amqp as any).getBrokerUrl(broker)
+
+      expect(url).to.equal(
+        'amqp://user%40name:p%40ss%2Fword@localhost:5672/foo%2Fbar',
+      )
+    })
+
+    it('falls back to root when vhost missing', () => {
+      const broker = { ...brokerConfigFixture, vhost: undefined }
+
+      const url = (amqp as any).getBrokerUrl(broker)
+
+      expect(url).to.equal('amqp://username:password@host:222/')
+    })
+  })
+
   it('shares connection among instances for same vhost', async () => {
     const connectionStub = {
       on: sinon.stub(),
@@ -156,6 +183,37 @@ describe('Amqp Class', () => {
 
     await amqp2.close()
     expect(connectionStub.close.calledOnce).to.be.true
+  })
+
+  it('awaits connection close before removing from pool', async () => {
+    let closed = false
+    const connectionStub = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().callsFake(
+        () =>
+          new Promise<void>(resolve =>
+            setTimeout(() => {
+              closed = true
+              resolve()
+            }, 5),
+          ),
+      ),
+    }
+
+    ;(Amqp as any).connectionPool.set('b1:vh1', {
+      connection: connectionStub,
+      count: 1,
+    })
+
+    amqp.connection = connectionStub as any
+    amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+
+    await (amqp as any).releaseConnection()
+
+    expect(connectionStub.close.calledOnce).to.be.true
+    expect(closed).to.be.true
+    expect((Amqp as any).connectionPool.size).to.equal(0)
   })
 
   it('initialize()', async () => {
