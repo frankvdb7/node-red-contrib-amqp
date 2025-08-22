@@ -9,6 +9,7 @@ import {
   GenericJsonObject,
   ExchangeType,
   DefaultExchangeName,
+  BrokerConfig,
 } from '../src/types'
 
 let RED: any
@@ -507,5 +508,34 @@ describe('Amqp Class', () => {
     await amqp.consume()
     expect(consumeStub.called).to.equal(false)
     expect(errorStub.calledOnce).to.equal(true)
+  })
+
+  describe('setVhost()', () => {
+    it('reconnects when vhost changes', async () => {
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+      const closeStub = sinon.stub(amqp, 'close').resolves()
+      const connectStub = sinon.stub(amqp, 'connect').resolves()
+      const initStub = sinon.stub(amqp, 'initialize').resolves()
+
+      await amqp.setVhost('vh2')
+
+      expect(closeStub.calledOnce).to.equal(true)
+      expect(connectStub.calledOnce).to.equal(true)
+      expect(initStub.calledOnce).to.equal(true)
+      expect((amqp.broker as BrokerConfig).vhost).to.equal('vh2')
+    })
+
+    it('does nothing when vhost is unchanged', async () => {
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+      const closeStub = sinon.stub(amqp, 'close').resolves()
+      const connectStub = sinon.stub(amqp, 'connect').resolves()
+      const initStub = sinon.stub(amqp, 'initialize').resolves()
+
+      await amqp.setVhost('vh1')
+
+      expect(closeStub.called).to.equal(false)
+      expect(connectStub.called).to.equal(false)
+      expect(initStub.called).to.equal(false)
+    })
   })
 })

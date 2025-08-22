@@ -112,6 +112,7 @@ export const nodeFixture = {
 export const brokerConfigFixture: any & BrokerConfig = {
   host: 'host',
   port: 222,
+  vhost: '',
   credentials: {
     username: 'username',
     password: 'password',

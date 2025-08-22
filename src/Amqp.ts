@@ -138,6 +138,32 @@ export default class Amqp {
     this.config.exchange.routingKey = newRoutingKey
   }
 
+  public async setVhost(newVhost: string): Promise<void> {
+    const broker = this.broker as unknown as BrokerConfig
+
+    if (!broker || broker.vhost === newVhost) {
+      return
+    }
+
+    try {
+      await this.close()
+      broker.vhost = newVhost
+      await this.connect()
+      await this.initialize()
+    } catch (e) {
+      this.node.error(`Could not switch vhost: ${e}`)
+      throw e
+    }
+  }
+
+  public getConnection(): ChannelModel {
+    return this.connection
+  }
+
+  public getChannel(): Channel {
+    return this.channel
+  }
+
   public ack(msg: AssembledMessage): void {
     const allUpTo = !!msg.manualAck?.allUpTo
     try {

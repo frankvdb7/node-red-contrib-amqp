@@ -162,6 +162,36 @@ describe('amqp-out Node', () => {
     )
   })
 
+  it('switches vhost dynamically from msg', function (done) {
+    // @ts-ignore
+    Amqp.prototype.channel = {
+      unbindQueue: (): null => null,
+      close: (): null => null,
+    }
+    // @ts-ignore
+    Amqp.prototype.connection = {
+      close: (): null => null,
+    }
+    sinon.stub(Amqp.prototype, 'connect').resolves(true as any)
+    sinon.stub(Amqp.prototype, 'initialize')
+    const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
+
+    helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+      function () {
+        const amqpOutNode = helper.getNode('n1')
+        amqpOutNode.receive({ payload: 'foo', vhost: 'vh2' })
+        setTimeout(() => {
+          expect(setVhostStub.calledWith('vh2')).to.be.true
+          amqpOutNode.close()
+          done()
+        }, 0)
+      },
+    )
+  })
+
   it('tries to connect but the broker is down', function (done) {
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')

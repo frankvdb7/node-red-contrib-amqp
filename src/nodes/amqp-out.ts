@@ -33,7 +33,7 @@ module.exports = function (RED: NodeRedApp): void {
 
     // handle input event;
     const inputListener = async (msg, _, done) => {
-      const { payload, routingKey, properties: msgProperties } = msg
+      const { payload, routingKey, vhost, properties: msgProperties } = msg
       const {
         exchangeRoutingKey,
         exchangeRoutingKeyType,
@@ -100,6 +100,56 @@ module.exports = function (RED: NodeRedApp): void {
             amqp.setRoutingKey(routingKey)
           }
           break
+      }
+
+      if (vhost) {
+        try {
+          await amqp.setVhost(vhost)
+          connection = amqp.getConnection()
+          channel = amqp.getChannel()
+
+          connection.on('close', async e => {
+            e && (await reconnect())
+          })
+
+          connection.on('error', async e => {
+            reconnectOnError && (await reconnect())
+            me.error(`Connection error ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectionErrorEvent } })
+          })
+
+          channel.on('close', async () => {
+            await reconnect()
+          })
+
+          channel.on('error', async e => {
+            reconnectOnError && (await reconnect())
+            me.error(`Channel error ${e}`, { payload: { error: e, location: ErrorLocationEnum.ChannelErrorEvent } })
+          })
+
+          me.status(NODE_STATUS.Connected)
+        } catch (e) {
+          if (
+            e.code === ErrorType.InvalidLogin ||
+            /ACCESS_REFUSED/i.test(e.message || '')
+          ) {
+            me.status(NODE_STATUS.Invalid)
+            me.error(`AmqpOut() Could not connect to broker ${e}`, {
+              payload: { error: e, location: ErrorLocationEnum.ConnectError },
+            })
+          } else if (
+            e.code === ErrorType.ConnectionRefused ||
+            e.code === ErrorType.DnsResolve ||
+            e.code === ErrorType.HostNotFound ||
+            e.isOperational
+          ) {
+            reconnectOnError && (await reconnect())
+          } else {
+            me.status(NODE_STATUS.Error)
+            me.error(`AmqpOut() ${e}`, {
+              payload: { error: e, location: ErrorLocationEnum.ConnectError },
+            })
+          }
+        }
       }
 
       if (!!properties?.headers?.doNotStringifyPayload) {
