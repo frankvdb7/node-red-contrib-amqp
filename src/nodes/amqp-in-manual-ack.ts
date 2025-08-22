@@ -9,6 +9,9 @@ module.exports = function (RED: NodeRedApp): void {
     let reconnect = null;
     let connection = null;
     let channel = null;
+    let onConnClose: (e: unknown) => Promise<void>
+    let onConnError: (e: unknown) => Promise<void>
+    let onChannelError: (e: unknown) => Promise<void>
 
 
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -61,36 +64,26 @@ module.exports = function (RED: NodeRedApp): void {
     // When the server goes down
     this.on('close', async (done: () => void): Promise<void> => {
       clearTimeout(reconnectTimeout)
+      removeEventListeners()
       await amqp.close()
       done && done()
     })
 
+    const removeEventListeners = (): void => {
+      connection?.off?.('close', onConnClose)
+      connection?.off?.('error', onConnError)
+      channel?.off?.('error', onChannelError)
+    }
+
     async function initializeNode(nodeIns) {
       reconnect = async () => {
-        // check the channel and clear all the event listener
-        if (channel && channel.removeAllListeners) {
-          channel.removeAllListeners()
-          try {
-            await channel.close()
-          } catch (err) {
-            nodeIns.error(`Error closing channel: ${err}`)
-          }
-          channel = null;
-        }
-
-        // check the connection and clear all the event listener
-        if (connection && connection.removeAllListeners) {
-          connection.removeAllListeners()
-          try {
-            await connection.close()
-          } catch (err) {
-            nodeIns.error(`Error closing connection: ${err}`)
-          }
-          connection = null;
-        }
+        removeEventListeners()
+        await amqp.close()
+        channel = null
+        connection = null
 
         // always clear timer before set it;
-        clearTimeout(reconnectTimeout);
+        clearTimeout(reconnectTimeout)
         reconnectTimeout = setTimeout(() => {
           try {
             initializeNode(nodeIns)
@@ -109,22 +102,23 @@ module.exports = function (RED: NodeRedApp): void {
           channel = await amqp.initialize()
           await amqp.consume()
 
-          // When the connection goes down
-          connection.on('close', async e => {
+          onConnClose = async e => {
             e && (await reconnect())
-          })
+          }
 
-          // When the connection goes down
-          connection.on('error', async e => {
+          onConnError = async e => {
             e && reconnectOnError && (await reconnect())
             nodeIns.error(`Connection error ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectionErrorEvent } })
-          })
+          }
 
-          // When the channel goes down
-          channel.on('error', async (e) => {
+          onChannelError = async e => {
             e && reconnectOnError && (await reconnect())
             nodeIns.error(`Channel error ${e}`, { payload: { error: e, location: ErrorLocationEnum.ChannelErrorEvent } })
-          })
+          }
+
+          connection.on('close', onConnClose)
+          connection.on('error', onConnError)
+          channel.on('error', onChannelError)
 
           nodeIns.status(NODE_STATUS.Connected)
         }

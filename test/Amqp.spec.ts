@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/ban-ts-comment */
+export {}
 const { expect } = require('chai')
 const sinon = require('sinon')
 const amqplib = require('amqplib')
@@ -22,6 +23,8 @@ describe('Amqp Class', () => {
         getNode: sinon.stub().returns(brokerConfigFixture),
       },
     }
+
+    ;(Amqp as any).connectionPool.clear()
 
     // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, nodeConfigFixture)
@@ -128,6 +131,31 @@ describe('Amqp Class', () => {
     } catch (err) {
       expect(errorStub.calledWithMatch('AMQP broker node not found')).to.be.true
     }
+  })
+
+  it('shares connection among instances for same vhost', async () => {
+    const connectionStub = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+    const connectStub = sinon
+      .stub(amqplib, 'connect')
+      .resolves(connectionStub as any)
+
+    const amqp1: any = new Amqp(RED, nodeFixture, nodeConfigFixture)
+    const amqp2: any = new Amqp(RED, nodeFixture, nodeConfigFixture)
+
+    await amqp1.connect()
+    await amqp2.connect()
+
+    expect(connectStub.calledOnce).to.be.true
+
+    await amqp1.close()
+    expect(connectionStub.close.called).to.be.false
+
+    await amqp2.close()
+    expect(connectionStub.close.calledOnce).to.be.true
   })
 
   it('initialize()', async () => {
@@ -260,15 +288,20 @@ describe('Amqp Class', () => {
 
     const unbindQueueStub = sinon.stub()
     const channelCloseStub = sinon.stub()
-    const connectionCloseStub = sinon.stub()
+    const connectionCloseStub = sinon.stub().resolves()
     const assertQueueStub = sinon.stub().resolves({ queue: queueName })
 
     amqp.channel = {
       unbindQueue: unbindQueueStub,
       close: channelCloseStub,
       assertQueue: assertQueueStub,
+      off: sinon.stub(),
     }
-    amqp.connection = { close: connectionCloseStub }
+    amqp.connection = { close: connectionCloseStub, off: sinon.stub() }
+    ;(Amqp as any).connectionPool.set('b1:undefined', {
+      connection: amqp.connection,
+      count: 1,
+    })
     await amqp.assertQueue()
 
     await amqp.close()
@@ -285,7 +318,7 @@ describe('Amqp Class', () => {
     const queueName = 'queueName'
     const unbindQueueStub = sinon.stub()
     const channelCloseStub = sinon.stub().rejects(new Error('channel fail'))
-    const connectionCloseStub = sinon.stub()
+    const connectionCloseStub = sinon.stub().resolves()
     const errorStub = sinon.stub()
     const assertQueueStub = sinon.stub().resolves({ queue: queueName })
 
@@ -293,8 +326,13 @@ describe('Amqp Class', () => {
       unbindQueue: unbindQueueStub,
       close: channelCloseStub,
       assertQueue: assertQueueStub,
+      off: sinon.stub(),
     }
-    amqp.connection = { close: connectionCloseStub }
+    amqp.connection = { close: connectionCloseStub, off: sinon.stub() }
+    ;(Amqp as any).connectionPool.set('b1:undefined', {
+      connection: amqp.connection,
+      count: 1,
+    })
     amqp.node = { error: errorStub }
     await amqp.assertQueue()
 

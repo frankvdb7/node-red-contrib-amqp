@@ -16,6 +16,10 @@ module.exports = function (RED: NodeRedApp): void {
     let reconnect = null
     let connection = null
     let channel = null
+    let onConnClose: (e: unknown) => Promise<void>
+    let onConnError: (e: unknown) => Promise<void>
+    let onChannelClose: () => Promise<void>
+    let onChannelError: (e: unknown) => Promise<void>
     const me = this
 
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -30,32 +34,39 @@ module.exports = function (RED: NodeRedApp): void {
     const reconnectOnError = configAmqp.reconnectOnError
 
     const removeEventListeners = (): void => {
-      connection?.removeAllListeners?.()
-      channel?.removeAllListeners?.()
+      connection?.off?.('close', onConnClose)
+      connection?.off?.('error', onConnError)
+      channel?.off?.('close', onChannelClose)
+      channel?.off?.('error', onChannelError)
     }
 
     const setupEventListeners = (nodeIns): void => {
-      connection.on('close', async e => {
+      onConnClose = async e => {
         e && (await reconnect())
-      })
+      }
 
-      connection.on('error', async e => {
+      onConnError = async e => {
         reconnectOnError && (await reconnect())
         nodeIns.error(`Connection error ${e}`, {
           payload: { error: e, location: ErrorLocationEnum.ConnectionErrorEvent },
         })
-      })
+      }
 
-      channel.on('close', async () => {
+      onChannelClose = async () => {
         await reconnect()
-      })
+      }
 
-      channel.on('error', async e => {
+      onChannelError = async e => {
         reconnectOnError && (await reconnect())
         nodeIns.error(`Channel error ${e}`, {
           payload: { error: e, location: ErrorLocationEnum.ChannelErrorEvent },
         })
-      })
+      }
+
+      connection.on('close', onConnClose)
+      connection.on('error', onConnError)
+      channel.on('close', onChannelClose)
+      channel.on('error', onChannelError)
     }
 
     const handleError = async (e, nodeIns): Promise<void> => {
@@ -179,6 +190,7 @@ module.exports = function (RED: NodeRedApp): void {
     // When the node is re-deployed
     this.on('close', async (done: () => void): Promise<void> => {
       clearTimeout(reconnectTimeout)
+      removeEventListeners()
       await amqp.close()
       done && done()
     })
@@ -186,30 +198,8 @@ module.exports = function (RED: NodeRedApp): void {
     async function initializeNode(nodeIns) {
       reconnect = async () => {
         removeEventListeners()
-        try {
-          if (channel) {
-            channel.close().catch(err => {
-              /* istanbul ignore next */
-              me.error('Error closing channel:', err)
-            })
-          }
-        } catch (error) {
-          /* istanbul ignore next */
-          me.error('Error occurred:', error)
-        }
+        await amqp.close()
         channel = null
-
-        try {
-          if (connection) {
-            connection.close().catch(err => {
-              /* istanbul ignore next */
-              me.error('Error closing connection:', err)
-            })
-          }
-        } catch (error) {
-          /* istanbul ignore next */
-          me.error('Error occurred:', error)
-        }
         connection = null
 
         clearTimeout(reconnectTimeout)

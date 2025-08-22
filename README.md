@@ -25,7 +25,7 @@ Please see the `Node Help` section from within node-red for more info
 
 ### Dynamic Virtual Host
 
-The virtual host used by the `amqp-out` node can be changed at runtime by setting `msg.vhost` on the incoming message. When provided, the node will reconnect to the specified RabbitMQ virtual host before publishing the message. Each node maintains its own connection so multiple nodes can target different virtual hosts simultaneously without affecting one another.
+The virtual host used by the `amqp-out` node can be changed at runtime by setting `msg.vhost` on the incoming message. When provided, the node will reconnect to the specified RabbitMQ virtual host before publishing the message. Connections are pooled per virtual host so nodes targeting the same vhost share a single connection, while nodes targeting different vhosts operate independently.
 
 ## Development
 

@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 /* eslint-disable @typescript-eslint/ban-ts-comment */
+export {}
 const { expect } = require('chai')
 const sinon = require('sinon')
 const Amqp = require('../../src/Amqp').default
@@ -68,8 +69,14 @@ describe('amqp-in Node', () => {
   })
 
   it('does not register flows:stopped listener', function (done) {
-    sinon.stub(Amqp.prototype, 'connect').resolves(true as any)
-    sinon.stub(Amqp.prototype, 'initialize')
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .resolves(connectionMock as any)
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .resolves(channelMock as any)
 
     helper.load(
       [amqpIn, amqpBroker],

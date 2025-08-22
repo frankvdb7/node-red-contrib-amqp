@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 /* eslint-disable @typescript-eslint/ban-ts-comment */
+export {}
 const { expect } = require('chai')
 const sinon = require('sinon')
 const Amqp = require('../../src/Amqp').default
@@ -39,16 +40,19 @@ describe('amqp-out Node', () => {
     Amqp.prototype.channel = {
       unbindQueue: (): null => null,
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     // @ts-ignore
     Amqp.prototype.connection = {
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
-      // @ts-ignore
-      .resolves(true)
-    sinon.stub(Amqp.prototype, 'initialize')
+      .resolves(Amqp.prototype.connection as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
 
     helper.load(
       [amqpOut, amqpBroker],
@@ -70,8 +74,14 @@ describe('amqp-out Node', () => {
   })
 
   it('does not register flows:stopped listener', function (done) {
-    sinon.stub(Amqp.prototype, 'connect').resolves(true as any)
-    sinon.stub(Amqp.prototype, 'initialize')
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .resolves(connectionMock as any)
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .resolves(channelMock as any)
 
     helper.load(
       [amqpOut, amqpBroker],
@@ -91,16 +101,19 @@ describe('amqp-out Node', () => {
     Amqp.prototype.channel = {
       unbindQueue: (): null => null,
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     // @ts-ignore
     Amqp.prototype.connection = {
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
-      // @ts-ignore
-      .resolves(true)
-    sinon.stub(Amqp.prototype, 'initialize')
+      .resolves(Amqp.prototype.connection as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
 
     const flowFixture = [...amqpOutFlowFixture]
     // @ts-ignore
@@ -129,16 +142,19 @@ describe('amqp-out Node', () => {
     Amqp.prototype.channel = {
       unbindQueue: (): null => null,
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     // @ts-ignore
     Amqp.prototype.connection = {
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
-      // @ts-ignore
-      .resolves(true)
-    sinon.stub(Amqp.prototype, 'initialize')
+      .resolves(Amqp.prototype.connection as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
 
     const flowFixture = [...amqpOutFlowFixture]
     // @ts-ignore
@@ -167,13 +183,17 @@ describe('amqp-out Node', () => {
     Amqp.prototype.channel = {
       unbindQueue: (): null => null,
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     // @ts-ignore
     Amqp.prototype.connection = {
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
-    sinon.stub(Amqp.prototype, 'connect').resolves(true as any)
-    sinon.stub(Amqp.prototype, 'initialize')
+    sinon.stub(Amqp.prototype, 'connect').resolves(Amqp.prototype.connection as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
     const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
 
     helper.load(
@@ -194,11 +214,11 @@ describe('amqp-out Node', () => {
 
   it('removes listeners before switching vhost', function (done) {
     const connectionMock = {
-      removeAllListeners: sinon.spy(),
+      off: sinon.spy(),
       close: (): null => null,
     }
     const channelMock = {
-      removeAllListeners: sinon.spy(),
+      off: sinon.spy(),
       unbindQueue: (): null => null,
       close: (): null => null,
     }
@@ -229,14 +249,8 @@ describe('amqp-out Node', () => {
         const amqpOutNode = helper.getNode('n1')
         amqpOutNode.receive({ payload: 'foo', vhost: 'vh2' })
         setTimeout(() => {
-          sinon.assert.callOrder(
-            connectionMock.removeAllListeners as any,
-            setVhostStub,
-          )
-          sinon.assert.callOrder(
-            channelMock.removeAllListeners as any,
-            setVhostStub,
-          )
+          sinon.assert.callOrder(connectionMock.off as any, setVhostStub)
+          sinon.assert.callOrder(channelMock.off as any, setVhostStub)
           amqpOutNode.close()
           done()
         }, 0)
