@@ -216,6 +216,28 @@ describe('Amqp Class', () => {
     expect((Amqp as any).connectionPool.size).to.equal(0)
   })
 
+  it('close() is idempotent', async () => {
+    const connectionStub = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+
+    ;(Amqp as any).connectionPool.set('b1:vh1', {
+      connection: connectionStub,
+      count: 1,
+    })
+
+    amqp.connection = connectionStub as any
+    amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+
+    await amqp.close()
+    await amqp.close()
+
+    expect(connectionStub.close.calledOnce).to.be.true
+    expect((Amqp as any).connectionPool.size).to.equal(0)
+  })
+
   it('initialize()', async () => {
     const createChannelStub = sinon.stub()
     const assertExchangeStub = sinon.stub()

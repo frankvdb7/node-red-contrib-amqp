@@ -34,6 +34,7 @@ export default class Amqp {
   private channelErrorHandler: (e: unknown) => void
   private channelCloseHandler: () => void
   private channelReturnHandler: () => void
+  private closed = false
 
   constructor(
     private readonly RED: NodeRedApp,
@@ -126,6 +127,8 @@ export default class Amqp {
 
     this.connection.on('error', this.connectionErrorHandler)
     this.connection.on('close', this.connectionCloseHandler)
+
+    this.closed = false
 
     return this.connection
   }
@@ -363,6 +366,12 @@ export default class Amqp {
   }
 
   public async close(): Promise<void> {
+    if (this.closed) {
+      return
+    }
+
+    this.closed = true
+
     const { name: exchangeName } = this.config.exchange
     const queueName = this.q?.queue
 
