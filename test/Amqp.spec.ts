@@ -1,15 +1,17 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/ban-ts-comment */
-import { expect } from 'chai'
-import * as sinon from 'sinon'
-import * as amqplib from 'amqplib'
-import Amqp from '../src/Amqp'
-import { nodeConfigFixture, nodeFixture, brokerConfigFixture } from './doubles'
-import {
-  GenericJsonObject,
-  ExchangeType,
-  DefaultExchangeName,
-} from '../src/types'
+export {}
+const { expect } = require('chai')
+const sinon = require('sinon')
+const amqplib = require('amqplib')
+const Amqp = require('../src/Amqp').default
+const {
+  nodeConfigFixture,
+  nodeFixture,
+  brokerConfigFixture,
+} = require('./doubles')
+const { ExchangeType, DefaultExchangeName } = require('../src/types')
+import type { GenericJsonObject, BrokerConfig } from '../src/types'
 
 let RED: any
 let amqp: any
@@ -21,6 +23,8 @@ describe('Amqp Class', () => {
         getNode: sinon.stub().returns(brokerConfigFixture),
       },
     }
+
+    ;(Amqp as any).connectionPool.clear()
 
     // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, nodeConfigFixture)
@@ -127,6 +131,111 @@ describe('Amqp Class', () => {
     } catch (err) {
       expect(errorStub.calledWithMatch('AMQP broker node not found')).to.be.true
     }
+  })
+
+  describe('getBrokerUrl()', () => {
+    it('encodes credentials and vhost', () => {
+      const broker = {
+        host: 'localhost',
+        port: 5672,
+        vhost: 'foo/bar',
+        tls: false,
+        credsFromSettings: false,
+        credentials: { username: 'user@name', password: 'p@ss/word' },
+      }
+
+      const url = (amqp as any).getBrokerUrl(broker)
+
+      expect(url).to.equal(
+        'amqp://user%40name:p%40ss%2Fword@localhost:5672/foo%2Fbar',
+      )
+    })
+
+    it('falls back to root when vhost missing', () => {
+      const broker = { ...brokerConfigFixture, vhost: undefined }
+
+      const url = (amqp as any).getBrokerUrl(broker)
+
+      expect(url).to.equal('amqp://username:password@host:222/')
+    })
+  })
+
+  it('shares connection among instances for same vhost', async () => {
+    const connectionStub = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+    const connectStub = sinon
+      .stub(amqplib, 'connect')
+      .resolves(connectionStub as any)
+
+    const amqp1: any = new Amqp(RED, nodeFixture, nodeConfigFixture)
+    const amqp2: any = new Amqp(RED, nodeFixture, nodeConfigFixture)
+
+    await amqp1.connect()
+    await amqp2.connect()
+
+    expect(connectStub.calledOnce).to.be.true
+
+    await amqp1.close()
+    expect(connectionStub.close.called).to.be.false
+
+    await amqp2.close()
+    expect(connectionStub.close.calledOnce).to.be.true
+  })
+
+  it('awaits connection close before removing from pool', async () => {
+    let closed = false
+    const connectionStub = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().callsFake(
+        () =>
+          new Promise<void>(resolve =>
+            setTimeout(() => {
+              closed = true
+              resolve()
+            }, 5),
+          ),
+      ),
+    }
+
+    ;(Amqp as any).connectionPool.set('b1:vh1', {
+      connection: connectionStub,
+      count: 1,
+    })
+
+    amqp.connection = connectionStub as any
+    amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+
+    await (amqp as any).releaseConnection()
+
+    expect(connectionStub.close.calledOnce).to.be.true
+    expect(closed).to.be.true
+    expect((Amqp as any).connectionPool.size).to.equal(0)
+  })
+
+  it('close() is idempotent', async () => {
+    const connectionStub = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+
+    ;(Amqp as any).connectionPool.set('b1:vh1', {
+      connection: connectionStub,
+      count: 1,
+    })
+
+    amqp.connection = connectionStub as any
+    amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+
+    await amqp.close()
+    await amqp.close()
+
+    expect(connectionStub.close.calledOnce).to.be.true
+    expect((Amqp as any).connectionPool.size).to.equal(0)
   })
 
   it('initialize()', async () => {
@@ -259,15 +368,20 @@ describe('Amqp Class', () => {
 
     const unbindQueueStub = sinon.stub()
     const channelCloseStub = sinon.stub()
-    const connectionCloseStub = sinon.stub()
+    const connectionCloseStub = sinon.stub().resolves()
     const assertQueueStub = sinon.stub().resolves({ queue: queueName })
 
     amqp.channel = {
       unbindQueue: unbindQueueStub,
       close: channelCloseStub,
       assertQueue: assertQueueStub,
+      off: sinon.stub(),
     }
-    amqp.connection = { close: connectionCloseStub }
+    amqp.connection = { close: connectionCloseStub, off: sinon.stub() }
+    ;(Amqp as any).connectionPool.set('b1:undefined', {
+      connection: amqp.connection,
+      count: 1,
+    })
     await amqp.assertQueue()
 
     await amqp.close()
@@ -284,7 +398,7 @@ describe('Amqp Class', () => {
     const queueName = 'queueName'
     const unbindQueueStub = sinon.stub()
     const channelCloseStub = sinon.stub().rejects(new Error('channel fail'))
-    const connectionCloseStub = sinon.stub()
+    const connectionCloseStub = sinon.stub().resolves()
     const errorStub = sinon.stub()
     const assertQueueStub = sinon.stub().resolves({ queue: queueName })
 
@@ -292,8 +406,13 @@ describe('Amqp Class', () => {
       unbindQueue: unbindQueueStub,
       close: channelCloseStub,
       assertQueue: assertQueueStub,
+      off: sinon.stub(),
     }
-    amqp.connection = { close: connectionCloseStub }
+    amqp.connection = { close: connectionCloseStub, off: sinon.stub() }
+    ;(Amqp as any).connectionPool.set('b1:undefined', {
+      connection: amqp.connection,
+      count: 1,
+    })
     amqp.node = { error: errorStub }
     await amqp.assertQueue()
 
@@ -507,5 +626,73 @@ describe('Amqp Class', () => {
     await amqp.consume()
     expect(consumeStub.called).to.equal(false)
     expect(errorStub.calledOnce).to.equal(true)
+  })
+
+  describe('setVhost()', () => {
+    it('reconnects when vhost changes', async () => {
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+      const closeStub = sinon.stub(amqp, 'close').resolves()
+      const connectStub = sinon.stub(amqp, 'connect').resolves()
+      const initStub = sinon.stub(amqp, 'initialize').resolves()
+
+      await amqp.setVhost('vh2')
+
+      expect(closeStub.calledOnce).to.equal(true)
+      expect(connectStub.calledOnce).to.equal(true)
+      expect(initStub.calledOnce).to.equal(true)
+      expect((amqp.broker as BrokerConfig).vhost).to.equal('vh1')
+      expect((amqp as any).vhostOverride).to.equal('vh2')
+    })
+
+    it('does nothing when vhost is unchanged', async () => {
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+      const closeStub = sinon.stub(amqp, 'close').resolves()
+      const connectStub = sinon.stub(amqp, 'connect').resolves()
+      const initStub = sinon.stub(amqp, 'initialize').resolves()
+
+      await amqp.setVhost('vh1')
+
+      expect(closeStub.called).to.equal(false)
+      expect(connectStub.called).to.equal(false)
+      expect(initStub.called).to.equal(false)
+      expect((amqp as any).vhostOverride).to.be.undefined
+    })
+
+    it('does not mutate shared broker config', async () => {
+      const sharedBroker = { ...brokerConfigFixture, vhost: 'vh1' }
+      amqp.broker = sharedBroker
+      const closeStub = sinon.stub(amqp, 'close').resolves()
+      const connectStub = sinon.stub(amqp, 'connect').resolves()
+      const initStub = sinon.stub(amqp, 'initialize').resolves()
+
+      await amqp.setVhost('vh2')
+
+      expect(sharedBroker.vhost).to.equal('vh1')
+      expect((amqp as any).vhostOverride).to.equal('vh2')
+      expect(closeStub.calledOnce).to.equal(true)
+      expect(connectStub.calledOnce).to.equal(true)
+      expect(initStub.calledOnce).to.equal(true)
+    })
+
+    it('allows separate instances to target different vhosts', async () => {
+      const sharedBroker = { ...brokerConfigFixture, vhost: 'vh1' }
+      const amqp1: any = new Amqp(RED, nodeFixture, nodeConfigFixture)
+      const amqp2: any = new Amqp(RED, nodeFixture, nodeConfigFixture)
+      amqp1.broker = sharedBroker
+      amqp2.broker = sharedBroker
+      sinon.stub(amqp1, 'close').resolves()
+      sinon.stub(amqp1, 'connect').resolves()
+      sinon.stub(amqp1, 'initialize').resolves()
+      sinon.stub(amqp2, 'close').resolves()
+      sinon.stub(amqp2, 'connect').resolves()
+      sinon.stub(amqp2, 'initialize').resolves()
+
+      await amqp1.setVhost('vh2')
+      await amqp2.setVhost('vh3')
+
+      expect(amqp1.vhostOverride).to.equal('vh2')
+      expect(amqp2.vhostOverride).to.equal('vh3')
+      expect(sharedBroker.vhost).to.equal('vh1')
+    })
   })
 })

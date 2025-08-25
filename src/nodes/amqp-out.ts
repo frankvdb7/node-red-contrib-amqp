@@ -13,11 +13,14 @@ module.exports = function (RED: NodeRedApp): void {
     },
   ): void {
     let reconnectTimeout: NodeJS.Timeout
-    let reconnect = null;
-    let connection = null;
-    let channel = null;
-	let me = this;
-
+    let reconnect = null
+    let connection = null
+    let channel = null
+    let onConnClose: (e: unknown) => Promise<void>
+    let onConnError: (e: unknown) => Promise<void>
+    let onChannelClose: () => Promise<void>
+    let onChannelError: (e: unknown) => Promise<void>
+    const me = this
 
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore
@@ -28,12 +31,71 @@ module.exports = function (RED: NodeRedApp): void {
 
     const amqp = new Amqp(RED, this, configAmqp)
 
-    const reconnectOnError = configAmqp.reconnectOnError;
+    const reconnectOnError = configAmqp.reconnectOnError
 
+    const removeEventListeners = (): void => {
+      connection?.off?.('close', onConnClose)
+      connection?.off?.('error', onConnError)
+      channel?.off?.('close', onChannelClose)
+      channel?.off?.('error', onChannelError)
+    }
 
-    // handle input event;
+    const setupEventListeners = (nodeIns): void => {
+      onConnClose = async e => {
+        e && (await reconnect())
+      }
+
+      onConnError = async e => {
+        reconnectOnError && (await reconnect())
+        nodeIns.error(`Connection error ${e}`, {
+          payload: { error: e, location: ErrorLocationEnum.ConnectionErrorEvent },
+        })
+      }
+
+      onChannelClose = async () => {
+        await reconnect()
+      }
+
+      onChannelError = async e => {
+        reconnectOnError && (await reconnect())
+        nodeIns.error(`Channel error ${e}`, {
+          payload: { error: e, location: ErrorLocationEnum.ChannelErrorEvent },
+        })
+      }
+
+      connection.on('close', onConnClose)
+      connection.on('error', onConnError)
+      channel.on('close', onChannelClose)
+      channel.on('error', onChannelError)
+    }
+
+    const handleError = async (e, nodeIns): Promise<void> => {
+      if (
+        e.code === ErrorType.InvalidLogin ||
+        /ACCESS_REFUSED/i.test(e.message || '')
+      ) {
+        nodeIns.status(NODE_STATUS.Invalid)
+        nodeIns.error(`AmqpOut() Could not connect to broker ${e}`, {
+          payload: { error: e, location: ErrorLocationEnum.ConnectError },
+        })
+      } else if (
+        e.code === ErrorType.ConnectionRefused ||
+        e.code === ErrorType.DnsResolve ||
+        e.code === ErrorType.HostNotFound ||
+        e.isOperational
+      ) {
+        reconnectOnError && (await reconnect())
+      } else {
+        nodeIns.status(NODE_STATUS.Error)
+        nodeIns.error(`AmqpOut() ${e}`, {
+          payload: { error: e, location: ErrorLocationEnum.ConnectError },
+        })
+      }
+    }
+
+    // handle input event
     const inputListener = async (msg, _, done) => {
-      const { payload, routingKey, properties: msgProperties } = msg
+      const { payload, routingKey, vhost, properties: msgProperties } = msg
       const {
         exchangeRoutingKey,
         exchangeRoutingKeyType,
@@ -102,6 +164,19 @@ module.exports = function (RED: NodeRedApp): void {
           break
       }
 
+      if (vhost) {
+        try {
+          removeEventListeners()
+          await amqp.setVhost(vhost)
+          connection = amqp.getConnection()
+          channel = amqp.getChannel()
+          setupEventListeners(me)
+          me.status(NODE_STATUS.Connected)
+        } catch (e) {
+          await handleError(e, me)
+        }
+      }
+
       if (!!properties?.headers?.doNotStringifyPayload) {
         amqp.publish(payload, properties)
       } else {
@@ -115,48 +190,19 @@ module.exports = function (RED: NodeRedApp): void {
     // When the node is re-deployed
     this.on('close', async (done: () => void): Promise<void> => {
       clearTimeout(reconnectTimeout)
+      removeEventListeners()
       await amqp.close()
       done && done()
     })
 
     async function initializeNode(nodeIns) {
       reconnect = async () => {
-        // check the channel and clear all the event listener
-		try {
-        if (channel && channel.removeAllListeners) {
-          channel.removeAllListeners()
-			  channel.close()
-				.catch(err => {
-					// produce very lengthy messages...
-					//me.error(`Error closing channel: ${JSON.stringify(err)}`);
-				});
+        removeEventListeners()
+        await amqp.close()
+        channel = null
+        connection = null
 
-			  //channel = null;
-			}
-		} catch (error) {
-		  // catch and suppress error
-		  me.error('Error occurred:', error);
-		}
-          channel = null;
-		
-		try {
-        // check the connection and clear all the event listener
-        if (connection && connection.removeAllListeners) {
-          connection.removeAllListeners()
-			  connection.close()
-				.catch(err => {
-					me.error('Error closing connection:', err);
-				});
-			  //connection = null;
-			}
-		} catch (error) {
-		  // catch and suppress error
-		  me.error('Error occurred:', error);
-		}
-          connection = null;
-
-        // always clear timer before set it;
-        clearTimeout(reconnectTimeout);
+        clearTimeout(reconnectTimeout)
         reconnectTimeout = setTimeout(() => {
           try {
             initializeNode(nodeIns)
@@ -165,60 +211,16 @@ module.exports = function (RED: NodeRedApp): void {
           }
         }, 2000)
       }
-  
+
       try {
         connection = await amqp.connect()
-
-        // istanbul ignore else
         if (connection) {
           channel = await amqp.initialize()
-
-          // When the server goes down
-          connection.on('close', async e => {
-            e && (await reconnect())
-          })
-          
-          // When the connection goes down
-          connection.on('error', async e => {
-            reconnectOnError && (await reconnect())
-            nodeIns.error(`Connection error ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectionErrorEvent } })
-          })
-
-          // When the channel goes down
-          channel.on('close', async () => {
-            await reconnect()
-          })
-
-          // When the channel error occur
-          channel.on('error', async e => {
-            reconnectOnError && (await reconnect())
-            nodeIns.error(`Channel error ${e}`, { payload: { error: e, location: ErrorLocationEnum.ChannelErrorEvent } })
-          })
-          
+          setupEventListeners(nodeIns)
           nodeIns.status(NODE_STATUS.Connected)
         }
       } catch (e) {
-        if (
-          e.code === ErrorType.InvalidLogin ||
-          /ACCESS_REFUSED/i.test(e.message || '')
-        ) {
-          nodeIns.status(NODE_STATUS.Invalid)
-          nodeIns.error(`AmqpOut() Could not connect to broker ${e}`, {
-            payload: { error: e, location: ErrorLocationEnum.ConnectError },
-          })
-        } else if (
-          e.code === ErrorType.ConnectionRefused ||
-          e.code === ErrorType.DnsResolve ||
-          e.code === ErrorType.HostNotFound ||
-          e.isOperational
-        ) {
-          reconnectOnError && (await reconnect())
-        } else {
-          nodeIns.status(NODE_STATUS.Error)
-          nodeIns.error(`AmqpOut() ${e}`, {
-            payload: { error: e, location: ErrorLocationEnum.ConnectError },
-          })
-        }
+        await handleError(e, nodeIns)
       }
     }
 

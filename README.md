@@ -20,8 +20,14 @@ npm i @frankvdb/node-red-contrib-amqp
 
 ## Usage
 
-Provides three nodes and an amqp broker config node.  
+Provides three nodes and an amqp broker config node.
 Please see the `Node Help` section from within node-red for more info
+
+### Dynamic Virtual Host
+
+The virtual host used by the `amqp-out` node can be changed at runtime by setting `msg.vhost` on the incoming message. When provided, the node will reconnect to the specified RabbitMQ virtual host before publishing the message. Connections are pooled per virtual host so nodes targeting the same vhost share a single connection, while nodes targeting different vhosts operate independently.
+
+**Note:** Changing `msg.vhost` only affects the current `amqp-out` node. Other nodes using the same broker keep their configured virtual hosts.
 
 ## Development
 

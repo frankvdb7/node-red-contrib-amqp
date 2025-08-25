@@ -10,9 +10,9 @@
     "build:production": "rimraf build/* --glob && tsc --sourceMap false -p . && npm run copyassets",
     "copyassets": "copyfiles -f src/nodes/**/*.html build/src/nodes && copyfiles -f src/nodes/icons/* build/src/nodes/icons",
     "lint": "eslint \"src/**\"",
-    "test": "npm run build && mocha",
+    "test": "npm run build && node scripts/run-tests.js",
     "test:watch": "mocha -w",
-    "test:cov": "npm run build && nyc mocha"
+    "test:cov": "npm run build && nyc node scripts/run-tests.js"
   },
   "keywords": [
     "node-red",
@@ -51,7 +51,7 @@
   "devDependencies": {
     "@istanbuljs/nyc-config-typescript": "^1.0.2",
     "@types/amqplib": "^0.10.7",
-    "@types/chai": "^5.2.2",
+    "@types/chai": "^4.3.11",
     "@types/lodash.clonedeep": "^4.5.9",
     "@types/mocha": "^10.0.10",
     "@types/node": "^24.0.13",
@@ -59,12 +59,12 @@
     "@types/sinon": "^17.0.4",
     "@typescript-eslint/eslint-plugin": "^8.33.1",
     "@typescript-eslint/parser": "^8.33.1",
-    "chai": "^5.2.0",
+    "chai": "^4.3.7",
     "copyfiles": "^2.4.1",
     "eslint": "^9.28.0",
     "eslint-config-prettier": "^10.1.5",
     "eslint-plugin-prettier": "^5.4.1",
-    "mocha": "^11.5.0",
+    "mocha": "^10.2.0",
     "node-red": "^4.0.9",
     "node-red-node-test-helper": "^0.3.4",
     "nodemon": "^3.1.10",

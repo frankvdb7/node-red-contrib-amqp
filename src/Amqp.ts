@@ -1,6 +1,6 @@
 import { NodeRedApp, Node } from 'node-red'
 import { v4 as uuidv4 } from 'uuid'
-import cloneDeep = require('lodash.clonedeep')
+import cloneDeep from 'lodash.clonedeep'
 import {
   ChannelModel,
   Channel,
@@ -27,6 +27,14 @@ export default class Amqp {
   private connection: ChannelModel
   private channel: Channel
   private q: Replies.AssertQueue
+  private vhostOverride?: string
+  private static connectionPool: Map<string, { connection: ChannelModel; count: number }> = new Map()
+  private connectionErrorHandler: (e: unknown) => void
+  private connectionCloseHandler: () => void
+  private channelErrorHandler: (e: unknown) => void
+  private channelCloseHandler: () => void
+  private channelReturnHandler: () => void
+  private closed = false
 
   constructor(
     private readonly RED: NodeRedApp,
@@ -76,32 +84,51 @@ export default class Amqp {
       throw err
     }
 
-    const brokerUrl = this.getBrokerUrl(this.broker)
-    const { host, port, vhost } = this.broker as unknown as BrokerConfig
-
-    const brokerInfo = `${host}:${port}${vhost ? `/${vhost}` : ''}`
-    this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
-
-    try {
-      this.connection = await connect(brokerUrl, { heartbeat: 2 })
-      this.node.log(`Connected to AMQP broker ${brokerInfo}`)
-    } catch (err) {
-      this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
-      throw err
+    const brokerConfig: BrokerConfig = {
+      ...(this.broker as unknown as BrokerConfig),
+      vhost:
+        this.vhostOverride ?? (this.broker as unknown as BrokerConfig).vhost,
     }
 
-    /* istanbul ignore next */
-    this.connection.on('error', (e): void => {
-      // Set node to disconnected status
+    const brokerUrl = this.getBrokerUrl(brokerConfig)
+    const { host, port, vhost } = brokerConfig
+
+    const brokerInfo = `${host}:${port}${vhost ? `/${vhost}` : ''}`
+    const key = `${broker}:${vhost}`
+
+    let entry = Amqp.connectionPool.get(key)
+    if (!entry) {
+      this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
+      try {
+        const connection = await connect(brokerUrl, { heartbeat: 2 })
+        this.node.log(`Connected to AMQP broker ${brokerInfo}`)
+        entry = { connection, count: 0 }
+        Amqp.connectionPool.set(key, entry)
+      } catch (err) {
+        this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
+        throw err
+      }
+    }
+
+    entry.count += 1
+    this.connection = entry.connection
+
+    this.connectionErrorHandler = (e): void => {
+      /* istanbul ignore next */
       this.node.status(NODE_STATUS.Disconnected)
       this.node.warn(`AMQP connection error ${e}`)
-    })
+    }
 
-    /* istanbul ignore next */
-    this.connection.on('close', () => {
+    this.connectionCloseHandler = (): void => {
+      /* istanbul ignore next */
       this.node.status(NODE_STATUS.Disconnected)
-      this.node.log(`AMQP Connection closed`);
-    })
+      this.node.log(`AMQP Connection closed`)
+    }
+
+    this.connection.on('error', this.connectionErrorHandler)
+    this.connection.on('close', this.connectionCloseHandler)
+
+    this.closed = false
 
     return this.connection
   }
@@ -136,6 +163,33 @@ export default class Amqp {
 
   public setRoutingKey(newRoutingKey: string): void {
     this.config.exchange.routingKey = newRoutingKey
+  }
+
+  public async setVhost(newVhost: string): Promise<void> {
+    const broker = this.broker as unknown as BrokerConfig
+    const currentVhost = this.vhostOverride ?? broker?.vhost
+
+    if (!broker || currentVhost === newVhost) {
+      return
+    }
+
+    try {
+      await this.close()
+      this.vhostOverride = newVhost
+      await this.connect()
+      await this.initialize()
+    } catch (e) {
+      this.node.error(`Could not switch vhost: ${e}`)
+      throw e
+    }
+  }
+
+  public getConnection(): ChannelModel {
+    return this.connection
+  }
+
+  public getChannel(): Channel {
+    return this.channel
   }
 
   public ack(msg: AssembledMessage): void {
@@ -312,6 +366,12 @@ export default class Amqp {
   }
 
   public async close(): Promise<void> {
+    if (this.closed) {
+      return
+    }
+
+    this.closed = true
+
     const { name: exchangeName } = this.config.exchange
     const queueName = this.q?.queue
 
@@ -338,6 +398,9 @@ export default class Amqp {
     }
 
     if (this.channel) {
+      this.channel.off('error', this.channelErrorHandler)
+      this.channel.off('close', this.channelCloseHandler)
+      this.channel.off('return', this.channelReturnHandler)
       try {
         await this.channel.close()
       } catch (e) {
@@ -345,11 +408,31 @@ export default class Amqp {
       }
     }
 
+    await this.releaseConnection()
+  }
+
+  private async releaseConnection(): Promise<void> {
+    const brokerId = this.config.broker
+    const broker = this.broker as unknown as BrokerConfig
+    const vhost = this.vhostOverride ?? broker?.vhost
+    const key = `${brokerId}:${vhost}`
+
     if (this.connection) {
-      try {
-        await this.connection.close()
-      } catch (e) {
-        this.node.error(`Error closing AMQP connection: ${e}`)
+      this.connection.off('error', this.connectionErrorHandler)
+      this.connection.off('close', this.connectionCloseHandler)
+    }
+
+    const entry = Amqp.connectionPool.get(key)
+    if (entry) {
+      entry.count -= 1
+      if (entry.count <= 0) {
+        Amqp.connectionPool.delete(key)
+        try {
+          await entry.connection.close()
+        } catch (e) {
+          /* istanbul ignore next */
+          this.node.error(`Error closing AMQP connection: ${e}`)
+        }
       }
     }
   }
@@ -360,23 +443,26 @@ export default class Amqp {
     this.channel = await this.connection.createChannel()
     this.channel.prefetch(Number(prefetch))
 
-    /* istanbul ignore next */
-    this.channel.on('error', (e): void => {
-      // Set node to disconnected status
+    this.channelErrorHandler = (e): void => {
+      /* istanbul ignore next */
       this.node.status(NODE_STATUS.Disconnected)
       this.node.error(`AMQP Connection Error ${e}`, { payload: { error: e, source: 'Amqp' } })
-    })
+    }
 
-    /* istanbul ignore next */
-    this.channel.on('close', (): void => {
+    this.channelCloseHandler = (): void => {
+      /* istanbul ignore next */
       this.node.status(NODE_STATUS.Disconnected)
       this.node.log('AMQP Channel closed')
-    })
+    }
 
-    /* istanbul ignore next */
-    this.channel.on('return', (): void => {
+    this.channelReturnHandler = (): void => {
+      /* istanbul ignore next */
       this.node.warn('AMQP Message returned')
-    })
+    }
+
+    this.channel.on('error', this.channelErrorHandler)
+    this.channel.on('close', this.channelCloseHandler)
+    this.channel.on('return', this.channelReturnHandler)
 
     return this.channel;
   }
@@ -438,21 +524,21 @@ export default class Amqp {
     return type === ExchangeType.Direct || type === ExchangeType.Topic
   }
 
-  private getBrokerUrl(broker: Node): string {
+  private getBrokerUrl(broker: BrokerConfig): string {
     let url = ''
 
     if (broker) {
-      const { host, port, vhost, tls, credsFromSettings, credentials } =
-        broker as unknown as BrokerConfig
+      const { host, port, vhost, tls, credsFromSettings, credentials } = broker
 
       const { username, password } = credsFromSettings
         ? this.getCredsFromSettings()
         : credentials
 
       const protocol = tls ? /* istanbul ignore next */ 'amqps' : 'amqp'
+      const vhostPath = vhost ? `/${encodeURIComponent(vhost)}` : '/'
       url = `${protocol}://${encodeURIComponent(username)}:${encodeURIComponent(
         password,
-      )}@${host}:${port}/${vhost}`
+      )}@${host}:${port}${vhostPath}`
     }
 
     return url

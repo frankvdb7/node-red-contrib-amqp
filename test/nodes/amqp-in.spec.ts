@@ -1,11 +1,12 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 /* eslint-disable @typescript-eslint/ban-ts-comment */
-import { expect } from 'chai'
-import * as sinon from 'sinon'
-import Amqp from '../../src/Amqp'
-import { ErrorType, NodeType } from '../../src/types'
-import { CustomError, amqpInFlowFixture, credentialsFixture } from '../doubles'
-import { NODE_STATUS } from '../../src/constants'
+export {}
+const { expect } = require('chai')
+const sinon = require('sinon')
+const Amqp = require('../../src/Amqp').default
+const { ErrorType, NodeType } = require('../../src/types')
+const { CustomError, amqpInFlowFixture, credentialsFixture } = require('../doubles')
+const { NODE_STATUS } = require('../../src/constants')
 
 const helper = require('node-red-node-test-helper')
 const amqpIn = require('../../src/nodes/amqp-in')
@@ -68,8 +69,14 @@ describe('amqp-in Node', () => {
   })
 
   it('does not register flows:stopped listener', function (done) {
-    sinon.stub(Amqp.prototype, 'connect').resolves(true as any)
-    sinon.stub(Amqp.prototype, 'initialize')
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .resolves(connectionMock as any)
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .resolves(channelMock as any)
 
     helper.load(
       [amqpIn, amqpBroker],

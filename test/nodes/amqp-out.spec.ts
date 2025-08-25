@@ -1,11 +1,12 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 /* eslint-disable @typescript-eslint/ban-ts-comment */
-import { expect } from 'chai'
-import * as sinon from 'sinon'
-import Amqp from '../../src/Amqp'
-import { ErrorType, NodeType } from '../../src/types'
-import { CustomError, amqpOutFlowFixture, credentialsFixture } from '../doubles'
-import { NODE_STATUS } from '../../src/constants'
+export {}
+const { expect } = require('chai')
+const sinon = require('sinon')
+const Amqp = require('../../src/Amqp').default
+const { ErrorType, NodeType } = require('../../src/types')
+const { CustomError, amqpOutFlowFixture, credentialsFixture } = require('../doubles')
+const { NODE_STATUS } = require('../../src/constants')
 
 const helper = require('node-red-node-test-helper')
 const amqpOut = require('../../src/nodes/amqp-out')
@@ -39,16 +40,19 @@ describe('amqp-out Node', () => {
     Amqp.prototype.channel = {
       unbindQueue: (): null => null,
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     // @ts-ignore
     Amqp.prototype.connection = {
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
-      // @ts-ignore
-      .resolves(true)
-    sinon.stub(Amqp.prototype, 'initialize')
+      .resolves(Amqp.prototype.connection as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
 
     helper.load(
       [amqpOut, amqpBroker],
@@ -70,8 +74,14 @@ describe('amqp-out Node', () => {
   })
 
   it('does not register flows:stopped listener', function (done) {
-    sinon.stub(Amqp.prototype, 'connect').resolves(true as any)
-    sinon.stub(Amqp.prototype, 'initialize')
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .resolves(connectionMock as any)
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .resolves(channelMock as any)
 
     helper.load(
       [amqpOut, amqpBroker],
@@ -91,16 +101,19 @@ describe('amqp-out Node', () => {
     Amqp.prototype.channel = {
       unbindQueue: (): null => null,
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     // @ts-ignore
     Amqp.prototype.connection = {
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
-      // @ts-ignore
-      .resolves(true)
-    sinon.stub(Amqp.prototype, 'initialize')
+      .resolves(Amqp.prototype.connection as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
 
     const flowFixture = [...amqpOutFlowFixture]
     // @ts-ignore
@@ -129,16 +142,19 @@ describe('amqp-out Node', () => {
     Amqp.prototype.channel = {
       unbindQueue: (): null => null,
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     // @ts-ignore
     Amqp.prototype.connection = {
       close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
     }
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
-      // @ts-ignore
-      .resolves(true)
-    sinon.stub(Amqp.prototype, 'initialize')
+      .resolves(Amqp.prototype.connection as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
 
     const flowFixture = [...amqpOutFlowFixture]
     // @ts-ignore
@@ -158,6 +174,86 @@ describe('amqp-out Node', () => {
         amqpOutNode.close()
 
         done()
+      },
+    )
+  })
+
+  it('switches vhost dynamically from msg', function (done) {
+    // @ts-ignore
+    Amqp.prototype.channel = {
+      unbindQueue: (): null => null,
+      close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
+    }
+    // @ts-ignore
+    Amqp.prototype.connection = {
+      close: (): null => null,
+      off: (): null => null,
+      on: (): null => null,
+    }
+    sinon.stub(Amqp.prototype, 'connect').resolves(Amqp.prototype.connection as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
+    const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
+
+    helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+      function () {
+        const amqpOutNode = helper.getNode('n1')
+        amqpOutNode.receive({ payload: 'foo', vhost: 'vh2' })
+        setTimeout(() => {
+          expect(setVhostStub.calledWith('vh2')).to.be.true
+          amqpOutNode.close()
+          done()
+        }, 0)
+      },
+    )
+  })
+
+  it('removes listeners before switching vhost', function (done) {
+    const connectionMock = {
+      off: sinon.spy(),
+      close: (): null => null,
+    }
+    const channelMock = {
+      off: sinon.spy(),
+      unbindQueue: (): null => null,
+      close: (): null => null,
+    }
+
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .callsFake(async function () {
+        // @ts-ignore
+        this.connection = connectionMock
+        return connectionMock as any
+      })
+
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .callsFake(async function () {
+        // @ts-ignore
+        this.channel = channelMock
+        return channelMock as any
+      })
+
+    const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
+
+    helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+      function () {
+        const amqpOutNode = helper.getNode('n1')
+        amqpOutNode.receive({ payload: 'foo', vhost: 'vh2' })
+        setTimeout(() => {
+          sinon.assert.callOrder(connectionMock.off as any, setVhostStub)
+          sinon.assert.callOrder(channelMock.off as any, setVhostStub)
+          amqpOutNode.close()
+          done()
+        }, 0)
       },
     )
   })
