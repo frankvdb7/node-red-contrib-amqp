@@ -27,6 +27,8 @@ Please see the `Node Help` section from within node-red for more info
 
 The virtual host used by the `amqp-out` node can be changed at runtime by setting `msg.vhost` on the incoming message. When provided, the node will reconnect to the specified RabbitMQ virtual host before publishing the message. Connections are pooled per virtual host so nodes targeting the same vhost share a single connection, while nodes targeting different vhosts operate independently.
 
+**Note:** This action modifies the shared broker configuration. Any other nodes using the same broker will also connect to the new virtual host on their next reconnection.
+
 ## Development
 
 ### Build the project
