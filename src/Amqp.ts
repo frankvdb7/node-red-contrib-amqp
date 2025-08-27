@@ -578,7 +578,7 @@ export default class Amqp {
   }
 
   private assembleMessage(amqpMessage: ConsumeMessage): AssembledMessage {
-    const payload = this.parseJson(amqpMessage.content.toString())
+    const payload = this.parseJson(amqpMessage.content.toString(), true)
     ;(amqpMessage as AssembledMessage).payload = payload
     return amqpMessage as AssembledMessage
   }
@@ -587,12 +587,16 @@ export default class Amqp {
     return this.node.type === NodeType.AmqpInManualAck
   }
 
-  private parseJson(jsonInput: unknown): GenericJsonObject {
+  private parseJson(jsonInput: unknown, logError = false): GenericJsonObject {
     let output: unknown
     try {
       output = JSON.parse(jsonInput as string)
-    } catch {
+    } catch (e) {
       output = jsonInput
+      /* istanbul ignore next */
+      if (logError) {
+        this.node.error(`Invalid JSON payload: ${e}`)
+      }
     }
     return output
   }

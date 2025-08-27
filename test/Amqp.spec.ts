@@ -299,6 +299,20 @@ describe('Amqp Class', () => {
     expect(result).to.have.property('payload').that.deep.equals({ a: 1 })
   })
 
+  it('assembleMessage logs error when payload is invalid JSON', () => {
+    const amqpMessage: any = {
+      content: Buffer.from('{invalid'),
+      fields: { deliveryTag: 1 },
+      properties: {},
+    }
+    const errorStub = sinon.stub()
+    amqp.node = { ...nodeFixture, error: errorStub }
+    const result = (amqp as any).assembleMessage(amqpMessage)
+    expect(result).to.equal(amqpMessage)
+    expect(result).to.have.property('payload', '{invalid')
+    expect(errorStub.calledWithMatch('Invalid JSON payload')).to.be.true
+  })
+
   it('ack() logs and delegates to channel', () => {
     const logStub = sinon.stub()
     const ackStub = sinon.stub()
