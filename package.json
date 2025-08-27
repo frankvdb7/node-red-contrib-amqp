@@ -1,7 +1,7 @@
 {
   "name": "@frankvdb/node-red-contrib-amqp",
   "license": "ISC",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "RabbitMQ nodes for node-red",
   "main": "index.js",
   "scripts": {
