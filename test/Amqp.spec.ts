@@ -256,7 +256,9 @@ describe('Amqp Class', () => {
     const messageContent = 'messageContent'
     const send = sinon.stub()
     const error = sinon.stub()
-    const node = { send, error }
+    const log = sinon.stub()
+    const ack = sinon.stub()
+    const node = { send, error, log }
     const channel = {
       consume: function (
         queue: string,
@@ -264,26 +266,62 @@ describe('Amqp Class', () => {
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         config: GenericJsonObject,
       ): void {
-        const amqpMessage = { content: messageContent }
+        const amqpMessage = { content: messageContent, fields: { deliveryTag: 1 } }
         cb(amqpMessage)
       },
+      ack,
     }
-    amqp.channel = channel
+    amqp.channel = channel as any
     amqp.assertQueue = assertQueueStub
     amqp.bindQueue = bindQueueStub
-    amqp.q = { queue: 'queueName' }
-    amqp.node = node
+    amqp.q = { queue: 'queueName' } as any
+    amqp.node = node as any
 
     await amqp.consume()
     expect(assertQueueStub.calledOnce).to.equal(true)
     expect(bindQueueStub.calledOnce).to.equal(true)
     expect(send.calledOnce).to.equal(true)
+    expect(log.calledWithMatch('Received message')).to.equal(true)
+    expect(ack.calledOnce).to.equal(true)
     expect(
       send.calledWith({
         content: messageContent,
+        fields: { deliveryTag: 1 },
         payload: messageContent,
       }),
     ).to.equal(true)
+  })
+
+  it('assembleMessage retains reference and parses payload', () => {
+    const amqpMessage: any = { content: Buffer.from('{"a":1}'), fields: { deliveryTag: 1 }, properties: {} }
+    const result = (amqp as any).assembleMessage(amqpMessage)
+    expect(result).to.equal(amqpMessage)
+    expect(result).to.have.property('payload').that.deep.equals({ a: 1 })
+  })
+
+  it('assembleMessage logs error when payload is invalid JSON', () => {
+    const amqpMessage: any = {
+      content: Buffer.from('{invalid'),
+      fields: { deliveryTag: 1 },
+      properties: {},
+    }
+    const errorStub = sinon.stub()
+    amqp.node = { ...nodeFixture, error: errorStub }
+    const result = (amqp as any).assembleMessage(amqpMessage)
+    expect(result).to.equal(amqpMessage)
+    expect(result).to.have.property('payload', '{invalid')
+    expect(errorStub.calledWithMatch('Invalid JSON payload')).to.be.true
+  })
+
+  it('ack() logs and delegates to channel', () => {
+    const logStub = sinon.stub()
+    const ackStub = sinon.stub()
+    amqp.node = { ...nodeFixture, log: logStub, error: sinon.stub() }
+    amqp.channel = { ack: ackStub } as any
+    const msg: any = { fields: { deliveryTag: 5 } }
+    amqp.ack(msg)
+    expect(ackStub.calledOnceWith(msg, false)).to.be.true
+    expect(logStub.calledWithMatch('Acking message')).to.be.true
   })
 
   describe('publish()', () => {
