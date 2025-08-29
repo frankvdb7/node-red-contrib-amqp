@@ -5,7 +5,7 @@
     "removeComments": false,
     "target": "es2017",
     "sourceMap": true,
-    "outDir": "build",
+    "outDir": "build/src",
     "baseUrl": "./",
     "incremental": true,
     "skipLibCheck": true,

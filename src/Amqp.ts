@@ -148,6 +148,9 @@ export default class Amqp {
         this.q.queue,
         amqpMessage => {
           const msg = this.assembleMessage(amqpMessage)
+          this.node.log(
+            `Received message with deliveryTag: ${msg?.fields?.deliveryTag}`,
+          )
           this.node.send(msg)
           /* istanbul ignore else */
           if (!noAck && !this.isManualAck()) {
@@ -195,6 +198,7 @@ export default class Amqp {
   public ack(msg: AssembledMessage): void {
     const allUpTo = !!msg.manualAck?.allUpTo
     try {
+      this.node.log(`Acking message with deliveryTag: ${msg?.fields?.deliveryTag}`)
       this.channel.ack(msg, allUpTo)
     } catch (e) {
       this.node.error(`Could not ack message: ${e}`)
@@ -203,6 +207,7 @@ export default class Amqp {
 
   public ackAll(): void {
     try {
+      this.node.log('Acking all outstanding messages')
       this.channel.ackAll()
     } catch (e) {
       this.node.error(`Could not ackAll messages: ${e}`)
@@ -213,6 +218,9 @@ export default class Amqp {
     const allUpTo = !!msg.manualAck?.allUpTo
     const requeue = msg.manualAck?.requeue ?? true
     try {
+      this.node.log(
+        `Nacking message with deliveryTag: ${msg?.fields?.deliveryTag}`,
+      )
       this.channel.nack(msg, allUpTo, requeue)
     } catch (e) {
       this.node.error(`Could not nack message: ${e}`)
@@ -222,6 +230,7 @@ export default class Amqp {
   public nackAll(msg: AssembledMessage): void {
     const requeue = msg.manualAck?.requeue ?? true
     try {
+      this.node.log('Nacking all outstanding messages')
       this.channel.nackAll(requeue)
     } catch (e) {
       this.node.error(`Could not nackAll messages: ${e}`)
@@ -231,6 +240,9 @@ export default class Amqp {
   public reject(msg: AssembledMessage): void {
     const requeue = msg.manualAck?.requeue ?? true
     try {
+      this.node.log(
+        `Rejecting message with deliveryTag: ${msg?.fields?.deliveryTag}`,
+      )
       this.channel.reject(msg, requeue)
     } catch (e) {
       this.node.error(`Could not reject message: ${e}`)
@@ -566,24 +578,25 @@ export default class Amqp {
   }
 
   private assembleMessage(amqpMessage: ConsumeMessage): AssembledMessage {
-    const payload = this.parseJson(amqpMessage.content.toString())
-
-    return {
-      ...amqpMessage,
-      payload,
-    }
+    const payload = this.parseJson(amqpMessage.content.toString(), true)
+    ;(amqpMessage as AssembledMessage).payload = payload
+    return amqpMessage as AssembledMessage
   }
 
   private isManualAck(): boolean {
     return this.node.type === NodeType.AmqpInManualAck
   }
 
-  private parseJson(jsonInput: unknown): GenericJsonObject {
+  private parseJson(jsonInput: unknown, logError = false): GenericJsonObject {
     let output: unknown
     try {
       output = JSON.parse(jsonInput as string)
-    } catch {
+    } catch (e) {
       output = jsonInput
+      /* istanbul ignore next */
+      if (logError) {
+        this.node.error(`Invalid JSON payload: ${e}`)
+      }
     }
     return output
   }
