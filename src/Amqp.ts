@@ -305,10 +305,7 @@ export default class Amqp {
       )
 
       if (config.waitForConfirms) {
-        const confirmChannel = this.channel as ConfirmChannel
-        if (typeof confirmChannel.waitForConfirms === 'function') {
-          await confirmChannel.waitForConfirms()
-        }
+        await (this.channel as ConfirmChannel).waitForConfirms()
       }
     } catch (e) {
       this.node.error(`Could not publish message: ${e}`)
