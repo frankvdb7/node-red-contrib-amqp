@@ -4,6 +4,7 @@ import cloneDeep from 'lodash.clonedeep'
 import {
   ChannelModel,
   Channel,
+  ConfirmChannel,
   Replies,
   connect,
   ConsumeMessage,
@@ -47,6 +48,7 @@ export default class Amqp {
       prefetch: config.prefetch,
       reconnectOnError: config.reconnectOnError,
       noAck: config.noAck,
+      waitForConfirms: config.waitForConfirms ?? false,
       exchange: {
         name: config.exchangeName,
         type: config.exchangeType,
@@ -253,9 +255,12 @@ export default class Amqp {
     msg: unknown,
     properties?: MessageProperties,
   ): Promise<void> {
-    this.parseRoutingKeys().forEach(async routingKey => {
-      this.handlePublish(this.config, msg, properties, routingKey)
-    })
+    const routingKeys = this.parseRoutingKeys()
+    await Promise.all(
+      routingKeys.map(routingKey =>
+        this.handlePublish(this.config, msg, properties, routingKey),
+      ),
+    )
   }
 
   private async handlePublish(
@@ -298,6 +303,10 @@ export default class Amqp {
         Buffer.from(msg as string),
         options,
       )
+
+      if (config.waitForConfirms) {
+        await (this.channel as ConfirmChannel).waitForConfirms()
+      }
     } catch (e) {
       this.node.error(`Could not publish message: ${e}`)
     }
@@ -450,9 +459,11 @@ export default class Amqp {
   }
 
   private async createChannel(): Promise<Channel> {
-    const { prefetch } = this.config
+    const { prefetch, waitForConfirms } = this.config
 
-    this.channel = await this.connection.createChannel()
+    this.channel = await (waitForConfirms
+      ? this.connection.createConfirmChannel()
+      : this.connection.createChannel())
     this.channel.prefetch(Number(prefetch))
 
     this.channelErrorHandler = (e): void => {

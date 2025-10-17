@@ -325,16 +325,16 @@ describe('Amqp Class', () => {
   })
 
   describe('publish()', () => {
-    it('publishes a message (topic)', () => {
+    it('publishes a message (topic)', async () => {
       const publishStub = sinon.stub()
       amqp.channel = {
         publish: publishStub,
       }
-      amqp.publish('a message')
+      await amqp.publish('a message')
       expect(publishStub.calledOnce).to.equal(true)
     })
 
-    it('publishes a message (fanout)', () => {
+    it('publishes a message (fanout)', async () => {
       // @ts-ignore
       amqp = new Amqp(RED, nodeFixture, {
         ...nodeConfigFixture,
@@ -344,11 +344,11 @@ describe('Amqp Class', () => {
       amqp.channel = {
         publish: publishStub,
       }
-      amqp.publish('a message')
+      await amqp.publish('a message')
       expect(publishStub.calledOnce).to.equal(true)
     })
 
-    it('publishes a message (direct w/RPC)', () => {
+    it('publishes a message (direct w/RPC)', async () => {
       // @ts-ignore
       amqp = new Amqp(RED, nodeFixture, {
         ...nodeConfigFixture,
@@ -377,12 +377,27 @@ describe('Amqp Class', () => {
       }
       amqp.q = {}
 
-      amqp.publish('a message')
+      await amqp.publish('a message')
 
       // FIXME: we're losing `this` in here and can't assert on mocks.
       // So no assertions :(
       // expect(consumeStub.calledOnce).to.equal(true)
       // expect(publishStub.calledOnce).to.equal(true)
+    })
+
+    it('waits for confirms when enabled', async () => {
+      const publishStub = sinon.stub()
+      const waitForConfirmsStub = sinon.stub().resolves()
+      amqp.channel = {
+        publish: publishStub,
+        waitForConfirms: waitForConfirmsStub,
+      }
+      amqp.config.waitForConfirms = true
+
+      await amqp.publish('a message')
+
+      expect(publishStub.calledOnce).to.equal(true)
+      expect(waitForConfirmsStub.calledOnce).to.equal(true)
     })
 
     it('tries to publish an invalid message', async () => {
@@ -473,6 +488,27 @@ describe('Amqp Class', () => {
     await amqp.createChannel()
     expect(createChannelStub.calledOnce).to.equal(true)
     expect(amqp.channel).to.eq(result)
+  })
+
+  it('createChannel() uses confirm channel when configured', async () => {
+    const result = {
+      on: sinon.stub(),
+      prefetch: sinon.stub(),
+    }
+    const createConfirmChannelStub = sinon.stub().resolves(result)
+    const createChannelStub = sinon.stub()
+    amqp.connection = {
+      createConfirmChannel: createConfirmChannelStub,
+      createChannel: createChannelStub,
+    }
+    amqp.config.waitForConfirms = true
+
+    await amqp.createChannel()
+
+    expect(createConfirmChannelStub.calledOnce).to.equal(true)
+    expect(createChannelStub.called).to.equal(false)
+    expect(amqp.channel).to.eq(result)
+    expect(result.prefetch.calledOnce).to.equal(true)
   })
 
   it('createChannel() logs events', async () => {
