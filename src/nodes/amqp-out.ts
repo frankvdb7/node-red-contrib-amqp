@@ -178,9 +178,9 @@ module.exports = function (RED: NodeRedApp): void {
       }
 
       if (!!properties?.headers?.doNotStringifyPayload) {
-        amqp.publish(payload, properties)
+        await amqp.publish(payload, properties)
       } else {
-        amqp.publish(JSON.stringify(payload), properties)
+        await amqp.publish(JSON.stringify(payload), properties)
       }
 
       done && done()

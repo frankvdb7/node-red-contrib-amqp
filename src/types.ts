@@ -18,6 +18,7 @@ export interface AmqpConfig {
   prefetch: number
   reconnectOnError?: boolean
   noAck: boolean
+  waitForConfirms?: boolean
   exchange: {
     name: string
     type: ExchangeType
@@ -68,6 +69,7 @@ export interface AmqpOutNodeDefaults {
   outputs?: any
   rpcTimeoutMilliseconds?: any
   queueArguments?: any
+  waitForConfirms?: any
 }
 
 export type GenericJsonObject = Record<string, any>

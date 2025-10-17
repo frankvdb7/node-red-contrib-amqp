@@ -14,6 +14,7 @@
       amqpProperties: {
         value: '{ "headers": {} }',
       },
+      waitForConfirms: { value: false },
       rpcTimeoutMilliseconds: { value: 3000 },
       outputs: { value: 0 },
     },
@@ -154,7 +155,14 @@
   </div>
   <div class="form-tips">
     <i class="fa fa-info-circle"></i>
-    Standard AMQP message properties as specified in <a href="https://www.squaremobius.net/amqp.node/channel_api.html#channel_publish" target="_blank">the amqplib docs</a>.
+    Standard AMQP message properties as specified in <a href="https://www.squaremobius.net/amqp.node/channel_api.html#channel_publish" target="_blank">the amqplib docs</a>.<br />
+    <br />
+    Enable "Wait for publisher confirmations" to publish via a confirm channel and only complete the message after the broker acknowledges receipt.
+  </div>
+  <div class="form-row">
+    <label>&nbsp;</label>
+    <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-waitForConfirms">
+    <label style="width:auto; margin-top:7px;" for="node-input-waitForConfirms">Wait for publisher confirmations</label>
   </div>
   <span id="rpc-section">
     <hr>
@@ -219,6 +227,13 @@
       </ul>
     </dd>
   </dl>
+
+  <h3>Publisher confirmations</h3>
+  <p>
+    Enabling the <em>Wait for publisher confirmations</em> option configures the node to publish on a confirm channel and to
+    wait for acknowledgements from the broker before completing the message. This helps ensure that published messages have been
+    persisted or routed by the broker before downstream nodes continue processing.
+  </p>
 
   <h3>Payload stringification</h3>
   <p>By default the payload is run through `JSON.stringify()` before being published. To override this behavior include
