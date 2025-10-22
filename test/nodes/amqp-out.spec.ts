@@ -339,4 +339,49 @@ describe('amqp-out Node', () => {
       },
     )
   })
+
+  it('handles connection close', function (done) {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .resolves(connectionMock as any)
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .resolves(channelMock as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close')
+
+    helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+      function () {
+        // Get the 'on' callback for connection close
+        const onCallback = connectionMock.on.withArgs('close').getCall(0).args[1]
+        onCallback('connection closed')
+        expect(closeStub.calledOnce).to.be.true
+        done()
+      },
+    )
+  })
+
+  it('should handle connection errors', function (done) {
+    const flow = [
+      { id: 'n1', type: 'amqp-out', name: 'test name', broker: 'b1' },
+      { id: 'b1', type: 'amqp-broker', name: 'test broker' }
+    ];
+    helper.load([amqpOut, amqpBroker], flow, function () {
+      const amqpOutNode = helper.getNode('n1');
+      const brokerNode = helper.getNode('b1');
+      brokerNode.on('amqp-out-error', (err) => {
+        try {
+          expect(err.message).to.equal('Connection error');
+          done();
+        } catch (e) {
+          done(e);
+        }
+      });
+      brokerNode.emit('amqp-out-error', new Error('Connection error'));
+    });
+  });
 })

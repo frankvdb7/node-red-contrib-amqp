@@ -250,6 +250,28 @@ describe('Amqp Class', () => {
     expect(assertExchangeStub.calledOnce).to.equal(true)
   })
 
+  it('nackAll() logs and delegates to channel', () => {
+    const msg = { content: 'foo', manualAck: { requeue: true } }
+    const nackAllStub = sinon.stub()
+    const logStub = sinon.stub()
+    amqp.channel = { nackAll: nackAllStub }
+    amqp.node = { log: logStub }
+    amqp.nackAll(msg as any)
+    sinon.assert.calledOnce(nackAllStub)
+    sinon.assert.calledWith(nackAllStub, true)
+  })
+
+  it('reject() logs and delegates to channel', () => {
+    const msg = { content: 'foo', manualAck: { requeue: false } }
+    const rejectStub = sinon.stub()
+    const logStub = sinon.stub()
+    amqp.channel = { reject: rejectStub }
+    amqp.node = { log: logStub }
+    amqp.reject(msg as any)
+    sinon.assert.calledOnce(rejectStub)
+    sinon.assert.calledWith(rejectStub, msg, false)
+  })
+
   it('consume()', async () => {
     const assertQueueStub = sinon.stub()
     const bindQueueStub = sinon.stub()
