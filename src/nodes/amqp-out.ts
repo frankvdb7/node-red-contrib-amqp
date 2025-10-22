@@ -148,6 +148,7 @@ module.exports = function (RED: NodeRedApp): void {
             amqp.setRoutingKey(String(result))
           } catch (err) {
             this.error(`Failed to evaluate JSONata expression: ${err}`)
+            return
           }
           break
         }
