@@ -263,4 +263,120 @@ describe('amqp-in Node', () => {
       },
     )
   })
+
+  it('handles channel close', function (done) {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
+    const channelMock = { on: sinon.stub(), off: sinon.stub() };
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
+    const closeStub = sinon.stub(Amqp.prototype, 'close');
+
+    helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+      function () {
+        const onCallback = channelMock.on.withArgs('close').getCall(0).args[1];
+        onCallback('channel closed');
+        expect(closeStub.notCalled).to.be.true; // Should not reconnect
+        done();
+      }
+    );
+  });
+
+  it('handles channel error', function (done) {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
+    const channelMock = { on: sinon.stub(), off: sinon.stub() };
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
+    const closeStub = sinon.stub(Amqp.prototype, 'close');
+
+    helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+      function () {
+        const amqpInNode = helper.getNode('n1');
+
+        let errorCalled = false;
+        amqpInNode.on('call:error', () => {
+          errorCalled = true;
+        });
+
+        const onCallback = channelMock.on.withArgs('error').getCall(0).args[1];
+        onCallback('channel error');
+
+        setTimeout(() => {
+          try {
+            expect(errorCalled).to.be.true;
+            expect(closeStub.calledOnce).to.be.true;
+            done();
+          } catch (e) {
+            done(e);
+          }
+        }, 50);
+      }
+    );
+  });
+
+  it('does not reconnect on connection error when reconnectOnError is false', function (done) {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
+    const channelMock = { on: sinon.stub(), off: sinon.stub() };
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
+    const closeStub = sinon.stub(Amqp.prototype, 'close');
+
+    const flow = JSON.parse(JSON.stringify(amqpInFlowFixture));
+    flow[0].reconnectOnError = false;
+
+    helper.load(
+      [amqpIn, amqpBroker],
+      flow,
+      credentialsFixture,
+      function () {
+        const amqpInNode = helper.getNode('n1');
+
+        let errorCalled = false;
+        amqpInNode.on('call:error', () => {
+          errorCalled = true;
+        });
+
+        const onCallback = connectionMock.on.withArgs('error').getCall(0).args[1];
+        onCallback('connection error');
+
+        setTimeout(() => {
+          expect(errorCalled).to.be.true;
+          expect(closeStub.notCalled).to.be.true;
+          done();
+        }, 50);
+      }
+    );
+  });
+
+  it('does not auto-ack when noAck is false', function (done) {
+    const ackStub = sinon.stub(Amqp.prototype, 'ack');
+    sinon.stub(Amqp.prototype, 'consume').callsFake(function () {
+      this.node.send({ payload: 'test' });
+      return Promise.resolve();
+    });
+
+    const flow = JSON.parse(JSON.stringify(amqpInFlowFixture));
+    flow[0].noAck = false;
+    flow.push({ id: 'n2', type: 'helper' });
+    flow[0].wires = [['n2']];
+
+    helper.load([amqpIn, amqpBroker], flow, credentialsFixture, function () {
+      const n2 = helper.getNode('n2');
+      n2.on('input', (msg) => {
+        setTimeout(() => {
+          try {
+            expect(ackStub.called).to.be.true;
+            done();
+          } catch (e) {
+            done(e);
+          }
+        }, 50);
+      });
+    });
+  });
 })
