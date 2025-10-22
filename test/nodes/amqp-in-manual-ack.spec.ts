@@ -210,6 +210,7 @@ describe('amqp-in-manual-ack Node', () => {
     sinon
       .stub(Amqp.prototype, 'initialize')
       .resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
 
     helper.load(
       [amqpInManualAck, amqpBroker],
@@ -223,4 +224,61 @@ describe('amqp-in-manual-ack Node', () => {
       },
     )
   })
+
+  it('should reconnect on input message', done => {
+    const connectStub = sinon.stub(Amqp.prototype, 'connect')
+    const closeStub = sinon.stub(Amqp.prototype, 'close')
+    const flow = [{ id: 'n1', type: NodeType.AmqpInManualAck, name: 'test name', wires: [[]] }]
+    helper.load(amqpInManualAck, flow, () => {
+      const n1 = helper.getNode('n1')
+      n1.receive({ payload: { reconnectCall: true }})
+      expect(closeStub.calledOnce).to.be.true
+      done()
+    })
+  })
+
+  it('handles connection close', function (done) {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .resolves(connectionMock as any)
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .resolves(channelMock as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close')
+
+    helper.load(
+      [amqpInManualAck, amqpBroker],
+      amqpInManualAckFlowFixture,
+      credentialsFixture,
+      function () {
+        // Get the 'on' callback for connection close
+        const onCallback = connectionMock.on.withArgs('close').getCall(0).args[1]
+        onCallback('connection closed')
+        expect(closeStub.calledOnce).to.be.true
+        done()
+      },
+    )
+  })
+
+  it('should handle connection errors', function (done) {
+    const flow = [
+      { id: 'n1', type: 'amqp-in-manual-ack', name: 'test name', broker: 'b1' },
+      { id: 'b1', type: 'amqp-broker', name: 'test broker' }
+    ];
+    helper.load([amqpInManualAck, amqpBroker], flow, function () {
+      const amqpInNode = helper.getNode('n1');
+      const brokerNode = helper.getNode('b1');
+      brokerNode.on('amqp-in-error', (err) => {
+        try {
+          expect(err.message).to.equal('Connection error');
+          done();
+        } catch (e) {
+          done(e);
+        }
+      });
+      brokerNode.emit('amqp-in-error', new Error('Connection error'));
+    });
+  });
 })
