@@ -1,51 +1,70 @@
+# Node-RED Contrib AMQP
 
+This repository provides a set of Node-RED nodes for interacting with RabbitMQ and other AMQP-compliant message brokers. It is a fork of `@Stormpass/node-red-contrib-amqp`, adapted to work with modern RabbitMQ features like Quorum Queues.
 
-# source
-This repo fork from [@Stormpass/node-red-contrib-amqp](https://github.com/Stormpass/node-red-contrib-amqp) 
+## Features
 
-and
+- **AMQP In:** Consume messages from a queue.
+- **AMQP Out:** Publish messages to an exchange.
+- **AMQP In Manual Ack:** Consume messages with manual acknowledgment.
+- **Dynamic Virtual Host:** Change the vhost at runtime for the `amqp-out` node by setting `msg.vhost`.
 
-+ fixed error on node flow save
-+ The nodes are adapted to work with RabbitMQ and their newer Quorom type queues. You can set the additional queue options from the node configuration.
+## Prerequisites
 
-AMQP nodes for node-red (back pushed changes from @mnn-o/node-red-rabbitmq)
+- Node.js 20 or newer
+- Node-RED 4.0 or newer
 
 ## Installation
 
-Install via the Palette Manager or from within your node-red directory (typically `~/.node-red`) run:
+You can install the nodes using the Node-RED Palette Manager or by running the following command in your Node-RED user directory (typically `~/.node-red`):
 
-```
-npm i @frankvdb/node-red-contrib-amqp
+```bash
+npm install @frankvdb/node-red-contrib-amqp
 ```
 
 ## Usage
 
-Provides three nodes and an amqp broker config node.
-Please see the `Node Help` section from within node-red for more info
+After installation, the following nodes will be available in your Node-RED editor:
 
-### Dynamic Virtual Host
+- `amqp-in`
+- `amqp-out`
+- `amqp-in-manual-ack`
+- `amqp-broker` (configuration node)
 
-The virtual host used by the `amqp-out` node can be changed at runtime by setting `msg.vhost` on the incoming message. When provided, the node will reconnect to the specified RabbitMQ virtual host before publishing the message. Connections are pooled per virtual host so nodes targeting the same vhost share a single connection, while nodes targeting different vhosts operate independently.
-
-**Note:** Changing `msg.vhost` only affects the current `amqp-out` node. Other nodes using the same broker keep their configured virtual hosts.
+For more detailed information, please see the **Node Help** section in the Node-RED editor.
 
 ## Development
 
-### Build the project
+To contribute to the development of these nodes, please follow these steps:
 
-```
-npm run build
-```
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/frankvdb7/node-red-contrib-amqp.git
+   cd node-red-contrib-amqp
+   ```
 
-### Run tests
+2. **Install dependencies:**
+   ```bash
+   npm install
+   ```
 
-```
-npm test
-```
+3. **Build the project:**
+   ```bash
+   npm run build
+   ```
 
-Run coverage:
+### Development Scripts
 
-```
-npm run test:cov
-```
+- `npm start`: Watch for changes and automatically rebuild.
+- `npm run build`: Compile the TypeScript source code.
+- `npm run lint`: Format code and check for linting errors.
+- `npm test`: Run the test suite.
+- `npm run test:cov`: Generate a test coverage report.
 
+## Contributing
+
+Contributions are welcome! Please open an issue or pull request to discuss any changes.
+
+## License
+
+ISC
