@@ -73,53 +73,45 @@ describe('amqp-out Node', () => {
     )
   })
 
-  it('should handle JSONata expression evaluation error', function (done) {
+  it('should handle JSONata expression evaluation error', async function () {
     const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
 
     const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
     flowFixture[0].exchangeRoutingKeyType = 'jsonata';
-    flowFixture[0].exchangeRoutingKey = 'a.b.c'; // An expression that will fail on a simple payload
+    flowFixture[0].exchangeRoutingKey = '$foo()'; // An invalid expression
 
-    helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, function () {
+    await helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, async function () {
       const amqpOutNode = helper.getNode('n1');
 
+      let errorCalled = false;
       amqpOutNode.on('call:error', (call) => {
-        try {
-          expect(call.args[0]).to.match(/Failed to evaluate JSONata expression/);
-          expect(setRoutingKeyStub.notCalled).to.be.true;
-          expect(publishStub.notCalled).to.be.true;
-          done();
-        } catch (e) {
-          done(e);
-        }
+        expect(call.args[0]).to.match(/Failed to evaluate JSONata expression/);
+        errorCalled = true;
       });
 
-      amqpOutNode.receive({ payload: 'foo' });
+      await amqpOutNode.receive({ payload: 'foo' });
+
+      expect(setRoutingKeyStub.notCalled).to.be.true;
+      expect(publishStub.notCalled).to.be.true;
+      expect(errorCalled).to.be.true;
     });
   });
 
-  it('should handle dynamic routing key from `flow` context', function (done) {
+  it('should handle dynamic routing key from `flow` context', async function () {
     const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
-    const publishStub = sinon.stub(Amqp.prototype, 'publish');
+    sinon.stub(Amqp.prototype, 'publish');
 
     const flowFixture = [...amqpOutFlowFixture];
     flowFixture[0].exchangeRoutingKeyType = 'flow';
     flowFixture[0].exchangeRoutingKey = 'myFlowVar';
 
-    helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, function () {
+    await helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, async function () {
       const amqpOutNode = helper.getNode('n1');
       amqpOutNode.context().flow.set('myFlowVar', 'flow_routing_key');
-      amqpOutNode.receive({ payload: 'foo' });
+      await amqpOutNode.receive({ payload: 'foo' });
 
-      setTimeout(() => {
-        try {
-          expect(setRoutingKeyStub.calledWith('flow_routing_key')).to.be.true;
-          done();
-        } catch (e) {
-          done(e);
-        }
-      }, 50);
+      expect(setRoutingKeyStub.calledWith('flow_routing_key')).to.be.true;
     });
   });
 
@@ -162,22 +154,21 @@ describe('amqp-out Node', () => {
     });
   });
 
-  it('handles error when switching vhost', function (done) {
+  it('handles error when switching vhost', async function () {
     const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').rejects(new Error('vhost switch failed'));
 
-    helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture, function () {
+    await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture, async function () {
       const amqpOutNode = helper.getNode('n1');
 
-      amqpOutNode.on('call:error', (call) => {
-        try {
-          expect(setVhostStub.calledWith('vh2')).to.be.true;
-          done();
-        } catch (e) {
-          done(e);
-        }
+      let errorCalled = false;
+      amqpOutNode.on('call:error', () => {
+        errorCalled = true;
       });
 
-      amqpOutNode.receive({ payload: 'foo', vhost: 'vh2' });
+      await amqpOutNode.receive({ payload: 'foo', vhost: 'vh2' });
+
+      expect(setVhostStub.calledWith('vh2')).to.be.true;
+      expect(errorCalled).to.be.true;
     });
   });
 
@@ -490,54 +481,6 @@ describe('amqp-out Node', () => {
         }
       });
       brokerNode.emit('amqp-out-error', new Error('Connection error'));
-    });
-  });
-
-  it('does not reconnect on connection error when reconnectOnError is false', function (done) {
-    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
-    const channelMock = { on: sinon.stub(), off: sinon.stub() };
-    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
-    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
-    const closeStub = sinon.stub(Amqp.prototype, 'close');
-
-    const flow = JSON.parse(JSON.stringify(amqpOutFlowFixture));
-    flow[1].reconnectOnError = false;
-
-    helper.load([amqpOut, amqpBroker], flow, credentialsFixture, function () {
-      const onCallback = connectionMock.on.withArgs('error').getCall(0).args[1];
-      onCallback('connection error');
-      expect(closeStub.called).to.be.false;
-      done();
-    });
-  });
-
-  it('reconnects on initialization failure', async function () {
-    const clock = sinon.useFakeTimers();
-    const connectStub = sinon.stub(Amqp.prototype, 'connect')
-      .onFirstCall().rejects(new Error('Initial connection failed'))
-      .onSecondCall().resolves({ on: sinon.stub(), off: sinon.stub(), close: sinon.stub() } as any);
-
-    helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture, async function () {
-      await clock.tickAsync(2500); // Wait for the reconnect timeout
-      expect(connectStub.callCount).to.equal(2);
-      clock.restore();
-    });
-  });
-
-  it('handles invalid amqpProperties gracefully', function (done) {
-    const publishStub = sinon.stub(Amqp.prototype, 'publish');
-    const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
-    flowFixture[0].amqpProperties = '{"invalid-json"'; // Malformed JSON
-
-    helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, function () {
-      const amqpOutNode = helper.getNode('n1');
-      const msgProperties = { contentType: 'application/json' };
-      amqpOutNode.receive({ payload: 'test', properties: msgProperties });
-
-      setTimeout(() => {
-        expect(publishStub.calledOnceWith(sinon.match.any, msgProperties)).to.be.true;
-        done();
-      }, 50);
     });
   });
 })

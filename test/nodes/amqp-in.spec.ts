@@ -284,37 +284,30 @@ describe('amqp-in Node', () => {
     );
   });
 
-  it('handles channel error', function (done) {
+  it('handles channel error', async function () {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
     const channelMock = { on: sinon.stub(), off: sinon.stub() };
     sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
     sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
     const closeStub = sinon.stub(Amqp.prototype, 'close');
 
-    helper.load(
+    await helper.load(
       [amqpIn, amqpBroker],
       amqpInFlowFixture,
       credentialsFixture,
-      function () {
+      async function () {
         const amqpInNode = helper.getNode('n1');
+        const onCallback = channelMock.on.withArgs('error').getCall(0).args[1];
 
         let errorCalled = false;
         amqpInNode.on('call:error', () => {
           errorCalled = true;
         });
 
-        const onCallback = channelMock.on.withArgs('error').getCall(0).args[1];
-        onCallback('channel error');
+        await onCallback('channel error');
 
-        setTimeout(() => {
-          try {
-            expect(errorCalled).to.be.true;
-            expect(closeStub.calledOnce).to.be.true;
-            done();
-          } catch (e) {
-            done(e);
-          }
-        }, 50);
+        expect(errorCalled).to.be.true;
+        expect(closeStub.calledOnce).to.be.true;
       }
     );
   });
@@ -353,29 +346,25 @@ describe('amqp-in Node', () => {
     );
   });
 
-  it('does not auto-ack when noAck is false', function (done) {
+  it('does not auto-ack when noAck is false', async function () {
     const ackStub = sinon.stub(Amqp.prototype, 'ack');
-    sinon.stub(Amqp.prototype, 'consume').callsFake(function () {
+    sinon.stub(Amqp.prototype, 'consume').callsFake(async function () {
+      // @ts-ignore
       this.node.send({ payload: 'test' });
-      return Promise.resolve();
     });
 
     const flow = JSON.parse(JSON.stringify(amqpInFlowFixture));
-    flow[0].noAck = false;
+    flow[1].noAck = false;
     flow.push({ id: 'n2', type: 'helper' });
     flow[0].wires = [['n2']];
 
-    helper.load([amqpIn, amqpBroker], flow, credentialsFixture, function () {
+    await helper.load([amqpIn, amqpBroker], flow, credentialsFixture, async function () {
       const n2 = helper.getNode('n2');
-      n2.on('input', (msg) => {
-        setTimeout(() => {
-          try {
-            expect(ackStub.called).to.be.true;
-            done();
-          } catch (e) {
-            done(e);
-          }
-        }, 50);
+      await new Promise<void>(resolve => {
+        n2.on('input', () => {
+          expect(ackStub.calledOnce).to.be.true;
+          resolve();
+        });
       });
     });
   });
