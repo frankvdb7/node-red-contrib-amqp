@@ -492,4 +492,52 @@ describe('amqp-out Node', () => {
       brokerNode.emit('amqp-out-error', new Error('Connection error'));
     });
   });
+
+  it('does not reconnect on connection error when reconnectOnError is false', function (done) {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
+    const channelMock = { on: sinon.stub(), off: sinon.stub() };
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
+    const closeStub = sinon.stub(Amqp.prototype, 'close');
+
+    const flow = JSON.parse(JSON.stringify(amqpOutFlowFixture));
+    flow[1].reconnectOnError = false;
+
+    helper.load([amqpOut, amqpBroker], flow, credentialsFixture, function () {
+      const onCallback = connectionMock.on.withArgs('error').getCall(0).args[1];
+      onCallback('connection error');
+      expect(closeStub.called).to.be.false;
+      done();
+    });
+  });
+
+  it('reconnects on initialization failure', async function () {
+    const clock = sinon.useFakeTimers();
+    const connectStub = sinon.stub(Amqp.prototype, 'connect')
+      .onFirstCall().rejects(new Error('Initial connection failed'))
+      .onSecondCall().resolves({ on: sinon.stub(), off: sinon.stub(), close: sinon.stub() } as any);
+
+    helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture, async function () {
+      await clock.tickAsync(2500); // Wait for the reconnect timeout
+      expect(connectStub.callCount).to.equal(2);
+      clock.restore();
+    });
+  });
+
+  it('handles invalid amqpProperties gracefully', function (done) {
+    const publishStub = sinon.stub(Amqp.prototype, 'publish');
+    const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
+    flowFixture[0].amqpProperties = '{"invalid-json"'; // Malformed JSON
+
+    helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, function () {
+      const amqpOutNode = helper.getNode('n1');
+      const msgProperties = { contentType: 'application/json' };
+      amqpOutNode.receive({ payload: 'test', properties: msgProperties });
+
+      setTimeout(() => {
+        expect(publishStub.calledOnceWith(sinon.match.any, msgProperties)).to.be.true;
+        done();
+      }, 50);
+    });
+  });
 })
