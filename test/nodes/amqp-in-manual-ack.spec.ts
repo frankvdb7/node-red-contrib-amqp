@@ -255,7 +255,7 @@ describe('amqp-in-manual-ack Node', () => {
     })
   })
 
-  it('handles connection close', function (done) {
+  it('handles connection close', async function () {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
     sinon
@@ -266,18 +266,15 @@ describe('amqp-in-manual-ack Node', () => {
       .resolves(channelMock as any)
     const closeStub = sinon.stub(Amqp.prototype, 'close')
 
-    helper.load(
+    await helper.load(
       [amqpInManualAck, amqpBroker],
       amqpInManualAckFlowFixture,
       credentialsFixture,
-      function () {
-        // Get the 'on' callback for connection close
-        const onCallback = connectionMock.on.withArgs('close').getCall(0).args[1]
-        onCallback('connection closed')
-        expect(closeStub.calledOnce).to.be.true
-        done()
-      },
     )
+    // Get the 'on' callback for connection close
+    const onCallback = connectionMock.on.withArgs('close').getCall(0).args[1]
+    onCallback('connection closed')
+    expect(closeStub.calledOnce).to.be.true
   })
 
   it('should handle connection errors', function (done) {
@@ -300,7 +297,7 @@ describe('amqp-in-manual-ack Node', () => {
     });
   });
 
-  it('does not reconnect on connection error when reconnectOnError is false', function (done) {
+  it('does not reconnect on connection error when reconnectOnError is false', async function () {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
     const channelMock = { on: sinon.stub(), off: sinon.stub() };
     sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
@@ -310,12 +307,10 @@ describe('amqp-in-manual-ack Node', () => {
     const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture));
     flow[1].reconnectOnError = false;
 
-    helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture, function () {
-      const onCallback = connectionMock.on.withArgs('error').getCall(0).args[1];
-      onCallback('connection error');
-      expect(closeStub.called).to.be.false;
-      done();
-    });
+    await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
+    const onCallback = connectionMock.on.withArgs('error').getCall(0).args[1]
+    onCallback('connection error')
+    expect(closeStub.called).to.be.false
   });
 
   it('reconnects on initialization failure', async function () {
