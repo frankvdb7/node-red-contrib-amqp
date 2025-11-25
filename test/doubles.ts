@@ -119,6 +119,7 @@ export const brokerConfigFixture: any & BrokerConfig = {
     username: 'username',
     password: 'password',
   },
+  connections: {},
 }
 
 export class CustomError extends Error {
