@@ -13,6 +13,7 @@ import {
 import {
   AmqpConfig,
   BrokerConfig,
+  AmqpBrokerNode,
   NodeType,
   AssembledMessage,
   GenericJsonObject,
@@ -24,7 +25,7 @@ import { NODE_STATUS } from './constants'
 
 export default class Amqp {
   private config: AmqpConfig
-  private broker: Node
+  private broker: AmqpBrokerNode
   private connection: ChannelModel
   private channel: Channel
   private q: Replies.AssertQueue
@@ -112,6 +113,9 @@ export default class Amqp {
       }
     }
 
+    this.broker.connections[this.node.id] = true
+    this.node.status(NODE_STATUS.Connected)
+
     entry.count += 1
     this.connection = entry.connection
 
@@ -123,6 +127,7 @@ export default class Amqp {
 
     this.connectionCloseHandler = (): void => {
       /* istanbul ignore next */
+      this.broker.connections[this.node.id] = false
       this.node.status(NODE_STATUS.Disconnected)
       this.node.log(`AMQP Connection closed`)
     }
@@ -437,6 +442,9 @@ export default class Amqp {
     const broker = this.broker as unknown as BrokerConfig
     const vhost = this.vhostOverride ?? broker?.vhost
     const key = `${brokerId}:${vhost}`
+
+    this.broker.connections[this.node.id] = false
+    this.node.status(NODE_STATUS.Disconnected)
 
     if (this.connection) {
       this.connection.off('error', this.connectionErrorHandler)
