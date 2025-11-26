@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 export {}
 const { expect } = require('chai')
+import { NODE_STATUS } from '../src/constants'
 const sinon = require('sinon')
 const amqplib = require('amqplib')
 const Amqp = require('../src/Amqp').default
@@ -437,65 +438,66 @@ describe('Amqp Class', () => {
     })
   })
 
-  it('close()', async () => {
-    const { exchangeName, exchangeRoutingKey } = nodeConfigFixture
-    const queueName = 'queueName'
+  describe('close()', () => {
+    it('orchestrates the closing of the connection', async () => {
+      const unbindQueuesStub = sinon.stub(amqp, 'unbindQueues' as any).resolves()
+      const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+      const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
 
-    const unbindQueueStub = sinon.stub()
-    const channelCloseStub = sinon.stub()
-    const connectionCloseStub = sinon.stub().resolves()
-    const assertQueueStub = sinon.stub().resolves({ queue: queueName })
+      await amqp.close()
 
-    amqp.channel = {
-      unbindQueue: unbindQueueStub,
-      close: channelCloseStub,
-      assertQueue: assertQueueStub,
-      off: sinon.stub(),
-    }
-    amqp.connection = { close: connectionCloseStub, off: sinon.stub() }
-    ;(Amqp as any).connectionPool.set('b1:undefined', {
-      connection: amqp.connection,
-      count: 1,
+      expect(unbindQueuesStub.calledOnce).to.be.true
+      expect(closeChannelStub.calledOnce).to.be.true
+      expect(releaseConnectionStub.calledOnce).to.be.true
     })
-    await amqp.assertQueue()
-
-    await amqp.close()
-
-    expect(unbindQueueStub.calledOnce).to.equal(true)
-    expect(
-      unbindQueueStub.calledWith(queueName, exchangeName, exchangeRoutingKey),
-    ).to.equal(true)
-    expect(channelCloseStub.calledOnce).to.equal(true)
-    expect(connectionCloseStub.calledOnce).to.equal(true)
   })
 
-  it('close() logs error if channel.close fails but still closes connection', async () => {
-    const queueName = 'queueName'
-    const unbindQueueStub = sinon.stub()
-    const channelCloseStub = sinon.stub().rejects(new Error('channel fail'))
-    const connectionCloseStub = sinon.stub().resolves()
-    const errorStub = sinon.stub()
-    const assertQueueStub = sinon.stub().resolves({ queue: queueName })
+  describe('unbindQueues()', () => {
+    it('unbinds the queue from the exchange', async () => {
+      const { exchangeName, exchangeRoutingKey } = nodeConfigFixture
+      const queueName = 'queueName'
+      const unbindQueueStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: queueName }
 
-    amqp.channel = {
-      unbindQueue: unbindQueueStub,
-      close: channelCloseStub,
-      assertQueue: assertQueueStub,
-      off: sinon.stub(),
-    }
-    amqp.connection = { close: connectionCloseStub, off: sinon.stub() }
-    ;(Amqp as any).connectionPool.set('b1:undefined', {
-      connection: amqp.connection,
-      count: 1,
+      await (amqp as any).unbindQueues()
+
+      expect(unbindQueueStub.calledOnceWith(queueName, exchangeName, exchangeRoutingKey)).to.be.true
     })
-    amqp.node = { error: errorStub }
-    await amqp.assertQueue()
 
-    await amqp.close()
+    it('handles errors when unbinding', async () => {
+      const unbindQueueStub = sinon.stub().rejects(new Error('unbind failed'))
+      const errorStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'queueName' }
+      amqp.node = { error: errorStub }
 
-    expect(channelCloseStub.calledOnce).to.equal(true)
-    expect(connectionCloseStub.calledOnce).to.equal(true)
-    expect(errorStub.calledWithMatch('Error closing AMQP channel')).to.equal(true)
+      await (amqp as any).unbindQueues()
+
+      expect(errorStub.calledOnceWithMatch('Error unbinding queue for routing key')).to.be.true
+    })
+  })
+
+  describe('closeChannel()', () => {
+    it('closes the channel', async () => {
+      const closeStub = sinon.stub().resolves()
+      amqp.channel = { close: closeStub, off: sinon.stub() }
+
+      await (amqp as any).closeChannel()
+
+      expect(closeStub.calledOnce).to.be.true
+    })
+
+    it('handles errors when closing', async () => {
+      const closeStub = sinon.stub().rejects(new Error('close failed'))
+      const errorStub = sinon.stub()
+      amqp.channel = { close: closeStub, off: sinon.stub() }
+      amqp.node = { error: errorStub }
+
+      await (amqp as any).closeChannel()
+
+      expect(errorStub.calledOnceWithMatch('Error closing AMQP channel')).to.be.true
+    })
   })
 
   it('createChannel()', async () => {
@@ -930,29 +932,89 @@ describe('Amqp Class', () => {
     }
   });
 
-  it('releaseConnection() handles connection.close error', async () => {
-    const connectionCloseStub = sinon.stub().rejects(new Error('close failed'));
-    const errorStub = sinon.stub();
+  describe('releaseConnection()', () => {
+    beforeEach(() => {
+      amqp.node = { ...nodeFixture, status: sinon.stub(), error: sinon.stub() }
+    })
 
-    const connectionStub = {
+    it('decrements the connection count but does not close the connection', async () => {
+      const connectionStub = {
         on: sinon.stub(),
         off: sinon.stub(),
-        close: connectionCloseStub,
-    };
+        close: sinon.stub().resolves(),
+      }
 
-    (Amqp as any).connectionPool.set('b1:vh1', {
+      ;(Amqp as any).connectionPool.set('b1:vh1', {
+        connection: connectionStub,
+        count: 2,
+      })
+
+      amqp.connection = connectionStub as any
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1', connections: {} }
+
+      await (amqp as any).releaseConnection()
+
+      const poolEntry = (Amqp as any).connectionPool.get('b1:vh1')
+      expect(poolEntry.count).to.equal(1)
+      expect(connectionStub.close.called).to.be.false
+      expect(amqp.node.status.calledWith(NODE_STATUS.Disconnected)).to.be.true
+    })
+
+    it('removes the connection from the pool when count reaches zero', async () => {
+      let closed = false
+      const connectionStub = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().callsFake(
+          () =>
+            new Promise<void>(resolve =>
+              setTimeout(() => {
+                closed = true
+                resolve()
+              }, 5),
+            ),
+        ),
+      }
+
+      ;(Amqp as any).connectionPool.set('b1:vh1', {
         connection: connectionStub,
         count: 1,
+      })
+
+      amqp.connection = connectionStub as any
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1', connections: {} }
+
+      await (amqp as any).releaseConnection()
+
+      expect(connectionStub.close.calledOnce).to.be.true
+      expect(closed).to.be.true
+      expect((Amqp as any).connectionPool.size).to.equal(0)
+      expect(amqp.node.status.calledWith(NODE_STATUS.Disconnected)).to.be.true
+    })
+
+    it('handles connection.close error', async () => {
+      const connectionCloseStub = sinon.stub().rejects(new Error('close failed'));
+
+      const connectionStub = {
+          on: sinon.stub(),
+          off: sinon.stub(),
+          close: connectionCloseStub,
+      };
+
+      (Amqp as any).connectionPool.set('b1:vh1', {
+          connection: connectionStub,
+          count: 1,
+      });
+
+      amqp.connection = connectionStub as any;
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1', connections: {} };
+      amqp.config.broker = 'b1';
+
+      await (amqp as any).releaseConnection();
+
+      expect(connectionCloseStub.calledOnce).to.be.true;
+      expect(amqp.node.error.calledWithMatch('Error closing AMQP connection')).to.be.true;
+      expect(amqp.node.status.calledWith(NODE_STATUS.Disconnected)).to.be.true
     });
-
-    amqp.connection = connectionStub as any;
-    amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' };
-    amqp.node = { ...nodeFixture, error: errorStub };
-    amqp.config.broker = 'b1';
-
-    await (amqp as any).releaseConnection();
-
-    expect(connectionCloseStub.calledOnce).to.be.true;
-    expect(errorStub.calledWithMatch('Error closing AMQP connection')).to.be.true;
-  });
+  })
 })
