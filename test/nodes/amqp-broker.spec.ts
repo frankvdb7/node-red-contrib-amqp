@@ -14,8 +14,11 @@ describe('amqp-broker Node', () => {
   })
 
   afterEach(function (done) {
-    helper.unload()
-    helper.stopServer(done)
+    helper.unload().then(() => {
+      helper.stopServer(done)
+    }).catch(() => {
+      helper.stopServer(done)
+    })
     sinon.restore()
   })
 
@@ -118,6 +121,75 @@ describe('amqp-broker Node', () => {
             })
             done()
           })
+      })
+    })
+
+    it('should reflect flow redeployment', (done) => {
+      const flow1 = [
+        { id: 'b1', type: 'amqp-broker', name: 'broker 1', connections: { n1: true } }
+      ]
+      const flow2 = [
+        { id: 'b2', type: 'amqp-broker', name: 'broker 2', connections: { n2: true } }
+      ]
+
+      helper.load(amqpBroker, flow1, () => {
+        helper.request().get('/amqp-broker/health').end((err1, res1) => {
+          if (err1) return done(err1)
+          expect(res1.body.brokers).to.have.lengthOf(1)
+          expect(res1.body.brokers[0].id).to.equal('b1')
+
+          helper.unload().then(() => {
+            helper.load(amqpBroker, flow2, () => {
+              helper.request().get('/amqp-broker/health').end((err2, res2) => {
+                if (err2) return done(err2)
+                try {
+                  expect(res2.body.brokers).to.have.lengthOf(1)
+                  expect(res2.body.brokers[0].id).to.equal('b2')
+                  done()
+                } catch(e) {
+                  done(e)
+                }
+              })
+            })
+          })
+        })
+      })
+    })
+
+    it('should reflect the removal of a broker', done => {
+      const flow = [
+        {
+          id: 'b1',
+          type: 'amqp-broker',
+          name: 'broker 1',
+          connections: { n1: true },
+        },
+        {
+          id: 'b2',
+          type: 'amqp-broker',
+          name: 'broker 2',
+          connections: { n2: true },
+        },
+      ]
+      helper.load(amqpBroker, flow, () => {
+        const b2 = helper.getNode('b2')
+        b2.close()
+        setTimeout(() => {
+          helper
+            .request()
+            .get('/amqp-broker/health')
+            .expect(200)
+            .end((err, res) => {
+              if (err) return done(err)
+              expect(res.body.brokers).to.have.lengthOf(1)
+              expect(res.body.brokers[0]).to.deep.equal({
+                id: 'b1',
+                name: 'broker 1',
+                status: 'connected',
+              })
+              done()
+            })
+        }, 100)
       })
     })
   })
