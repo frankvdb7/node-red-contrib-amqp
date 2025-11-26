@@ -87,5 +87,38 @@ describe('amqp-broker Node', () => {
           })
       })
     })
+
+    it('should return 503 when a broker has no connections property', done => {
+      const flow = [
+        {
+          id: 'b1',
+          type: 'amqp-broker',
+          name: 'broker 1',
+          connections: { n1: true },
+        },
+        {
+          id: 'b2',
+          type: 'amqp-broker',
+          name: 'broker 2',
+        },
+      ]
+      helper.load(amqpBroker, flow, () => {
+        helper
+          .request()
+          .get('/amqp-broker/health')
+          .expect(503)
+          .end((err, res) => {
+            if (err) return done(err)
+            expect(res.body).to.deep.equal({
+              overallStatus: 'unhealthy',
+              brokers: [
+                { id: 'b1', name: 'broker 1', status: 'connected' },
+                { id: 'b2', name: 'broker 2', status: 'disconnected' },
+              ],
+            })
+            done()
+          })
+      })
+    })
   })
 })

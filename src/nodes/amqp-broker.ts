@@ -33,7 +33,7 @@ module.exports = function (RED: NodeRedApp): void {
     RED.nodes.eachNode(n => {
       if (n.type === 'amqp-broker') {
         const brokerNode = n as AmqpBrokerNode
-        const isConnected = Object.values(brokerNode.connections).some(
+        const isConnected = Object.values(brokerNode.connections || {}).some(
           status => status === true,
         )
         const status = isConnected ? 'connected' : 'disconnected'
