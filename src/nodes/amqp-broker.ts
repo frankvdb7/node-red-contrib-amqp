@@ -13,7 +13,7 @@ module.exports = function (RED: NodeRedApp): void {
     this.tls = n.tls
     this.vhost = n.vhost
     this.credsFromSettings = n.credsFromSettings
-    this.connections = {}
+    this.connections = n.connections || {}
   }
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore
@@ -24,18 +24,38 @@ module.exports = function (RED: NodeRedApp): void {
     },
   })
 
-  RED.httpAdmin.get('/amqp-broker/:id/health', (req, res) => {
+  RED.httpAdmin.get('/amqp-broker/health', (_req, res) => {
+    const brokerStatuses: { id: string; name: string; status: string }[] = []
+    let allConnected = true
+
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore
-    const brokerNode = RED.nodes.getNode(req.params.id) as AmqpBrokerNode
+    RED.nodes.eachNode(n => {
+      if (n.type === 'amqp-broker') {
+        const brokerNode = n as AmqpBrokerNode
+        const isConnected = Object.values(brokerNode.connections).some(
+          status => status === true,
+        )
+        const status = isConnected ? 'connected' : 'disconnected'
 
-    if (!brokerNode || brokerNode.type !== 'amqp-broker') {
-      return res.status(404).send('Not Found')
+        if (!isConnected) {
+          allConnected = false
+        }
+
+        brokerStatuses.push({
+          id: brokerNode.id,
+          name: brokerNode.name,
+          status,
+        })
+      }
+    })
+
+    const statusCode = allConnected ? 200 : 503
+    const response = {
+      overallStatus: allConnected ? 'healthy' : 'unhealthy',
+      brokers: brokerStatuses,
     }
 
-    if (Object.values(brokerNode.connections).some(status => status === true)) {
-      return res.status(200).json({ status: 'connected' })
-    }
-    return res.status(503).json({ status: 'disconnected' })
+    res.status(statusCode).json(response)
   })
 }

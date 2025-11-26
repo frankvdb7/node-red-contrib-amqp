@@ -395,34 +395,31 @@ export default class Amqp {
     if (this.closed) {
       return
     }
-
     this.closed = true
 
+    await this.unbindQueues()
+    await this.closeChannel()
+    await this.releaseConnection()
+  }
+
+  private async unbindQueues(): Promise<void> {
     const { name: exchangeName } = this.config.exchange
     const queueName = this.q?.queue
 
-    try {
-      /* istanbul ignore else */
-      if (exchangeName && queueName) {
-        const routingKeys = this.parseRoutingKeys()
+    if (exchangeName && queueName) {
+      const routingKeys = this.parseRoutingKeys()
+      for (const routingKey of routingKeys) {
         try {
-          for (let x = 0; x < routingKeys.length; x++) {
-            await this.channel.unbindQueue(
-              queueName,
-              exchangeName,
-              routingKeys[x],
-            )
-          }
+          await this.channel.unbindQueue(queueName, exchangeName, routingKey)
         } catch (e) {
           /* istanbul ignore next */
-          console.error('Error unbinding queue: ', e.message)
+          this.node.error(`Error unbinding queue for routing key ${routingKey}: ${e.message}`)
         }
       }
-    } catch (e) {
-      /* istanbul ignore next */
-      this.node.error(`Error unbinding queue: ${e}`)
     }
+  }
 
+  private async closeChannel(): Promise<void> {
     if (this.channel) {
       this.channel.off('error', this.channelErrorHandler)
       this.channel.off('close', this.channelCloseHandler)
@@ -433,8 +430,6 @@ export default class Amqp {
         this.node.error(`Error closing AMQP channel: ${e}`)
       }
     }
-
-    await this.releaseConnection()
   }
 
   private async releaseConnection(): Promise<void> {
