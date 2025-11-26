@@ -437,65 +437,66 @@ describe('Amqp Class', () => {
     })
   })
 
-  it('close()', async () => {
-    const { exchangeName, exchangeRoutingKey } = nodeConfigFixture
-    const queueName = 'queueName'
+  describe('close()', () => {
+    it('orchestrates the closing of the connection', async () => {
+      const unbindQueuesStub = sinon.stub(amqp, 'unbindQueues' as any).resolves()
+      const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+      const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
 
-    const unbindQueueStub = sinon.stub()
-    const channelCloseStub = sinon.stub()
-    const connectionCloseStub = sinon.stub().resolves()
-    const assertQueueStub = sinon.stub().resolves({ queue: queueName })
+      await amqp.close()
 
-    amqp.channel = {
-      unbindQueue: unbindQueueStub,
-      close: channelCloseStub,
-      assertQueue: assertQueueStub,
-      off: sinon.stub(),
-    }
-    amqp.connection = { close: connectionCloseStub, off: sinon.stub() }
-    ;(Amqp as any).connectionPool.set('b1:undefined', {
-      connection: amqp.connection,
-      count: 1,
+      expect(unbindQueuesStub.calledOnce).to.be.true
+      expect(closeChannelStub.calledOnce).to.be.true
+      expect(releaseConnectionStub.calledOnce).to.be.true
     })
-    await amqp.assertQueue()
-
-    await amqp.close()
-
-    expect(unbindQueueStub.calledOnce).to.equal(true)
-    expect(
-      unbindQueueStub.calledWith(queueName, exchangeName, exchangeRoutingKey),
-    ).to.equal(true)
-    expect(channelCloseStub.calledOnce).to.equal(true)
-    expect(connectionCloseStub.calledOnce).to.equal(true)
   })
 
-  it('close() logs error if channel.close fails but still closes connection', async () => {
-    const queueName = 'queueName'
-    const unbindQueueStub = sinon.stub()
-    const channelCloseStub = sinon.stub().rejects(new Error('channel fail'))
-    const connectionCloseStub = sinon.stub().resolves()
-    const errorStub = sinon.stub()
-    const assertQueueStub = sinon.stub().resolves({ queue: queueName })
+  describe('unbindQueues()', () => {
+    it('unbinds the queue from the exchange', async () => {
+      const { exchangeName, exchangeRoutingKey } = nodeConfigFixture
+      const queueName = 'queueName'
+      const unbindQueueStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: queueName }
 
-    amqp.channel = {
-      unbindQueue: unbindQueueStub,
-      close: channelCloseStub,
-      assertQueue: assertQueueStub,
-      off: sinon.stub(),
-    }
-    amqp.connection = { close: connectionCloseStub, off: sinon.stub() }
-    ;(Amqp as any).connectionPool.set('b1:undefined', {
-      connection: amqp.connection,
-      count: 1,
+      await (amqp as any).unbindQueues()
+
+      expect(unbindQueueStub.calledOnceWith(queueName, exchangeName, exchangeRoutingKey)).to.be.true
     })
-    amqp.node = { error: errorStub }
-    await amqp.assertQueue()
 
-    await amqp.close()
+    it('handles errors when unbinding', async () => {
+      const unbindQueueStub = sinon.stub().rejects(new Error('unbind failed'))
+      const errorStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'queueName' }
+      amqp.node = { error: errorStub }
 
-    expect(channelCloseStub.calledOnce).to.equal(true)
-    expect(connectionCloseStub.calledOnce).to.equal(true)
-    expect(errorStub.calledWithMatch('Error closing AMQP channel')).to.equal(true)
+      await (amqp as any).unbindQueues()
+
+      expect(errorStub.calledOnceWithMatch('Error unbinding queue for routing key')).to.be.true
+    })
+  })
+
+  describe('closeChannel()', () => {
+    it('closes the channel', async () => {
+      const closeStub = sinon.stub().resolves()
+      amqp.channel = { close: closeStub, off: sinon.stub() }
+
+      await (amqp as any).closeChannel()
+
+      expect(closeStub.calledOnce).to.be.true
+    })
+
+    it('handles errors when closing', async () => {
+      const closeStub = sinon.stub().rejects(new Error('close failed'))
+      const errorStub = sinon.stub()
+      amqp.channel = { close: closeStub, off: sinon.stub() }
+      amqp.node = { error: errorStub }
+
+      await (amqp as any).closeChannel()
+
+      expect(errorStub.calledOnceWithMatch('Error closing AMQP channel')).to.be.true
+    })
   })
 
   it('createChannel()', async () => {

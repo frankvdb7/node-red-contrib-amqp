@@ -1,3 +1,4 @@
+import { Node } from 'node-red'
 import { ConsumeMessage, MessageProperties } from 'amqplib'
 
 export interface BrokerConfig extends Node {
@@ -10,6 +11,10 @@ export interface BrokerConfig extends Node {
     username: string
     password: string
   }
+}
+
+export interface AmqpBrokerNode extends BrokerConfig {
+  connections: Record<string, boolean>
 }
 
 export interface AmqpConfig {
