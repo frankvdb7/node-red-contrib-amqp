@@ -32,21 +32,26 @@ module.exports = function (RED: NodeRedApp): void {
     // @ts-ignore
     RED.nodes.eachNode(n => {
       if (n.type === 'amqp-broker') {
-        const brokerNode = n as AmqpBrokerNode
-        const isConnected = Object.values(brokerNode.connections).some(
-          status => status === true,
-        )
-        const status = isConnected ? 'connected' : 'disconnected'
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        const brokerNode = RED.nodes.getNode(n.id) as AmqpBrokerNode
 
-        if (!isConnected) {
-          allConnected = false
+        if (brokerNode) {
+          const isConnected = Object.values(brokerNode.connections || {}).some(
+            status => status === true,
+          )
+          const status = isConnected ? 'connected' : 'disconnected'
+
+          if (!isConnected) {
+            allConnected = false
+          }
+
+          brokerStatuses.push({
+            id: brokerNode.id,
+            name: brokerNode.name,
+            status,
+          })
         }
-
-        brokerStatuses.push({
-          id: brokerNode.id,
-          name: brokerNode.name,
-          status,
-        })
       }
     })
 
