@@ -13,6 +13,7 @@ import {
 import {
   AmqpConfig,
   BrokerConfig,
+  AmqpBrokerNode,
   NodeType,
   AssembledMessage,
   GenericJsonObject,
@@ -24,7 +25,7 @@ import { NODE_STATUS } from './constants'
 
 export default class Amqp {
   private config: AmqpConfig
-  private broker: Node
+  private broker: AmqpBrokerNode
   private connection: ChannelModel
   private channel: Channel
   private q: Replies.AssertQueue
@@ -112,6 +113,9 @@ export default class Amqp {
       }
     }
 
+    this.broker.connections[this.node.id] = true
+    this.node.status(NODE_STATUS.Connected)
+
     entry.count += 1
     this.connection = entry.connection
 
@@ -123,6 +127,7 @@ export default class Amqp {
 
     this.connectionCloseHandler = (): void => {
       /* istanbul ignore next */
+      this.broker.connections[this.node.id] = false
       this.node.status(NODE_STATUS.Disconnected)
       this.node.log(`AMQP Connection closed`)
     }
@@ -390,34 +395,31 @@ export default class Amqp {
     if (this.closed) {
       return
     }
-
     this.closed = true
 
+    await this.unbindQueues()
+    await this.closeChannel()
+    await this.releaseConnection()
+  }
+
+  private async unbindQueues(): Promise<void> {
     const { name: exchangeName } = this.config.exchange
     const queueName = this.q?.queue
 
-    try {
-      /* istanbul ignore else */
-      if (exchangeName && queueName) {
-        const routingKeys = this.parseRoutingKeys()
+    if (exchangeName && queueName) {
+      const routingKeys = this.parseRoutingKeys()
+      for (const routingKey of routingKeys) {
         try {
-          for (let x = 0; x < routingKeys.length; x++) {
-            await this.channel.unbindQueue(
-              queueName,
-              exchangeName,
-              routingKeys[x],
-            )
-          }
+          await this.channel.unbindQueue(queueName, exchangeName, routingKey)
         } catch (e) {
           /* istanbul ignore next */
-          console.error('Error unbinding queue: ', e.message)
+          this.node.error(`Error unbinding queue for routing key ${routingKey}: ${e.message}`)
         }
       }
-    } catch (e) {
-      /* istanbul ignore next */
-      this.node.error(`Error unbinding queue: ${e}`)
     }
+  }
 
+  private async closeChannel(): Promise<void> {
     if (this.channel) {
       this.channel.off('error', this.channelErrorHandler)
       this.channel.off('close', this.channelCloseHandler)
@@ -428,8 +430,6 @@ export default class Amqp {
         this.node.error(`Error closing AMQP channel: ${e}`)
       }
     }
-
-    await this.releaseConnection()
   }
 
   private async releaseConnection(): Promise<void> {
@@ -437,6 +437,9 @@ export default class Amqp {
     const broker = this.broker as unknown as BrokerConfig
     const vhost = this.vhostOverride ?? broker?.vhost
     const key = `${brokerId}:${vhost}`
+
+    this.broker.connections[this.node.id] = false
+    this.node.status(NODE_STATUS.Disconnected)
 
     if (this.connection) {
       this.connection.off('error', this.connectionErrorHandler)
