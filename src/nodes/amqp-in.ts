@@ -79,8 +79,8 @@ module.exports = function (RED: NodeRedApp): void {
           channel = await amqp.initialize()
           await amqp.consume()
 
-          onConnClose = async e => {
-            e && (await reconnect())
+          onConnClose = async () => {
+            await reconnect()
           }
 
           onConnError = async e => {

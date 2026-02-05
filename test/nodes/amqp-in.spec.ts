@@ -210,8 +210,11 @@ describe('amqp-in Node', () => {
   it('should reconnect on input message', done => {
     const connectStub = sinon.stub(Amqp.prototype, 'connect')
     const closeStub = sinon.stub(Amqp.prototype, 'close')
-    const flow = [{ id: 'n1', type: NodeType.AmqpIn, name: 'test name', wires: [[]] }]
-    helper.load(amqpIn, flow, () => {
+    const flow = [
+      { id: 'n1', type: NodeType.AmqpIn, name: 'test name', broker: 'b1', wires: [[]] },
+      { id: 'b1', type: 'amqp-broker', name: 'test broker' },
+    ]
+    helper.load([amqpIn, amqpBroker], flow, credentialsFixture, () => {
       const n1 = helper.getNode('n1')
       n1.receive({ payload: { reconnectCall: true }})
       expect(closeStub.calledOnce).to.be.true
@@ -258,6 +261,27 @@ describe('amqp-in Node', () => {
     // Get the 'on' callback for connection close
     const onCallback = connectionMock.on.withArgs('close').getCall(0).args[1]
     onCallback('connection closed')
+    expect(closeStub.calledOnce).to.be.true
+  })
+
+  it('reconnects on connection close without error argument', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .resolves(connectionMock as any)
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .resolves(channelMock as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close')
+
+    await helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture
+    )
+    const onCallback = connectionMock.on.withArgs('close').getCall(0).args[1]
+    onCallback()
     expect(closeStub.calledOnce).to.be.true
   })
 
