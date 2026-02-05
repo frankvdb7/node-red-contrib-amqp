@@ -45,42 +45,46 @@ export interface AmqpConfig {
 }
 
 export interface AmqpInNodeDefaults {
-  name?: any
-  broker?: any
-  prefetch?: any
+  name?: string
+  broker?: string
+  prefetch?: number
   reconnectOnError?: boolean
-  noAck?: any
-  exchangeName?: any
-  exchangeType?: any
-  exchangeRoutingKey?: any
-  exchangeDurable?: any
-  queueName?: any
-  queueType?: any
-  queueExclusive?: any
-  queueDurable?: any
-  queueAutoDelete?: any
-  queueArguments?: any
-  headers?: any
+  noAck?: boolean
+  exchangeName?: string
+  exchangeType?: ExchangeType
+  exchangeRoutingKey?: string
+  exchangeDurable?: boolean
+  queueName?: string
+  queueType?: string
+  queueExclusive?: boolean
+  queueDurable?: boolean
+  queueAutoDelete?: boolean
+  queueArguments?: JsonObject
+  headers?: JsonObject
 }
 
 export interface AmqpOutNodeDefaults {
-  name?: any
-  broker?: any
-  exchangeName?: any
-  exchangeType?: any
-  exchangeRoutingKey?: any
-  exchangeDurable?: any
-  amqpProperties?: any
-  outputs?: any
-  rpcTimeoutMilliseconds?: any
-  queueArguments?: any
-  waitForConfirms?: any
+  name?: string
+  broker?: string
+  exchangeName?: string
+  exchangeType?: ExchangeType
+  exchangeRoutingKey?: string
+  exchangeDurable?: boolean
+  amqpProperties?: MessageProperties | JsonObject | string
+  outputs?: number
+  rpcTimeoutMilliseconds?: number
+  queueArguments?: JsonObject
+  waitForConfirms?: boolean
 }
 
-export type GenericJsonObject = Record<string, any>
+export type JsonPrimitive = string | number | boolean | null
+export type JsonValue = JsonPrimitive | JsonObject | JsonArray
+export type JsonArray = JsonValue[]
+export type JsonObject = { [key: string]: JsonValue }
+export type GenericJsonObject = JsonObject
 
 export type AssembledMessage = ConsumeMessage & {
-  payload: GenericJsonObject | string
+  payload: JsonValue
   manualAck?: ManualAckFields
 }
 

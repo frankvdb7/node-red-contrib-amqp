@@ -17,6 +17,8 @@ import {
   NodeType,
   AssembledMessage,
   GenericJsonObject,
+  JsonValue,
+  JsonObject,
   ExchangeType,
   AmqpInNodeDefaults,
   AmqpOutNodeDefaults,
@@ -62,12 +64,12 @@ export default class Amqp {
         durable: config.queueDurable,
         autoDelete: config.queueAutoDelete,
         queueType: config.queueType,
-        queueArguments: this.parseJson(config.queueArguments)
+        queueArguments: this.parseJsonObject(config.queueArguments),
       },
-      amqpProperties: this.parseJson(
+      amqpProperties: this.parseJsonObject(
         config.amqpProperties,
-      ) as MessageProperties,
-      headers: this.parseJson(config.headers),
+      ) as unknown as MessageProperties,
+      headers: this.parseJsonObject(config.headers),
       outputs: config.outputs,
       rpcTimeout: config.rpcTimeoutMilliseconds,
     }
@@ -601,7 +603,7 @@ export default class Amqp {
     return this.node.type === NodeType.AmqpInManualAck
   }
 
-  private parseJson(jsonInput: unknown, logError = false): GenericJsonObject {
+  private parseJson(jsonInput: unknown, logError = false): JsonValue {
     let output: unknown
     try {
       output = JSON.parse(jsonInput as string)
@@ -612,6 +614,15 @@ export default class Amqp {
         this.node.error(`Invalid JSON payload: ${e}`)
       }
     }
-    return output
+    return output as JsonValue
+  }
+
+  private parseJsonObject(jsonInput: unknown, logError = false): JsonObject {
+    const output = this.parseJson(jsonInput, logError)
+    return this.isJsonObject(output) ? output : {}
+  }
+
+  private isJsonObject(value: JsonValue): value is JsonObject {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
   }
 }

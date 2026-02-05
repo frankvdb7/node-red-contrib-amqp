@@ -207,6 +207,29 @@ describe('amqp-in Node', () => {
     )
   })
 
+  it('handles non-object connect errors', function (done) {
+    const connectStub = sinon.stub(Amqp.prototype, 'connect').throws('boom')
+    helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+      function () {
+        const amqpInNode = helper.getNode('n1')
+        amqpInNode.on('call:status', call => {
+          if (call.args[0].text === NODE_STATUS.Error.text) {
+            try {
+              expect(call.args[0]).to.deep.equal(NODE_STATUS.Error)
+              expect(connectStub).to.throw()
+              done()
+            } catch (err) {
+              done(err)
+            }
+          }
+        })
+      },
+    )
+  })
+
   it('should reconnect on input message', done => {
     const connectStub = sinon.stub(Amqp.prototype, 'connect')
     const closeStub = sinon.stub(Amqp.prototype, 'close')

@@ -219,6 +219,29 @@ describe('amqp-in-manual-ack Node', () => {
     )
   })
 
+  it('handles non-object connect errors', function (done) {
+    const connectStub = sinon.stub(Amqp.prototype, 'connect').throws('boom')
+    helper.load(
+      [amqpInManualAck, amqpBroker],
+      amqpInManualAckFlowFixture,
+      credentialsFixture,
+      function () {
+        const amqpInManualAckNode = helper.getNode('n1')
+        amqpInManualAckNode.on('call:status', call => {
+          if (call.args[0].text === NODE_STATUS.Error.text) {
+            try {
+              expect(call.args[0]).to.deep.equal(NODE_STATUS.Error)
+              expect(connectStub).to.throw()
+              done()
+            } catch (err) {
+              done(err)
+            }
+          }
+        })
+      },
+    )
+  })
+
   it('does not register flows:stopped listener', function (done) {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }

@@ -1,14 +1,20 @@
-import { NodeRedApp, EditorNodeProperties } from 'node-red'
+import { NodeRedApp, EditorNodeProperties, Node, NodeMessageInFlow } from 'node-red'
+import { Channel, ChannelModel } from 'amqplib'
 import { NODE_STATUS } from '../constants'
 import { AmqpInNodeDefaults, AmqpOutNodeDefaults, ErrorType, NodeType, ErrorLocationEnum } from '../types'
 import Amqp from '../Amqp'
 
 module.exports = function (RED: NodeRedApp): void {
+  const isErrorLike = (
+    value: unknown,
+  ): value is { code?: string; message?: string; isOperational?: boolean } =>
+    typeof value === 'object' && value !== null
+
   function AmqpIn(config: EditorNodeProperties): void {
     let reconnectTimeout: NodeJS.Timeout
-    let reconnect = null;
-    let connection = null;
-    let channel = null;
+    let reconnect: (() => Promise<void>) | null = null
+    let connection: ChannelModel | null = null
+    let channel: Channel | null = null
     let onConnClose: (e: unknown) => Promise<void>
     let onConnError: (e: unknown) => Promise<void>
     let onChannelClose: () => Promise<void>
@@ -26,7 +32,11 @@ module.exports = function (RED: NodeRedApp): void {
 
     const reconnectOnError = configAmqp.reconnectOnError;
 
-    const inputListener = async (msg, _, done) => {
+    const inputListener = async (
+      msg: NodeMessageInFlow & { payload?: { reconnectCall?: boolean } },
+      _: unknown,
+      done?: (err?: Error) => void,
+    ) => {
       if (msg.payload && msg.payload.reconnectCall && typeof reconnect === 'function') {
         await reconnect()
         done && done()
@@ -53,7 +63,7 @@ module.exports = function (RED: NodeRedApp): void {
       channel?.off?.('error', onChannelError)
     }
 
-    async function initializeNode(nodeIns) {
+    async function initializeNode(nodeIns: Node) {
       reconnect = async () => {
         removeEventListeners()
         await amqp.close()
@@ -108,18 +118,19 @@ module.exports = function (RED: NodeRedApp): void {
 
           nodeIns.status(NODE_STATUS.Connected)
         }
-      } catch (e) {
+      } catch (e: unknown) {
+        const err = isErrorLike(e) ? e : {}
         if (
-          e.code === ErrorType.InvalidLogin ||
-          /ACCESS_REFUSED/i.test(e.message || '')
+          err.code === ErrorType.InvalidLogin ||
+          /ACCESS_REFUSED/i.test(err.message || '')
         ) {
           nodeIns.status(NODE_STATUS.Invalid)
           nodeIns.error(`AmqpIn() Could not connect to broker ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectError } })
         } else if (
-          e.code === ErrorType.ConnectionRefused ||
-          e.code === ErrorType.DnsResolve ||
-          e.code === ErrorType.HostNotFound ||
-          e.isOperational
+          err.code === ErrorType.ConnectionRefused ||
+          err.code === ErrorType.DnsResolve ||
+          err.code === ErrorType.HostNotFound ||
+          err.isOperational
         ) {
           reconnectOnError && (await reconnect())
         } else {
