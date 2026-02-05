@@ -798,7 +798,7 @@ describe('Amqp Class', () => {
     let clock
 
     beforeEach(() => {
-        clock = sinon.useFakeTimers();
+        clock = sinon.useFakeTimers({ shouldClearNativeTimers: true });
     });
 
     afterEach(() => {

@@ -139,6 +139,9 @@ module.exports = function (RED: NodeRedApp): void {
         } else {
           nodeIns.status(NODE_STATUS.Error)
           nodeIns.error(`AmqpInManualAck() ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectError } })
+          if (reconnectOnError) {
+            await reconnect()
+          }
         }
       }
     }
