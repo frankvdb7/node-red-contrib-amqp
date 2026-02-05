@@ -1,10 +1,15 @@
-import { NodeRedApp, EditorNodeProperties } from 'node-red'
+import { NodeRedApp, EditorNodeProperties, Node, NodeMessageInFlow } from 'node-red'
 import { NODE_STATUS } from '../constants'
 import { AmqpInNodeDefaults, AmqpOutNodeDefaults, ErrorLocationEnum, ErrorType, NodeType } from '../types'
 import Amqp from '../Amqp'
-import { MessageProperties } from 'amqplib'
+import { MessageProperties, Channel, ChannelModel } from 'amqplib'
 
 module.exports = function (RED: NodeRedApp): void {
+  const isErrorLike = (
+    value: unknown,
+  ): value is { code?: string; message?: string; isOperational?: boolean } =>
+    typeof value === 'object' && value !== null
+
   function AmqpOut(
     config: EditorNodeProperties & {
       exchangeRoutingKey: string
@@ -13,9 +18,9 @@ module.exports = function (RED: NodeRedApp): void {
     },
   ): void {
     let reconnectTimeout: NodeJS.Timeout
-    let reconnect = null
-    let connection = null
-    let channel = null
+    let reconnect: (() => Promise<void>) | null = null
+    let connection: ChannelModel | null = null
+    let channel: Channel | null = null
     let onConnClose: (e: unknown) => Promise<void>
     let onConnError: (e: unknown) => Promise<void>
     let onChannelClose: () => Promise<void>
@@ -40,7 +45,7 @@ module.exports = function (RED: NodeRedApp): void {
       channel?.off?.('error', onChannelError)
     }
 
-    const setupEventListeners = (nodeIns): void => {
+    const setupEventListeners = (nodeIns: Node): void => {
       onConnClose = async () => {
         await reconnect()
       }
@@ -69,20 +74,21 @@ module.exports = function (RED: NodeRedApp): void {
       channel.on('error', onChannelError)
     }
 
-    const handleError = async (e, nodeIns): Promise<void> => {
+    const handleError = async (e: unknown, nodeIns: Node): Promise<void> => {
+      const err = isErrorLike(e) ? e : {}
       if (
-        e.code === ErrorType.InvalidLogin ||
-        /ACCESS_REFUSED/i.test(e.message || '')
+        err.code === ErrorType.InvalidLogin ||
+        /ACCESS_REFUSED/i.test(err.message || '')
       ) {
         nodeIns.status(NODE_STATUS.Invalid)
         nodeIns.error(`AmqpOut() Could not connect to broker ${e}`, {
           payload: { error: e, location: ErrorLocationEnum.ConnectError },
         })
       } else if (
-        e.code === ErrorType.ConnectionRefused ||
-        e.code === ErrorType.DnsResolve ||
-        e.code === ErrorType.HostNotFound ||
-        e.isOperational
+        err.code === ErrorType.ConnectionRefused ||
+        err.code === ErrorType.DnsResolve ||
+        err.code === ErrorType.HostNotFound ||
+        err.isOperational
       ) {
         reconnectOnError && (await reconnect())
       } else {
@@ -94,7 +100,15 @@ module.exports = function (RED: NodeRedApp): void {
     }
 
     // handle input event
-    const inputListener = async (msg, _, done) => {
+    const inputListener = async (
+      msg: NodeMessageInFlow & {
+        routingKey?: string
+        vhost?: string
+        properties?: MessageProperties
+      },
+      _: unknown,
+      done?: (err?: Error) => void,
+    ) => {
       const { payload, routingKey, vhost, properties: msgProperties } = msg
       const {
         exchangeRoutingKey,
@@ -129,7 +143,7 @@ module.exports = function (RED: NodeRedApp): void {
         case 'jsonata': {
           const expr = RED.util.prepareJSONataExpression(exchangeRoutingKey, this)
           try {
-            const result = await new Promise<any>((resolve, reject) => {
+            const result = await new Promise<unknown>((resolve, reject) => {
               RED.util.evaluateJSONataExpression(expr, msg, (err, value) => {
                 if (err) {
                   reject(err)
@@ -196,7 +210,7 @@ module.exports = function (RED: NodeRedApp): void {
       done && done()
     })
 
-    async function initializeNode(nodeIns) {
+    async function initializeNode(nodeIns: Node) {
       reconnect = async () => {
         removeEventListeners()
         await amqp.close()

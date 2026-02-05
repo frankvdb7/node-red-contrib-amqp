@@ -450,6 +450,29 @@ describe('amqp-out Node', () => {
     )
   })
 
+  it('handles non-object connect errors', function (done) {
+    const connectStub = sinon.stub(Amqp.prototype, 'connect').throws('boom')
+    helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+      function () {
+        const amqpOutNode = helper.getNode('n1')
+        amqpOutNode.on('call:status', call => {
+          if (call.args[0].text === NODE_STATUS.Error.text) {
+            try {
+              expect(call.args[0]).to.deep.equal(NODE_STATUS.Error)
+              expect(connectStub).to.throw()
+              done()
+            } catch (err) {
+              done(err)
+            }
+          }
+        })
+      },
+    )
+  })
+
   it('handles connection close', function (done) {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
