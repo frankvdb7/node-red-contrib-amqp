@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 export {}
 const { expect } = require('chai')
+import { NODE_STATUS } from '../src/constants'
 const sinon = require('sinon')
 const amqplib = require('amqplib')
 const Amqp = require('../src/Amqp').default
@@ -250,6 +251,28 @@ describe('Amqp Class', () => {
     expect(assertExchangeStub.calledOnce).to.equal(true)
   })
 
+  it('nackAll() logs and delegates to channel', () => {
+    const msg = { content: 'foo', manualAck: { requeue: true } }
+    const nackAllStub = sinon.stub()
+    const logStub = sinon.stub()
+    amqp.channel = { nackAll: nackAllStub }
+    amqp.node = { log: logStub }
+    amqp.nackAll(msg as any)
+    sinon.assert.calledOnce(nackAllStub)
+    sinon.assert.calledWith(nackAllStub, true)
+  })
+
+  it('reject() logs and delegates to channel', () => {
+    const msg = { content: 'foo', manualAck: { requeue: false } }
+    const rejectStub = sinon.stub()
+    const logStub = sinon.stub()
+    amqp.channel = { reject: rejectStub }
+    amqp.node = { log: logStub }
+    amqp.reject(msg as any)
+    sinon.assert.calledOnce(rejectStub)
+    sinon.assert.calledWith(rejectStub, msg, false)
+  })
+
   it('consume()', async () => {
     const assertQueueStub = sinon.stub()
     const bindQueueStub = sinon.stub()
@@ -325,16 +348,16 @@ describe('Amqp Class', () => {
   })
 
   describe('publish()', () => {
-    it('publishes a message (topic)', () => {
+    it('publishes a message (topic)', async () => {
       const publishStub = sinon.stub()
       amqp.channel = {
         publish: publishStub,
       }
-      amqp.publish('a message')
+      await amqp.publish('a message')
       expect(publishStub.calledOnce).to.equal(true)
     })
 
-    it('publishes a message (fanout)', () => {
+    it('publishes a message (fanout)', async () => {
       // @ts-ignore
       amqp = new Amqp(RED, nodeFixture, {
         ...nodeConfigFixture,
@@ -344,11 +367,11 @@ describe('Amqp Class', () => {
       amqp.channel = {
         publish: publishStub,
       }
-      amqp.publish('a message')
+      await amqp.publish('a message')
       expect(publishStub.calledOnce).to.equal(true)
     })
 
-    it('publishes a message (direct w/RPC)', () => {
+    it('publishes a message (direct w/RPC)', async () => {
       // @ts-ignore
       amqp = new Amqp(RED, nodeFixture, {
         ...nodeConfigFixture,
@@ -377,12 +400,27 @@ describe('Amqp Class', () => {
       }
       amqp.q = {}
 
-      amqp.publish('a message')
+      await amqp.publish('a message')
 
       // FIXME: we're losing `this` in here and can't assert on mocks.
       // So no assertions :(
       // expect(consumeStub.calledOnce).to.equal(true)
       // expect(publishStub.calledOnce).to.equal(true)
+    })
+
+    it('waits for confirms when enabled', async () => {
+      const publishStub = sinon.stub()
+      const waitForConfirmsStub = sinon.stub().resolves()
+      amqp.channel = {
+        publish: publishStub,
+        waitForConfirms: waitForConfirmsStub,
+      }
+      amqp.config.waitForConfirms = true
+
+      await amqp.publish('a message')
+
+      expect(publishStub.calledOnce).to.equal(true)
+      expect(waitForConfirmsStub.calledOnce).to.equal(true)
     })
 
     it('tries to publish an invalid message', async () => {
@@ -400,65 +438,66 @@ describe('Amqp Class', () => {
     })
   })
 
-  it('close()', async () => {
-    const { exchangeName, exchangeRoutingKey } = nodeConfigFixture
-    const queueName = 'queueName'
+  describe('close()', () => {
+    it('orchestrates the closing of the connection', async () => {
+      const unbindQueuesStub = sinon.stub(amqp, 'unbindQueues' as any).resolves()
+      const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+      const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
 
-    const unbindQueueStub = sinon.stub()
-    const channelCloseStub = sinon.stub()
-    const connectionCloseStub = sinon.stub().resolves()
-    const assertQueueStub = sinon.stub().resolves({ queue: queueName })
+      await amqp.close()
 
-    amqp.channel = {
-      unbindQueue: unbindQueueStub,
-      close: channelCloseStub,
-      assertQueue: assertQueueStub,
-      off: sinon.stub(),
-    }
-    amqp.connection = { close: connectionCloseStub, off: sinon.stub() }
-    ;(Amqp as any).connectionPool.set('b1:undefined', {
-      connection: amqp.connection,
-      count: 1,
+      expect(unbindQueuesStub.calledOnce).to.be.true
+      expect(closeChannelStub.calledOnce).to.be.true
+      expect(releaseConnectionStub.calledOnce).to.be.true
     })
-    await amqp.assertQueue()
-
-    await amqp.close()
-
-    expect(unbindQueueStub.calledOnce).to.equal(true)
-    expect(
-      unbindQueueStub.calledWith(queueName, exchangeName, exchangeRoutingKey),
-    ).to.equal(true)
-    expect(channelCloseStub.calledOnce).to.equal(true)
-    expect(connectionCloseStub.calledOnce).to.equal(true)
   })
 
-  it('close() logs error if channel.close fails but still closes connection', async () => {
-    const queueName = 'queueName'
-    const unbindQueueStub = sinon.stub()
-    const channelCloseStub = sinon.stub().rejects(new Error('channel fail'))
-    const connectionCloseStub = sinon.stub().resolves()
-    const errorStub = sinon.stub()
-    const assertQueueStub = sinon.stub().resolves({ queue: queueName })
+  describe('unbindQueues()', () => {
+    it('unbinds the queue from the exchange', async () => {
+      const { exchangeName, exchangeRoutingKey } = nodeConfigFixture
+      const queueName = 'queueName'
+      const unbindQueueStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: queueName }
 
-    amqp.channel = {
-      unbindQueue: unbindQueueStub,
-      close: channelCloseStub,
-      assertQueue: assertQueueStub,
-      off: sinon.stub(),
-    }
-    amqp.connection = { close: connectionCloseStub, off: sinon.stub() }
-    ;(Amqp as any).connectionPool.set('b1:undefined', {
-      connection: amqp.connection,
-      count: 1,
+      await (amqp as any).unbindQueues()
+
+      expect(unbindQueueStub.calledOnceWith(queueName, exchangeName, exchangeRoutingKey)).to.be.true
     })
-    amqp.node = { error: errorStub }
-    await amqp.assertQueue()
 
-    await amqp.close()
+    it('handles errors when unbinding', async () => {
+      const unbindQueueStub = sinon.stub().rejects(new Error('unbind failed'))
+      const errorStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'queueName' }
+      amqp.node = { error: errorStub }
 
-    expect(channelCloseStub.calledOnce).to.equal(true)
-    expect(connectionCloseStub.calledOnce).to.equal(true)
-    expect(errorStub.calledWithMatch('Error closing AMQP channel')).to.equal(true)
+      await (amqp as any).unbindQueues()
+
+      expect(errorStub.calledOnceWithMatch('Error unbinding queue for routing key')).to.be.true
+    })
+  })
+
+  describe('closeChannel()', () => {
+    it('closes the channel', async () => {
+      const closeStub = sinon.stub().resolves()
+      amqp.channel = { close: closeStub, off: sinon.stub() }
+
+      await (amqp as any).closeChannel()
+
+      expect(closeStub.calledOnce).to.be.true
+    })
+
+    it('handles errors when closing', async () => {
+      const closeStub = sinon.stub().rejects(new Error('close failed'))
+      const errorStub = sinon.stub()
+      amqp.channel = { close: closeStub, off: sinon.stub() }
+      amqp.node = { error: errorStub }
+
+      await (amqp as any).closeChannel()
+
+      expect(errorStub.calledOnceWithMatch('Error closing AMQP channel')).to.be.true
+    })
   })
 
   it('createChannel()', async () => {
@@ -473,6 +512,27 @@ describe('Amqp Class', () => {
     await amqp.createChannel()
     expect(createChannelStub.calledOnce).to.equal(true)
     expect(amqp.channel).to.eq(result)
+  })
+
+  it('createChannel() uses confirm channel when configured', async () => {
+    const result = {
+      on: sinon.stub(),
+      prefetch: sinon.stub(),
+    }
+    const createConfirmChannelStub = sinon.stub().resolves(result)
+    const createChannelStub = sinon.stub()
+    amqp.connection = {
+      createConfirmChannel: createConfirmChannelStub,
+      createChannel: createChannelStub,
+    }
+    amqp.config.waitForConfirms = true
+
+    await amqp.createChannel()
+
+    expect(createConfirmChannelStub.calledOnce).to.equal(true)
+    expect(createChannelStub.called).to.equal(false)
+    expect(amqp.channel).to.eq(result)
+    expect(result.prefetch.calledOnce).to.equal(true)
   })
 
   it('createChannel() logs events', async () => {
@@ -732,5 +792,229 @@ describe('Amqp Class', () => {
       expect(amqp2.vhostOverride).to.equal('vh3')
       expect(sharedBroker.vhost).to.equal('vh1')
     })
+  })
+
+  describe('handleRemoteProcedureCall()', () => {
+    let clock
+
+    beforeEach(() => {
+        clock = sinon.useFakeTimers();
+    });
+
+    afterEach(() => {
+        clock.restore();
+    });
+
+    it('handles RPC timeout', async () => {
+        const sendStub = sinon.stub();
+        const deleteQueueStub = sinon.stub().resolves();
+        const consumeStub = sinon.stub();
+        const assertQueueStub = sinon.stub().resolves('rpc-queue');
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub() };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            publish: sinon.stub(),
+        };
+
+        amqp.config.outputs = 1; // Enable RPC
+        amqp.config.rpcTimeout = 1000;
+
+        await amqp.publish('a message');
+
+        // Move time forward to trigger the timeout
+        await clock.tickAsync(1001);
+
+        expect(sendStub.calledOnce).to.be.true;
+        expect(sendStub.firstCall.args[0].payload.message).to.match(/Timeout while waiting for RPC response/);
+        expect(deleteQueueStub.calledOnce).to.be.true;
+    });
+
+    it('handles RPC timeout with mismatched correlation ID message', async () => {
+        const sendStub = sinon.stub();
+        const deleteQueueStub = sinon.stub().resolves();
+        const assertQueueStub = sinon.stub().resolves('rpc-queue');
+        let consumeCallback;
+        const consumeStub = sinon.stub().callsFake((queue, cb) => {
+            consumeCallback = cb;
+            return Promise.resolve();
+        });
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub() };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            publish: sinon.stub(),
+        };
+
+        amqp.config.outputs = 1; // Enable RPC
+        amqp.config.rpcTimeout = 1000;
+
+        await amqp.publish('a message', { correlationId: 'test-correlation-id' });
+
+        // Simulate receiving a message with the wrong correlation ID
+        consumeCallback({
+            properties: { correlationId: 'wrong-id' },
+            content: Buffer.from('{"response": true}')
+        });
+
+        // Move time forward to trigger the timeout
+        await clock.tickAsync(1001);
+
+        expect(sendStub.calledOnce).to.be.true;
+        expect(sendStub.firstCall.args[0].payload.message).to.match(/Correlation ids do not match/);
+        expect(deleteQueueStub.calledOnce).to.be.true;
+    });
+
+    it('handles error when deleting queue on timeout', async () => {
+        const sendStub = sinon.stub();
+        const deleteQueueStub = sinon.stub().rejects(new Error('delete failed'));
+        const consumeStub = sinon.stub();
+        const assertQueueStub = sinon.stub().resolves('rpc-queue');
+        const errorStub = sinon.stub();
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: errorStub };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            publish: sinon.stub(),
+        };
+
+        amqp.config.outputs = 1; // Enable RPC
+        amqp.config.rpcTimeout = 1000;
+
+        await amqp.publish('a message');
+
+        // Move time forward to trigger the timeout
+        await clock.tickAsync(1001);
+
+        expect(sendStub.calledOnce).to.be.true;
+        expect(deleteQueueStub.calledOnce).to.be.true;
+        expect(errorStub.calledWithMatch('Error trying to cancel RPC consumer')).to.be.true;
+    });
+
+    it('handles error during RPC setup', async () => {
+        const errorStub = sinon.stub();
+        const assertQueueStub = sinon.stub().rejects(new Error('assert failed'));
+
+        amqp.node = { ...nodeFixture, error: errorStub };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            publish: sinon.stub(),
+        };
+
+        amqp.config.outputs = 1; // Enable RPC
+
+        await amqp.publish('a message');
+
+        expect(assertQueueStub.calledOnce).to.be.true;
+        expect(errorStub.calledWithMatch('Could not consume RPC message')).to.be.true;
+    });
+
+  });
+
+  it('connect() handles connection failure', async () => {
+    const connectStub = sinon.stub(amqplib, 'connect').rejects(new Error('connection failed'));
+    const warnStub = sinon.stub();
+    amqp.node = { ...nodeFixture, warn: warnStub, log: sinon.stub() };
+
+    try {
+        await amqp.connect();
+        expect.fail('connect should have thrown');
+    } catch (e) {
+        expect(connectStub.calledOnce).to.be.true;
+        expect(warnStub.calledWithMatch('Failed to connect to AMQP broker')).to.be.true;
+        expect(e.message).to.equal('connection failed');
+    }
+  });
+
+  describe('releaseConnection()', () => {
+    beforeEach(() => {
+      amqp.node = { ...nodeFixture, status: sinon.stub(), error: sinon.stub() }
+    })
+
+    it('decrements the connection count but does not close the connection', async () => {
+      const connectionStub = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().resolves(),
+      }
+
+      ;(Amqp as any).connectionPool.set('b1:vh1', {
+        connection: connectionStub,
+        count: 2,
+      })
+
+      amqp.connection = connectionStub as any
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1', connections: {} }
+
+      await (amqp as any).releaseConnection()
+
+      const poolEntry = (Amqp as any).connectionPool.get('b1:vh1')
+      expect(poolEntry.count).to.equal(1)
+      expect(connectionStub.close.called).to.be.false
+      expect(amqp.node.status.calledWith(NODE_STATUS.Disconnected)).to.be.true
+    })
+
+    it('removes the connection from the pool when count reaches zero', async () => {
+      let closed = false
+      const connectionStub = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().callsFake(
+          () =>
+            new Promise<void>(resolve =>
+              setTimeout(() => {
+                closed = true
+                resolve()
+              }, 5),
+            ),
+        ),
+      }
+
+      ;(Amqp as any).connectionPool.set('b1:vh1', {
+        connection: connectionStub,
+        count: 1,
+      })
+
+      amqp.connection = connectionStub as any
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1', connections: {} }
+
+      await (amqp as any).releaseConnection()
+
+      expect(connectionStub.close.calledOnce).to.be.true
+      expect(closed).to.be.true
+      expect((Amqp as any).connectionPool.size).to.equal(0)
+      expect(amqp.node.status.calledWith(NODE_STATUS.Disconnected)).to.be.true
+    })
+
+    it('handles connection.close error', async () => {
+      const connectionCloseStub = sinon.stub().rejects(new Error('close failed'));
+
+      const connectionStub = {
+          on: sinon.stub(),
+          off: sinon.stub(),
+          close: connectionCloseStub,
+      };
+
+      (Amqp as any).connectionPool.set('b1:vh1', {
+          connection: connectionStub,
+          count: 1,
+      });
+
+      amqp.connection = connectionStub as any;
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1', connections: {} };
+      amqp.config.broker = 'b1';
+
+      await (amqp as any).releaseConnection();
+
+      expect(connectionCloseStub.calledOnce).to.be.true;
+      expect(amqp.node.error.calledWithMatch('Error closing AMQP connection')).to.be.true;
+      expect(amqp.node.status.calledWith(NODE_STATUS.Disconnected)).to.be.true
+    });
   })
 })

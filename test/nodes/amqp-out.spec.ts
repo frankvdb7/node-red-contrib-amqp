@@ -73,6 +73,105 @@ describe('amqp-out Node', () => {
     )
   })
 
+  it('should handle JSONata expression evaluation error', async function () {
+    const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
+    const publishStub = sinon.stub(Amqp.prototype, 'publish');
+
+    const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
+    flowFixture[0].exchangeRoutingKeyType = 'jsonata';
+    flowFixture[0].exchangeRoutingKey = '$foo()'; // An invalid expression
+
+    await helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, async function () {
+      const amqpOutNode = helper.getNode('n1');
+
+      let errorCalled = false;
+      amqpOutNode.on('call:error', (call) => {
+        expect(call.args[0]).to.match(/Failed to evaluate JSONata expression/);
+        errorCalled = true;
+      });
+
+      await amqpOutNode.receive({ payload: 'foo' });
+
+      expect(setRoutingKeyStub.notCalled).to.be.true;
+      expect(publishStub.notCalled).to.be.true;
+      expect(errorCalled).to.be.true;
+    });
+  });
+
+  it('should handle dynamic routing key from `flow` context', async function () {
+    const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
+    sinon.stub(Amqp.prototype, 'publish');
+
+    const flowFixture = [...amqpOutFlowFixture];
+    flowFixture[0].exchangeRoutingKeyType = 'flow';
+    flowFixture[0].exchangeRoutingKey = 'myFlowVar';
+
+    await helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, async function () {
+      const amqpOutNode = helper.getNode('n1');
+      amqpOutNode.context().flow.set('myFlowVar', 'flow_routing_key');
+      await amqpOutNode.receive({ payload: 'foo' });
+
+      expect(setRoutingKeyStub.calledWith('flow_routing_key')).to.be.true;
+    });
+  });
+
+  it('should handle dynamic routing key from `global` context', function (done) {
+    const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
+    const publishStub = sinon.stub(Amqp.prototype, 'publish');
+
+    const flowFixture = [...amqpOutFlowFixture];
+    flowFixture[0].exchangeRoutingKeyType = 'global';
+    flowFixture[0].exchangeRoutingKey = 'myGlobalVar';
+
+    helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, function () {
+      const amqpOutNode = helper.getNode('n1');
+      amqpOutNode.context().global.set('myGlobalVar', 'global_routing_key');
+      amqpOutNode.receive({ payload: 'foo' });
+
+      setTimeout(() => {
+        expect(setRoutingKeyStub.calledWith('global_routing_key')).to.be.true;
+        done();
+      }, 50);
+    });
+  });
+
+  it('should not stringify payload when doNotStringifyPayload header is set', function (done) {
+    const payload = { data: 'test' };
+    const publishStub = sinon.stub(Amqp.prototype, 'publish');
+    const flowFixture = [...amqpOutFlowFixture];
+
+    helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, function () {
+      const amqpOutNode = helper.getNode('n1');
+      amqpOutNode.receive({
+        payload,
+        properties: { headers: { doNotStringifyPayload: true } },
+      });
+
+      setTimeout(() => {
+        expect(publishStub.calledOnceWith(payload, sinon.match.any)).to.be.true;
+        done();
+      }, 50);
+    });
+  });
+
+  it('handles error when switching vhost', async function () {
+    const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').rejects(new Error('vhost switch failed'));
+
+    await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture, async function () {
+      const amqpOutNode = helper.getNode('n1');
+
+      let errorCalled = false;
+      amqpOutNode.on('call:error', () => {
+        errorCalled = true;
+      });
+
+      await amqpOutNode.receive({ payload: 'foo', vhost: 'vh2' });
+
+      expect(setVhostStub.calledWith('vh2')).to.be.true;
+      expect(errorCalled).to.be.true;
+    });
+  });
+
   it('does not register flows:stopped listener', function (done) {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
@@ -339,4 +438,49 @@ describe('amqp-out Node', () => {
       },
     )
   })
+
+  it('handles connection close', function (done) {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .resolves(connectionMock as any)
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .resolves(channelMock as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close')
+
+    helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+      function () {
+        // Get the 'on' callback for connection close
+        const onCallback = connectionMock.on.withArgs('close').getCall(0).args[1]
+        onCallback('connection closed')
+        expect(closeStub.calledOnce).to.be.true
+        done()
+      },
+    )
+  })
+
+  it('should handle connection errors', function (done) {
+    const flow = [
+      { id: 'n1', type: 'amqp-out', name: 'test name', broker: 'b1' },
+      { id: 'b1', type: 'amqp-broker', name: 'test broker' }
+    ];
+    helper.load([amqpOut, amqpBroker], flow, function () {
+      const amqpOutNode = helper.getNode('n1');
+      const brokerNode = helper.getNode('b1');
+      brokerNode.on('amqp-out-error', (err) => {
+        try {
+          expect(err.message).to.equal('Connection error');
+          done();
+        } catch (e) {
+          done(e);
+        }
+      });
+      brokerNode.emit('amqp-out-error', new Error('Connection error'));
+    });
+  });
 })

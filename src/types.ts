@@ -1,3 +1,4 @@
+import { Node } from 'node-red'
 import { ConsumeMessage, MessageProperties } from 'amqplib'
 
 export interface BrokerConfig extends Node {
@@ -12,12 +13,17 @@ export interface BrokerConfig extends Node {
   }
 }
 
+export interface AmqpBrokerNode extends BrokerConfig {
+  connections: Record<string, boolean>
+}
+
 export interface AmqpConfig {
   name?: string
   broker: string
   prefetch: number
   reconnectOnError?: boolean
   noAck: boolean
+  waitForConfirms?: boolean
   exchange: {
     name: string
     type: ExchangeType
@@ -68,6 +74,7 @@ export interface AmqpOutNodeDefaults {
   outputs?: any
   rpcTimeoutMilliseconds?: any
   queueArguments?: any
+  waitForConfirms?: any
 }
 
 export type GenericJsonObject = Record<string, any>

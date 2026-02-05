@@ -63,60 +63,78 @@ describe('amqp-in-manual-ack Node', () => {
       credentialsFixture,
       async function () {
         expect(connectStub.calledOnce).to.be.true
-
-        // FIXME: Figure out why this isn't working:
-        // expect(initializeStub.calledOnce).to.be.true
-
         const amqpInManualAckNode = helper.getNode('n1')
-
-        // FIXME: these tests are essentially meaningless.
-        // For some reason the node is not being properly loaded by the helper
-        // They are not executing code
-        amqpInManualAckNode.receive({ payload: 'foo', routingKey: 'bar' })
-        amqpInManualAckNode.receive({
-          payload: 'foo',
-          routingKey: 'bar',
-          manualAck: {
-            ackMode: ManualAckType.Ack,
-          },
-        })
-        amqpInManualAckNode.receive({
-          payload: 'foo',
-          routingKey: 'bar',
-          manualAck: {
-            ackMode: ManualAckType.AckAll,
-          },
-        })
-        amqpInManualAckNode.receive({
-          payload: 'foo',
-          routingKey: 'bar',
-          manualAck: {
-            ackMode: ManualAckType.Nack,
-          },
-        })
-        amqpInManualAckNode.receive({
-          payload: 'foo',
-          routingKey: 'bar',
-          manualAck: {
-            ackMode: ManualAckType.NackAll,
-          },
-        })
-        amqpInManualAckNode.receive({
-          payload: 'foo',
-          routingKey: 'bar',
-          manualAck: {
-            ackMode: ManualAckType.Reject,
-          },
-        })
-        amqpInManualAckNode.on('input', () => {
-          console.warn('this is input?')
-          done()
-        })
         amqpInManualAckNode.close(true)
         done()
       },
     )
   })
+
+  describe('Manual Acknowledgment', () => {
+    let ackStub, ackAllStub, nackStub, nackAllStub, rejectStub;
+
+    beforeEach(() => {
+      ackStub = sinon.stub(Amqp.prototype, 'ack');
+      ackAllStub = sinon.stub(Amqp.prototype, 'ackAll');
+      nackStub = sinon.stub(Amqp.prototype, 'nack');
+      nackAllStub = sinon.stub(Amqp.prototype, 'nackAll');
+      rejectStub = sinon.stub(Amqp.prototype, 'reject');
+    });
+
+    it('should ack a message by default', done => {
+      helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture, () => {
+        const n1 = helper.getNode('n1');
+        n1.receive({ payload: 'test' });
+        expect(ackStub.calledOnce).to.be.true;
+        done();
+      });
+    });
+
+    it('should ack a message', done => {
+      helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture, () => {
+        const n1 = helper.getNode('n1');
+        n1.receive({ payload: 'test', manualAck: { ackMode: ManualAckType.Ack } });
+        expect(ackStub.calledOnce).to.be.true;
+        done();
+      });
+    });
+
+    it('should ack all messages', done => {
+      helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture, () => {
+        const n1 = helper.getNode('n1');
+        n1.receive({ payload: 'test', manualAck: { ackMode: ManualAckType.AckAll } });
+        expect(ackAllStub.calledOnce).to.be.true;
+        done();
+      });
+    });
+
+    it('should nack a message', done => {
+      helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture, () => {
+        const n1 = helper.getNode('n1');
+        n1.receive({ payload: 'test', manualAck: { ackMode: ManualAckType.Nack } });
+        expect(nackStub.calledOnce).to.be.true;
+        done();
+      });
+    });
+
+    it('should nack all messages', done => {
+      helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture, () => {
+        const n1 = helper.getNode('n1');
+        n1.receive({ payload: 'test', manualAck: { ackMode: ManualAckType.NackAll } });
+        expect(nackAllStub.calledOnce).to.be.true;
+        done();
+      });
+    });
+
+    it('should reject a message', done => {
+      helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture, () => {
+        const n1 = helper.getNode('n1');
+        n1.receive({ payload: 'test', manualAck: { ackMode: ManualAckType.Reject } });
+        expect(rejectStub.calledOnce).to.be.true;
+        done();
+      });
+    });
+  });
 
   it('tries to connect but the broker is down', function (done) {
     const connectStub = sinon
@@ -210,6 +228,7 @@ describe('amqp-in-manual-ack Node', () => {
     sinon
       .stub(Amqp.prototype, 'initialize')
       .resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
 
     helper.load(
       [amqpInManualAck, amqpBroker],
@@ -223,4 +242,87 @@ describe('amqp-in-manual-ack Node', () => {
       },
     )
   })
+
+  it('should reconnect on input message', done => {
+    const connectStub = sinon.stub(Amqp.prototype, 'connect')
+    const closeStub = sinon.stub(Amqp.prototype, 'close')
+    const flow = [{ id: 'n1', type: NodeType.AmqpInManualAck, name: 'test name', wires: [[]] }]
+    helper.load(amqpInManualAck, flow, () => {
+      const n1 = helper.getNode('n1')
+      n1.receive({ payload: { reconnectCall: true }})
+      expect(closeStub.calledOnce).to.be.true
+      done()
+    })
+  })
+
+  it('handles connection close', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .resolves(connectionMock as any)
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .resolves(channelMock as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close')
+
+    await helper.load(
+      [amqpInManualAck, amqpBroker],
+      amqpInManualAckFlowFixture,
+      credentialsFixture,
+    )
+    // Get the 'on' callback for connection close
+    const onCallback = connectionMock.on.withArgs('close').getCall(0).args[1]
+    onCallback('connection closed')
+    expect(closeStub.calledOnce).to.be.true
+  })
+
+  it('should handle connection errors', function (done) {
+    const flow = [
+      { id: 'n1', type: 'amqp-in-manual-ack', name: 'test name', broker: 'b1' },
+      { id: 'b1', type: 'amqp-broker', name: 'test broker' }
+    ];
+    helper.load([amqpInManualAck, amqpBroker], flow, function () {
+      const amqpInNode = helper.getNode('n1');
+      const brokerNode = helper.getNode('b1');
+      brokerNode.on('amqp-in-error', (err) => {
+        try {
+          expect(err.message).to.equal('Connection error');
+          done();
+        } catch (e) {
+          done(e);
+        }
+      });
+      brokerNode.emit('amqp-in-error', new Error('Connection error'));
+    });
+  });
+
+  it('does not reconnect on connection error when reconnectOnError is false', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
+    const channelMock = { on: sinon.stub(), off: sinon.stub() };
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
+    const closeStub = sinon.stub(Amqp.prototype, 'close');
+
+    const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture));
+    flow[1].reconnectOnError = false;
+
+    await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
+    const onCallback = connectionMock.on.withArgs('error').getCall(0).args[1]
+    onCallback('connection error')
+    expect(closeStub.called).to.be.false
+  });
+
+  it('reconnects on initialization failure', async function () {
+    const clock = sinon.useFakeTimers();
+    const connectStub = sinon.stub(Amqp.prototype, 'connect')
+      .onFirstCall().rejects(new Error('Initial connection failed'))
+      .onSecondCall().resolves({ on: sinon.stub(), off: sinon.stub(), close: sinon.stub() } as any);
+
+    helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture, async function () {
+      await clock.tickAsync(2500); // Wait for the reconnect timeout
+      expect(connectStub.callCount).to.equal(2);
+      clock.restore();
+    });
+  });
 })

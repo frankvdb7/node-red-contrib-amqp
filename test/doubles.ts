@@ -72,6 +72,7 @@ export const amqpOutFlowFixture = [
     durable: true,
     queueName: '',
     exclusive: true,
+    waitForConfirms: false,
   },
   { id: 'n2', type: 'helper' },
   {
@@ -99,6 +100,7 @@ export const nodeConfigFixture: AmqpInNodeDefaults & AmqpOutNodeDefaults = {
   queueDurable: false,
   queueAutoDelete: true,
   queueArguments: { 'x-dead-letter-exchange': 'dlx-exchange' },
+  waitForConfirms: false,
 }
 
 export const nodeFixture = {
@@ -117,6 +119,7 @@ export const brokerConfigFixture: any & BrokerConfig = {
     username: 'username',
     password: 'password',
   },
+  connections: {},
 }
 
 export class CustomError extends Error {

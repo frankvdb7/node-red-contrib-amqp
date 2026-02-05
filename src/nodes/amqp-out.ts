@@ -148,6 +148,7 @@ module.exports = function (RED: NodeRedApp): void {
             amqp.setRoutingKey(String(result))
           } catch (err) {
             this.error(`Failed to evaluate JSONata expression: ${err}`)
+            return
           }
           break
         }
@@ -178,9 +179,9 @@ module.exports = function (RED: NodeRedApp): void {
       }
 
       if (!!properties?.headers?.doNotStringifyPayload) {
-        amqp.publish(payload, properties)
+        await amqp.publish(payload, properties)
       } else {
-        amqp.publish(JSON.stringify(payload), properties)
+        await amqp.publish(JSON.stringify(payload), properties)
       }
 
       done && done()
