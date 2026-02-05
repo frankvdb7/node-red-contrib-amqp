@@ -246,8 +246,11 @@ describe('amqp-in-manual-ack Node', () => {
   it('should reconnect on input message', done => {
     const connectStub = sinon.stub(Amqp.prototype, 'connect')
     const closeStub = sinon.stub(Amqp.prototype, 'close')
-    const flow = [{ id: 'n1', type: NodeType.AmqpInManualAck, name: 'test name', wires: [[]] }]
-    helper.load(amqpInManualAck, flow, () => {
+    const flow = [
+      { id: 'n1', type: NodeType.AmqpInManualAck, name: 'test name', broker: 'b1', wires: [[]] },
+      { id: 'b1', type: 'amqp-broker', name: 'test broker' },
+    ]
+    helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture, () => {
       const n1 = helper.getNode('n1')
       n1.receive({ payload: { reconnectCall: true }})
       expect(closeStub.calledOnce).to.be.true
@@ -313,16 +316,17 @@ describe('amqp-in-manual-ack Node', () => {
     expect(closeStub.called).to.be.false
   });
 
-  it('reconnects on initialization failure', async function () {
-    const clock = sinon.useFakeTimers();
-    const connectStub = sinon.stub(Amqp.prototype, 'connect')
-      .onFirstCall().rejects(new Error('Initial connection failed'))
-      .onSecondCall().resolves({ on: sinon.stub(), off: sinon.stub(), close: sinon.stub() } as any);
+  it('does not reconnect on initialization failure when reconnectOnError is false', async function () {
+    const error = new Error('Initial connection failed');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (error as any).code = ErrorType.ConnectionRefused;
 
-    helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture, async function () {
-      await clock.tickAsync(2500); // Wait for the reconnect timeout
-      expect(connectStub.callCount).to.equal(2);
-      clock.restore();
-    });
+    const connectStub = sinon.stub(Amqp.prototype, 'connect').rejects(error);
+    const initChannelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'initialize').resolves(initChannelMock as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
+
+    await helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture);
+    expect(connectStub.callCount).to.equal(1);
   });
 })

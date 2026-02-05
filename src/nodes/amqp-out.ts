@@ -41,8 +41,8 @@ module.exports = function (RED: NodeRedApp): void {
     }
 
     const setupEventListeners = (nodeIns): void => {
-      onConnClose = async e => {
-        e && (await reconnect())
+      onConnClose = async () => {
+        await reconnect()
       }
 
       onConnError = async e => {
