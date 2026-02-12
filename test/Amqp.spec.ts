@@ -465,6 +465,96 @@ describe('Amqp Class', () => {
       expect(unbindQueueStub.calledOnceWith(queueName, exchangeName, exchangeRoutingKey)).to.be.true
     })
 
+    it('does not unbind long-lived named queues on close', async () => {
+      const unbindQueueStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'persistent-queue' }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'persistent-queue',
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await (amqp as any).unbindQueues()
+
+      expect(unbindQueueStub.called).to.be.false
+    })
+
+    it('does not unbind long-lived named queues even after routing key override', async () => {
+      const unbindQueueStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'persistent-queue' }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'persistent-queue',
+        exclusive: false,
+        autoDelete: false,
+      }
+      amqp.setRoutingKey('runtime.override.key')
+
+      await (amqp as any).unbindQueues()
+
+      expect(unbindQueueStub.called).to.be.false
+    })
+
+    it('does unbind for exclusive queues', async () => {
+      const { exchangeName, exchangeRoutingKey } = nodeConfigFixture
+      const unbindQueueStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'exclusive-queue' }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'exclusive-queue',
+        exclusive: true,
+        autoDelete: false,
+      }
+
+      await (amqp as any).unbindQueues()
+
+      expect(
+        unbindQueueStub.calledOnceWith('exclusive-queue', exchangeName, exchangeRoutingKey),
+      ).to.be.true
+    })
+
+    it('does unbind for auto-delete queues', async () => {
+      const { exchangeName, exchangeRoutingKey } = nodeConfigFixture
+      const unbindQueueStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'autodelete-queue' }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'autodelete-queue',
+        exclusive: false,
+        autoDelete: true,
+      }
+
+      await (amqp as any).unbindQueues()
+
+      expect(
+        unbindQueueStub.calledOnceWith('autodelete-queue', exchangeName, exchangeRoutingKey),
+      ).to.be.true
+    })
+
+    it('does unbind for server-named queues', async () => {
+      const { exchangeName, exchangeRoutingKey } = nodeConfigFixture
+      const unbindQueueStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'amq.gen-random' }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: '',
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await (amqp as any).unbindQueues()
+
+      expect(
+        unbindQueueStub.calledOnceWith('amq.gen-random', exchangeName, exchangeRoutingKey),
+      ).to.be.true
+    })
+
     it('handles errors when unbinding', async () => {
       const unbindQueueStub = sinon.stub().rejects(new Error('unbind failed'))
       const errorStub = sinon.stub()

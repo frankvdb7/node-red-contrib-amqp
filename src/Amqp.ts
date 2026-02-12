@@ -408,7 +408,7 @@ export default class Amqp {
     const { name: exchangeName } = this.config.exchange
     const queueName = this.q?.queue
 
-    if (exchangeName && queueName) {
+    if (exchangeName && queueName && this.shouldUnbindQueueOnClose()) {
       const routingKeys = this.parseRoutingKeys()
       for (const routingKey of routingKeys) {
         try {
@@ -419,6 +419,14 @@ export default class Amqp {
         }
       }
     }
+  }
+
+  private shouldUnbindQueueOnClose(): boolean {
+    const { name, exclusive, autoDelete } = this.config.queue
+
+    // Keep bindings for long-lived queues so reconnects don't temporarily
+    // remove routes and drop unroutable messages in-flight.
+    return !name || exclusive || autoDelete
   }
 
   private async closeChannel(): Promise<void> {
