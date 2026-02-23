@@ -245,6 +245,32 @@ describe('amqp-in Node', () => {
     })
   })
 
+  it('calls done with error when reconnect control fails', async function () {
+    sinon.stub(Amqp.prototype, 'connect').resolves({ on: sinon.stub(), off: sinon.stub() } as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves({ on: sinon.stub(), off: sinon.stub() } as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
+    sinon.stub(Amqp.prototype, 'close').rejects(new Error('reconnect failed'))
+
+    await helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+    )
+
+    const n1 = helper.getNode('n1')
+    const callErrors: unknown[] = []
+    n1.on('call:error', call => {
+      callErrors.push(call.args[0])
+    })
+
+    n1.receive({ payload: { reconnectCall: true } })
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    const doneError = callErrors.find(arg => arg instanceof Error) as Error | undefined
+    expect(doneError).to.not.equal(undefined)
+    expect(doneError?.message).to.match(/reconnect failed/i)
+  })
+
   it('should handle channel errors', function (done) {
     const flow = [
       { id: 'n1', type: 'amqp-in', name: 'test name', broker: 'b1' },
