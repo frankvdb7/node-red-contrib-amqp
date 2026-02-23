@@ -322,7 +322,27 @@ describe('amqp-in Node', () => {
     );
     const onCallback = channelMock.on.withArgs('close').getCall(0).args[1];
     onCallback('channel closed');
-    expect(closeStub.notCalled).to.be.true; // Should not reconnect
+    expect(closeStub.calledOnce).to.be.true;
+  });
+
+  it('reconnects on channel close even when reconnectOnError is false', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
+    const channelMock = { on: sinon.stub(), off: sinon.stub() };
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
+    const closeStub = sinon.stub(Amqp.prototype, 'close');
+
+    const flow = JSON.parse(JSON.stringify(amqpInFlowFixture));
+    flow[0].reconnectOnError = false;
+
+    await helper.load(
+      [amqpIn, amqpBroker],
+      flow,
+      credentialsFixture
+    );
+    const onCallback = channelMock.on.withArgs('close').getCall(0).args[1];
+    onCallback('channel closed');
+    expect(closeStub.calledOnce).to.be.true;
   });
 
   it('handles channel error', async function () {

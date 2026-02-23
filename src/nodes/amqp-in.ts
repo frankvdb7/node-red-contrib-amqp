@@ -101,7 +101,7 @@ module.exports = function (RED: NodeRedApp): void {
           }
 
           onChannelClose = async () => {
-            // original code didn't reconnect; we keep same behavior
+            await reconnect()
           }
 
           onChannelError = async e => {
