@@ -73,11 +73,11 @@ module.exports = function (RED: NodeRedApp): void {
         // always clear timer before set it;
         clearTimeout(reconnectTimeout)
         reconnectTimeout = setTimeout(() => {
-          try {
-            initializeNode(nodeIns)
-          } catch (e) {
-            reconnect()
-          }
+          void initializeNode(nodeIns).catch(() => {
+            if (typeof reconnect === 'function') {
+              void reconnect()
+            }
+          })
         }, 2000)
       }
 

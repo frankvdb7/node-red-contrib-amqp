@@ -229,11 +229,11 @@ module.exports = function (RED: NodeRedApp): void {
 
         clearTimeout(reconnectTimeout)
         reconnectTimeout = setTimeout(() => {
-          try {
-            initializeNode(nodeIns)
-          } catch (e) {
-            reconnect()
-          }
+          void initializeNode(nodeIns).catch(() => {
+            if (typeof reconnect === 'function') {
+              void reconnect()
+            }
+          })
         }, 2000)
       }
 
