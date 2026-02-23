@@ -285,6 +285,24 @@ describe('amqp-out Node', () => {
     )
   })
 
+  it('completes node close when amqp.close fails', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close').rejects(new Error('close failed'))
+
+    await helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+    )
+    const amqpOutNode = helper.getNode('n1')
+    await amqpOutNode.close()
+
+    expect(closeStub.calledOnce).to.be.true
+  })
+
   it('should connect to the server and send some messages with a dynamic routing key from `msg`', function (done) {
     // @ts-ignore
     Amqp.prototype.channel = {
