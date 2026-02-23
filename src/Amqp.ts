@@ -38,6 +38,7 @@ export default class Amqp {
   private channelErrorHandler: (e: unknown) => void
   private channelCloseHandler: () => void
   private channelReturnHandler: () => void
+  private rpcTimeouts: Set<NodeJS.Timeout> = new Set()
   private closed = false
 
   constructor(
@@ -342,6 +343,7 @@ export default class Amqp {
       // bad things will happen.
       let rpcQueueHasBeenDeleted = false
       let additionalErrorMessaging = ''
+      let rpcTimeout: NodeJS.Timeout | null = null
 
       /************************************
        * assert queue and set up consumer
@@ -359,6 +361,10 @@ export default class Amqp {
               if (!rpcQueueHasBeenDeleted) {
                 await this.channel.deleteQueue(queueName)
                 rpcQueueHasBeenDeleted = true
+                if (rpcTimeout) {
+                  clearTimeout(rpcTimeout)
+                  this.rpcTimeouts.delete(rpcTimeout)
+                }
               }
             } else {
               additionalErrorMessaging += ` Correlation ids do not match. Expecting: ${correlationId}, received: ${msg.properties.correlationId}`
@@ -371,7 +377,14 @@ export default class Amqp {
       /****************************************
        * Check if RPC has timed out and handle
        ****************************************/
-      setTimeout(async () => {
+      rpcTimeout = setTimeout(async () => {
+        if (rpcTimeout) {
+          this.rpcTimeouts.delete(rpcTimeout)
+        }
+        if (this.closed) {
+          return
+        }
+
         try {
           if (!rpcQueueHasBeenDeleted) {
             this.node.send({
@@ -388,6 +401,7 @@ export default class Amqp {
           this.node.error(`Error trying to cancel RPC consumer: ${e}`)
         }
       }, rpcConfig.rpcTimeout || 3000)
+      this.rpcTimeouts.add(rpcTimeout)
     } catch (e) {
       this.node.error(`Could not consume RPC message: ${e}`)
     }
@@ -398,6 +412,7 @@ export default class Amqp {
       return
     }
     this.closed = true
+    this.clearRpcTimeouts()
 
     await this.unbindQueues()
     await this.closeChannel()
@@ -632,5 +647,12 @@ export default class Amqp {
 
   private isJsonObject(value: JsonValue): value is JsonObject {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
+  }
+
+  private clearRpcTimeouts(): void {
+    for (const timeout of this.rpcTimeouts) {
+      clearTimeout(timeout)
+    }
+    this.rpcTimeouts.clear()
   }
 }

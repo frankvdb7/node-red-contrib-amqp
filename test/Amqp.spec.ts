@@ -987,6 +987,41 @@ describe('Amqp Class', () => {
         expect(errorStub.calledWithMatch('Error trying to cancel RPC consumer')).to.be.true;
     });
 
+    it('clears RPC timeout when closed before timeout elapses', async () => {
+        const sendStub = sinon.stub();
+        const deleteQueueStub = sinon.stub().resolves();
+        const consumeStub = sinon.stub().resolves();
+        const closeChannelStub = sinon.stub().resolves();
+        const poolConnection = {
+            close: sinon.stub().resolves(),
+            off: sinon.stub(),
+        };
+
+        sinon.stub(amqp, 'assertQueue').resolves('rpc-queue');
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub(), status: sinon.stub() };
+        amqp.channel = {
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            publish: sinon.stub(),
+            off: sinon.stub(),
+            close: closeChannelStub,
+        };
+        amqp.connection = poolConnection;
+        amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1', connections: {} };
+        (Amqp as any).connectionPool.set('b1:vh1', { connection: poolConnection, count: 1 });
+
+        amqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+
+        await amqp.publish('a message');
+        await amqp.close();
+        await clock.tickAsync(1001);
+
+        expect(sendStub.called).to.be.false;
+        expect(deleteQueueStub.called).to.be.false;
+    });
+
     it('handles error during RPC setup', async () => {
         const errorStub = sinon.stub();
         const assertQueueStub = sinon.stub().rejects(new Error('assert failed'));
