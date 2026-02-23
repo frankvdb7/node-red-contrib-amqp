@@ -214,12 +214,16 @@ module.exports = function (RED: NodeRedApp): void {
 
     this.on('input', inputListener)
     // When the node is re-deployed
-    this.on('close', async (done: () => void): Promise<void> => {
+    this.on('close', async (done: (err?: Error) => void): Promise<void> => {
       isShuttingDown = true
       clearTimeout(reconnectTimeout)
       removeEventListeners()
-      await amqp.close()
-      done && done()
+      try {
+        await amqp.close()
+        done && done()
+      } catch (e) {
+        done && done(toError(e))
+      }
     })
 
     async function initializeNode(nodeIns: Node) {
