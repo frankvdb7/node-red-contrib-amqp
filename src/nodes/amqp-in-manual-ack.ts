@@ -18,14 +18,19 @@ module.exports = function (RED: NodeRedApp): void {
     value: unknown,
   ): value is { code?: string; message?: string; isOperational?: boolean } =>
     typeof value === 'object' && value !== null
+  const toError = (value: unknown): Error =>
+    value instanceof Error ? value : new Error(String(value))
 
   function AmqpInManualAck(config: EditorNodeProperties): void {
     let reconnectTimeout: NodeJS.Timeout
     let reconnect: (() => Promise<void>) | null = null
+    let reconnectScheduled = false
+    let isShuttingDown = false
     let connection: ChannelModel | null = null
     let channel: Channel | null = null
     let onConnClose: (e: unknown) => Promise<void>
     let onConnError: (e: unknown) => Promise<void>
+    let onChannelClose: () => Promise<void>
     let onChannelError: (e: unknown) => Promise<void>
 
 
@@ -49,6 +54,17 @@ module.exports = function (RED: NodeRedApp): void {
       _: unknown,
       done?: (err?: Error) => void,
     ) => {
+      // handle manual reconnect control message
+      if (msg.payload && msg.payload.reconnectCall && typeof reconnect === 'function') {
+        try {
+          await reconnect()
+          done && done()
+        } catch (e) {
+          done && done(toError(e))
+        }
+        return
+      }
+
       const assembledMsg = msg as AssembledMessage
       // handle manualAck
       if (msg.manualAck) {
@@ -75,18 +91,14 @@ module.exports = function (RED: NodeRedApp): void {
       } else {
         amqp.ack(assembledMsg)
       }
-      // handle manual reconnect
-      if (msg.payload && msg.payload.reconnectCall && typeof reconnect === 'function') {
-        await reconnect()
-        done && done()
-      } else {
-        done && done()
-      }
+
+      done && done()
     }
     // receive input reconnectCall
     this.on('input', inputListener)
     // When the server goes down
     this.on('close', async (done: () => void): Promise<void> => {
+      isShuttingDown = true
       clearTimeout(reconnectTimeout)
       removeEventListeners()
       await amqp.close()
@@ -96,11 +108,17 @@ module.exports = function (RED: NodeRedApp): void {
     const removeEventListeners = (): void => {
       connection?.off?.('close', onConnClose)
       connection?.off?.('error', onConnError)
+      channel?.off?.('close', onChannelClose)
       channel?.off?.('error', onChannelError)
     }
 
     async function initializeNode(nodeIns: Node) {
       reconnect = async () => {
+        if (isShuttingDown || reconnectScheduled) {
+          return
+        }
+        reconnectScheduled = true
+
         removeEventListeners()
         await amqp.close()
         channel = null
@@ -109,11 +127,15 @@ module.exports = function (RED: NodeRedApp): void {
         // always clear timer before set it;
         clearTimeout(reconnectTimeout)
         reconnectTimeout = setTimeout(() => {
-          try {
-            initializeNode(nodeIns)
-          } catch (e) {
-            reconnect()
+          reconnectScheduled = false
+          if (isShuttingDown) {
+            return
           }
+          void initializeNode(nodeIns).catch(() => {
+            if (typeof reconnect === 'function') {
+              void reconnect()
+            }
+          })
         }, 2000)
       }
 
@@ -126,13 +148,17 @@ module.exports = function (RED: NodeRedApp): void {
           channel = await amqp.initialize()
           await amqp.consume()
 
-          onConnClose = async e => {
-            e && (await reconnect())
+          onConnClose = async () => {
+            await reconnect()
           }
 
           onConnError = async e => {
             e && reconnectOnError && (await reconnect())
             nodeIns.error(`Connection error ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectionErrorEvent } })
+          }
+
+          onChannelClose = async () => {
+            await reconnect()
           }
 
           onChannelError = async e => {
@@ -142,6 +168,7 @@ module.exports = function (RED: NodeRedApp): void {
 
           connection.on('close', onConnClose)
           connection.on('error', onConnError)
+          channel.on('close', onChannelClose)
           channel.on('error', onChannelError)
 
           nodeIns.status(NODE_STATUS.Connected)
