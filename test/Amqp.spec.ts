@@ -1124,6 +1124,22 @@ describe('Amqp Class', () => {
       amqp.node = { ...nodeFixture, status: sinon.stub(), error: sinon.stub() }
     })
 
+    it('does not throw when broker node is unavailable during shutdown', async () => {
+      const connectionStub = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().resolves(),
+      }
+
+      amqp.connection = connectionStub as any
+      amqp.broker = undefined as any
+
+      await (amqp as any).releaseConnection()
+
+      expect(connectionStub.off.called).to.be.true
+      expect(amqp.node.status.calledWith(NODE_STATUS.Disconnected)).to.be.true
+    })
+
     it('decrements the connection count but does not close the connection', async () => {
       const connectionStub = {
         on: sinon.stub(),
