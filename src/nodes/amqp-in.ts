@@ -41,8 +41,12 @@ module.exports = function (RED: NodeRedApp): void {
       done?: (err?: Error) => void,
     ) => {
       if (msg.payload && msg.payload.reconnectCall && typeof reconnect === 'function') {
-        await reconnect()
-        done && done()
+        try {
+          await reconnect()
+          done && done()
+        } catch (e) {
+          done && done(toError(e))
+        }
       } else {
         done && done()
       }
