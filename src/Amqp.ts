@@ -317,6 +317,7 @@ export default class Amqp {
       }
     } catch (e) {
       this.node.error(`Could not publish message: ${e}`)
+      throw e
     }
   }
 

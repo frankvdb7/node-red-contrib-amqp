@@ -87,18 +87,49 @@ describe('amqp-out Node', () => {
 
     await helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture);
     const amqpOutNode = helper.getNode('n1');
-
-    const errorPromise = new Promise<void>(resolve => {
-      amqpOutNode.on('call:error', (call) => {
-        expect(call.args[0]).to.match(/Failed to evaluate JSONata expression/);
-        resolve();
-      });
+    const callErrors: unknown[] = [];
+    amqpOutNode.on('call:error', (call) => {
+      callErrors.push(call.args[0]);
     });
 
     await amqpOutNode.receive({ payload: 'foo' });
-    await errorPromise;
+    await new Promise(resolve => setTimeout(resolve, 50));
 
+    const hasJsonataError = callErrors.some(arg => {
+      if (arg instanceof Error) {
+        return /JSONata/i.test(arg.message);
+      }
+      return /Failed to evaluate JSONata expression/i.test(String(arg));
+    });
+
+    expect(hasJsonataError).to.be.true;
     expect(setRoutingKeyStub.notCalled).to.be.true;
+    expect(publishStub.notCalled).to.be.true;
+  });
+
+  it('calls done with error when JSONata expression evaluation fails', async function () {
+    const publishStub = sinon.stub(Amqp.prototype, 'publish');
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+
+    const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
+    flowFixture[0].exchangeRoutingKeyType = 'jsonata';
+    flowFixture[0].exchangeRoutingKey = '$foo()';
+
+    await helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture);
+    const amqpOutNode = helper.getNode('n1');
+    const callErrors: unknown[] = [];
+    amqpOutNode.on('call:error', call => {
+      callErrors.push(call.args[0]);
+    });
+
+    await amqpOutNode.receive({ payload: 'foo' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    const doneError = callErrors.find(arg => arg instanceof Error) as Error | undefined;
+    expect(doneError).to.not.equal(undefined);
     expect(publishStub.notCalled).to.be.true;
   });
 
@@ -181,6 +212,54 @@ describe('amqp-out Node', () => {
       expect(setVhostStub.calledWith('vh2')).to.be.true;
       expect(errorCalled).to.be.true;
     });
+  });
+
+  it('calls done with error and does not publish when vhost switch fails', async function () {
+    const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').rejects(new Error('vhost switch failed'));
+    const publishStub = sinon.stub(Amqp.prototype, 'publish');
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+
+    await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture);
+    const amqpOutNode = helper.getNode('n1');
+    const callErrors: unknown[] = [];
+    amqpOutNode.on('call:error', call => {
+      callErrors.push(call.args[0]);
+    });
+
+    await amqpOutNode.receive({ payload: 'foo', vhost: 'vh2' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    expect(setVhostStub.calledOnceWith('vh2')).to.be.true;
+    const doneError = callErrors.find(arg => arg instanceof Error) as Error | undefined;
+    expect(doneError).to.not.equal(undefined);
+    expect(doneError?.message).to.match(/vhost switch failed/i);
+    expect(publishStub.notCalled).to.be.true;
+  });
+
+  it('calls done with error when publish fails', async function () {
+    const publishStub = sinon.stub(Amqp.prototype, 'publish').rejects(new Error('publish failed'));
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+
+    await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture);
+    const amqpOutNode = helper.getNode('n1');
+    const callErrors: unknown[] = [];
+    amqpOutNode.on('call:error', call => {
+      callErrors.push(call.args[0]);
+    });
+
+    await amqpOutNode.receive({ payload: 'foo' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    expect(publishStub.calledOnce).to.be.true;
+    const doneError = callErrors.find(arg => arg instanceof Error) as Error | undefined;
+    expect(doneError).to.not.equal(undefined);
+    expect(doneError?.message).to.match(/publish failed/i);
   });
 
   it('does not register flows:stopped listener', function (done) {
