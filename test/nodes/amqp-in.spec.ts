@@ -308,6 +308,27 @@ describe('amqp-in Node', () => {
     expect(closeStub.calledOnce).to.be.true
   })
 
+  it('does not reconnect after node close when late connection close event arrives', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
+
+    await helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture
+    )
+    const n1 = helper.getNode('n1')
+    await n1.close()
+
+    const onCallback = connectionMock.on.withArgs('close').getCall(0).args[1]
+    await onCallback('late connection close')
+
+    expect(closeStub.calledOnce).to.be.true
+  })
+
   it('handles channel close', async function () {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
     const channelMock = { on: sinon.stub(), off: sinon.stub() };

@@ -13,6 +13,7 @@ module.exports = function (RED: NodeRedApp): void {
   function AmqpIn(config: EditorNodeProperties): void {
     let reconnectTimeout: NodeJS.Timeout
     let reconnect: (() => Promise<void>) | null = null
+    let isShuttingDown = false
     let connection: ChannelModel | null = null
     let channel: Channel | null = null
     let onConnClose: (e: unknown) => Promise<void>
@@ -49,6 +50,7 @@ module.exports = function (RED: NodeRedApp): void {
     this.on('input', inputListener)
     // When the node is re-deployed
     this.on('close', async (done: () => void): Promise<void> => {
+      isShuttingDown = true
       clearTimeout(reconnectTimeout)
       removeEventListeners()
       await amqp.close()
@@ -65,6 +67,9 @@ module.exports = function (RED: NodeRedApp): void {
 
     async function initializeNode(nodeIns: Node) {
       reconnect = async () => {
+        if (isShuttingDown) {
+          return
+        }
         removeEventListeners()
         await amqp.close()
         channel = null
@@ -73,6 +78,9 @@ module.exports = function (RED: NodeRedApp): void {
         // always clear timer before set it;
         clearTimeout(reconnectTimeout)
         reconnectTimeout = setTimeout(() => {
+          if (isShuttingDown) {
+            return
+          }
           void initializeNode(nodeIns).catch(() => {
             if (typeof reconnect === 'function') {
               void reconnect()
