@@ -9,6 +9,8 @@ module.exports = function (RED: NodeRedApp): void {
     value: unknown,
   ): value is { code?: string; message?: string; isOperational?: boolean } =>
     typeof value === 'object' && value !== null
+  const toError = (value: unknown): Error =>
+    value instanceof Error ? value : new Error(String(value))
 
   function AmqpOut(
     config: EditorNodeProperties & {
@@ -162,6 +164,7 @@ module.exports = function (RED: NodeRedApp): void {
             amqp.setRoutingKey(String(result))
           } catch (err) {
             this.error(`Failed to evaluate JSONata expression: ${err}`)
+            done && done(toError(err))
             return
           }
           break
@@ -189,13 +192,20 @@ module.exports = function (RED: NodeRedApp): void {
           me.status(NODE_STATUS.Connected)
         } catch (e) {
           await handleError(e, me)
+          done && done(toError(e))
+          return
         }
       }
 
-      if (!!properties?.headers?.doNotStringifyPayload) {
-        await amqp.publish(payload, properties)
-      } else {
-        await amqp.publish(JSON.stringify(payload), properties)
+      try {
+        if (!!properties?.headers?.doNotStringifyPayload) {
+          await amqp.publish(payload, properties)
+        } else {
+          await amqp.publish(JSON.stringify(payload), properties)
+        }
+      } catch (e) {
+        done && done(toError(e))
+        return
       }
 
       done && done()
