@@ -230,6 +230,24 @@ describe('amqp-in Node', () => {
     )
   })
 
+  it('completes node close when amqp.close fails', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub(), consume: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close').rejects(new Error('close failed'))
+
+    await helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+    )
+    const amqpInNode = helper.getNode('n1')
+    await amqpInNode.close()
+
+    expect(closeStub.calledOnce).to.be.true
+  })
+
   it('should reconnect on input message', done => {
     const connectStub = sinon.stub(Amqp.prototype, 'connect')
     const closeStub = sinon.stub(Amqp.prototype, 'close')

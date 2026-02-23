@@ -464,7 +464,9 @@ export default class Amqp {
     const vhost = this.vhostOverride ?? broker?.vhost
     const key = `${brokerId}:${vhost}`
 
-    this.broker.connections[this.node.id] = false
+    if (this.broker?.connections) {
+      this.broker.connections[this.node.id] = false
+    }
     this.node.status(NODE_STATUS.Disconnected)
 
     if (this.connection) {
