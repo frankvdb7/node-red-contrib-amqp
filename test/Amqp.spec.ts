@@ -432,7 +432,12 @@ describe('Amqp Class', () => {
       amqp.node = {
         error: errorStub,
       }
-      await amqp.publish('a message')
+      try {
+        await amqp.publish('a message')
+        expect.fail('publish should throw')
+      } catch {
+        // expected
+      }
       expect(publishStub.calledOnce).to.equal(true)
       expect(errorStub.calledOnce).to.equal(true)
     })
@@ -447,6 +452,28 @@ describe('Amqp Class', () => {
       await amqp.close()
 
       expect(unbindQueuesStub.calledOnce).to.be.true
+      expect(closeChannelStub.calledOnce).to.be.true
+      expect(releaseConnectionStub.calledOnce).to.be.true
+    })
+
+    it('does not unbind durable named queues when close() is called', async () => {
+      const unbindQueueStub = sinon.stub()
+      const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+      const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'durable-close-queue' }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'durable-close-queue',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await amqp.close()
+
+      expect(unbindQueueStub.called).to.be.false
       expect(closeChannelStub.calledOnce).to.be.true
       expect(releaseConnectionStub.calledOnce).to.be.true
     })
@@ -481,6 +508,23 @@ describe('Amqp Class', () => {
       expect(unbindQueueStub.called).to.be.false
     })
 
+    it('does not unbind durable named queues on close', async () => {
+      const unbindQueueStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'durable-named-queue' }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'durable-named-queue',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await (amqp as any).unbindQueues()
+
+      expect(unbindQueueStub.called).to.be.false
+    })
+
     it('does not unbind long-lived named queues even after routing key override', async () => {
       const unbindQueueStub = sinon.stub()
       amqp.channel = { unbindQueue: unbindQueueStub }
@@ -492,6 +536,24 @@ describe('Amqp Class', () => {
         autoDelete: false,
       }
       amqp.setRoutingKey('runtime.override.key')
+
+      await (amqp as any).unbindQueues()
+
+      expect(unbindQueueStub.called).to.be.false
+    })
+
+    it('does not unbind durable named queues even with multiple routing keys', async () => {
+      const unbindQueueStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'durable-multi-routing-queue' }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'durable-multi-routing-queue',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+      amqp.setRoutingKey('orders.created,orders.updated,orders.deleted')
 
       await (amqp as any).unbindQueues()
 
