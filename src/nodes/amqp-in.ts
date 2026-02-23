@@ -9,6 +9,8 @@ module.exports = function (RED: NodeRedApp): void {
     value: unknown,
   ): value is { code?: string; message?: string; isOperational?: boolean } =>
     typeof value === 'object' && value !== null
+  const toError = (value: unknown): Error =>
+    value instanceof Error ? value : new Error(String(value))
 
   function AmqpIn(config: EditorNodeProperties): void {
     let reconnectTimeout: NodeJS.Timeout
@@ -49,12 +51,16 @@ module.exports = function (RED: NodeRedApp): void {
     // receive input reconnectCall
     this.on('input', inputListener)
     // When the node is re-deployed
-    this.on('close', async (done: () => void): Promise<void> => {
+    this.on('close', async (done: (err?: Error) => void): Promise<void> => {
       isShuttingDown = true
       clearTimeout(reconnectTimeout)
       removeEventListeners()
-      await amqp.close()
-      done && done()
+      try {
+        await amqp.close()
+        done && done()
+      } catch (e) {
+        done && done(toError(e))
+      }
     })
     
 

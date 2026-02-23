@@ -97,12 +97,16 @@ module.exports = function (RED: NodeRedApp): void {
     // receive input reconnectCall
     this.on('input', inputListener)
     // When the server goes down
-    this.on('close', async (done: () => void): Promise<void> => {
+    this.on('close', async (done: (err?: Error) => void): Promise<void> => {
       isShuttingDown = true
       clearTimeout(reconnectTimeout)
       removeEventListeners()
-      await amqp.close()
-      done && done()
+      try {
+        await amqp.close()
+        done && done()
+      } catch (e) {
+        done && done(toError(e))
+      }
     })
 
     const removeEventListeners = (): void => {
