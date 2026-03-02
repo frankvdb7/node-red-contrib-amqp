@@ -22,6 +22,8 @@ import {
   ExchangeType,
   AmqpInNodeDefaults,
   AmqpOutNodeDefaults,
+  BrokerNodeState,
+  BrokerNodeError,
 } from './types'
 import { NODE_STATUS } from './constants'
 
@@ -103,20 +105,34 @@ export default class Amqp {
     const key = `${broker}:${vhost}`
 
     let entry = Amqp.connectionPool.get(key)
+    if (entry && !this.isConnectionOpen(entry.connection)) {
+      Amqp.connectionPool.delete(key)
+      entry = undefined
+    }
+
     if (!entry) {
       this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
       try {
         const connection = await connect(brokerUrl, { heartbeat: 2 })
         this.node.log(`Connected to AMQP broker ${brokerInfo}`)
+
+        connection.on('close', () => {
+          const current = Amqp.connectionPool.get(key)
+          if (current?.connection === connection) {
+            Amqp.connectionPool.delete(key)
+          }
+        })
+
         entry = { connection, count: 0 }
         Amqp.connectionPool.set(key, entry)
       } catch (err) {
+        this.setBrokerNodeState('errored', err)
         this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
         throw err
       }
     }
 
-    this.broker.connections[this.node.id] = true
+    this.setBrokerNodeState('connected')
     this.node.status(NODE_STATUS.Connected)
 
     entry.count += 1
@@ -124,13 +140,14 @@ export default class Amqp {
 
     this.connectionErrorHandler = (e): void => {
       /* istanbul ignore next */
+      this.setBrokerNodeState('errored', e)
       this.node.status(NODE_STATUS.Disconnected)
       this.node.warn(`AMQP connection error ${e}`)
     }
 
     this.connectionCloseHandler = (): void => {
       /* istanbul ignore next */
-      this.broker.connections[this.node.id] = false
+      this.setBrokerNodeState('disconnected', new Error('AMQP connection closed'))
       this.node.status(NODE_STATUS.Disconnected)
       this.node.log(`AMQP Connection closed`)
     }
@@ -157,6 +174,10 @@ export default class Amqp {
       await this.channel.consume(
         this.q.queue,
         amqpMessage => {
+          if (!amqpMessage) {
+            this.node.warn('AMQP consumer was cancelled')
+            return
+          }
           const msg = this.assembleMessage(amqpMessage)
           this.node.log(
             `Received message with deliveryTag: ${msg?.fields?.deliveryTag}`,
@@ -308,7 +329,7 @@ export default class Amqp {
       this.channel.publish(
         name,
         routingKey,
-        Buffer.from(msg as string),
+        this.toPublishBuffer(msg),
         options,
       )
 
@@ -447,9 +468,9 @@ export default class Amqp {
 
   private async closeChannel(): Promise<void> {
     if (this.channel) {
-      this.channel.off('error', this.channelErrorHandler)
-      this.channel.off('close', this.channelCloseHandler)
-      this.channel.off('return', this.channelReturnHandler)
+      this.channel.off?.('error', this.channelErrorHandler)
+      this.channel.off?.('close', this.channelCloseHandler)
+      this.channel.off?.('return', this.channelReturnHandler)
       try {
         await this.channel.close()
       } catch (e) {
@@ -464,14 +485,12 @@ export default class Amqp {
     const vhost = this.vhostOverride ?? broker?.vhost
     const key = `${brokerId}:${vhost}`
 
-    if (this.broker?.connections) {
-      this.broker.connections[this.node.id] = false
-    }
+    this.setBrokerNodeState('disconnected')
     this.node.status(NODE_STATUS.Disconnected)
 
     if (this.connection) {
-      this.connection.off('error', this.connectionErrorHandler)
-      this.connection.off('close', this.connectionCloseHandler)
+      this.connection.off?.('error', this.connectionErrorHandler)
+      this.connection.off?.('close', this.connectionCloseHandler)
     }
 
     const entry = Amqp.connectionPool.get(key)
@@ -499,6 +518,7 @@ export default class Amqp {
 
     this.channelErrorHandler = (e): void => {
       /* istanbul ignore next */
+      this.setBrokerNodeState('errored', e)
       this.node.status(NODE_STATUS.Disconnected)
       this.node.error(`AMQP Connection Error ${e}`, { payload: { error: e, source: 'Amqp' } })
     }
@@ -657,5 +677,59 @@ export default class Amqp {
       clearTimeout(timeout)
     }
     this.rpcTimeouts.clear()
+  }
+
+  private isConnectionOpen(connection: ChannelModel): boolean {
+    const stream = (connection as { connection?: { stream?: { destroyed?: boolean } } })
+      .connection?.stream
+    return stream?.destroyed !== true
+  }
+
+  private setBrokerNodeState(state: BrokerNodeState, error?: unknown): void {
+    if (!this.broker) {
+      return
+    }
+
+    if (!this.broker.nodeStates) {
+      this.broker.nodeStates = {}
+    }
+    this.broker.nodeStates[this.node.id] = state
+
+    if (!this.broker.lastError) {
+      this.broker.lastError = {}
+    }
+
+    if (error !== undefined) {
+      this.broker.lastError[this.node.id] = this.toBrokerNodeError(error)
+    } else {
+      delete this.broker.lastError[this.node.id]
+    }
+  }
+
+  private toBrokerNodeError(error: unknown): BrokerNodeError {
+    const message = error instanceof Error ? error.message : String(error)
+    const code = error && typeof error === 'object' ? String((error as { code?: unknown }).code || '') : ''
+    return {
+      message,
+      code: code || undefined,
+      at: new Date().toISOString(),
+    }
+  }
+
+  private toPublishBuffer(msg: unknown): Buffer {
+    if (Buffer.isBuffer(msg)) {
+      return msg
+    }
+    if (msg instanceof Uint8Array) {
+      return Buffer.from(msg)
+    }
+    if (typeof msg === 'string') {
+      return Buffer.from(msg)
+    }
+    if (msg === null || msg === undefined) {
+      return Buffer.from('')
+    }
+
+    return Buffer.from(JSON.stringify(msg))
   }
 }

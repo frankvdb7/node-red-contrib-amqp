@@ -177,6 +177,37 @@ describe('amqp-out Node', () => {
     });
   });
 
+  it('calls done with error when routing key evaluation path throws', async function () {
+    const setRoutingKeyStub = sinon
+      .stub(Amqp.prototype, 'setRoutingKey')
+      .throws(new Error('routing key evaluation failed'));
+    const publishStub = sinon.stub(Amqp.prototype, 'publish');
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
+    const channelMock = { on: sinon.stub(), off: sinon.stub() };
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
+
+    const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
+    flowFixture[0].exchangeRoutingKeyType = 'msg';
+    flowFixture[0].exchangeRoutingKey = 'routingKey';
+
+    await helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture);
+    const amqpOutNode = helper.getNode('n1');
+    const callErrors: unknown[] = [];
+    amqpOutNode.on('call:error', call => {
+      callErrors.push(call.args[0]);
+    });
+
+    await amqpOutNode.receive({ payload: 'foo', routingKey: 'test.route' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    const doneError = callErrors.find(arg => arg instanceof Error) as Error | undefined;
+    expect(doneError).to.not.equal(undefined);
+    expect(doneError?.message).to.match(/routing key evaluation failed/i);
+    expect(setRoutingKeyStub.calledOnce).to.be.true;
+    expect(publishStub.notCalled).to.be.true;
+  });
+
   it('should not stringify payload when doNotStringifyPayload header is set', function (done) {
     const payload = { data: 'test' };
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
@@ -301,6 +332,21 @@ describe('amqp-out Node', () => {
     await amqpOutNode.close()
 
     expect(closeStub.calledOnce).to.be.true
+  })
+
+  it('closes amqp when initialization fails after connect', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').rejects(new Error('init failed'))
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
+
+    await helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+    )
+
+    expect(closeStub.called).to.be.true
   })
 
   it('should connect to the server and send some messages with a dynamic routing key from `msg`', function (done) {
@@ -642,6 +688,32 @@ describe('amqp-out Node', () => {
     await onCallback('late connection close')
 
     expect(closeStub.calledOnce).to.be.true
+  })
+
+  it('coalesces duplicate reconnect triggers into a single reconnect cycle', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    const connectStub = sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
+
+    await helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+    )
+
+    const onConnClose = connectionMock.on.withArgs('close').getCall(0).args[1]
+    const onChannelClose = channelMock.on.withArgs('close').getCall(0).args[1]
+
+    await onConnClose()
+    await onChannelClose()
+    expect(closeStub.calledOnce).to.be.true
+
+    await clock.tickAsync(2001)
+    expect(connectStub.callCount).to.equal(2)
+    clock.restore()
   })
 
   it('should handle connection errors', function (done) {

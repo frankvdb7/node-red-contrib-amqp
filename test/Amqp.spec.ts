@@ -119,6 +119,46 @@ describe('Amqp Class', () => {
     expect(logStub.calledWithMatch('AMQP Connection closed')).to.be.true
   })
 
+  it('connect() sets broker node state to errored on connection error event', async () => {
+    const events: { [key: string]: Function } = {}
+    const result = { on: (ev: string, cb: Function): void => { events[ev] = cb } }
+    const broker = {
+      ...brokerConfigFixture,
+      vhost: 'vh1',
+      nodeStates: {},
+      lastError: {},
+    }
+    RED.nodes.getNode.returns(broker)
+    amqp.node = { ...nodeFixture, id: 'n1', log: sinon.stub(), warn: sinon.stub(), status: sinon.stub() }
+    sinon.stub(amqplib, 'connect').resolves(result as any)
+
+    await amqp.connect()
+    events['error'](new Error('simulated connection failure'))
+
+    expect(broker.nodeStates.n1).to.equal('errored')
+    expect(broker.lastError.n1?.message).to.equal('simulated connection failure')
+  })
+
+  it('connect() sets broker node state to disconnected and keeps cause on connection close event', async () => {
+    const events: { [key: string]: Function } = {}
+    const result = { on: (ev: string, cb: Function): void => { events[ev] = cb } }
+    const broker = {
+      ...brokerConfigFixture,
+      vhost: 'vh1',
+      nodeStates: {},
+      lastError: {},
+    }
+    RED.nodes.getNode.returns(broker)
+    amqp.node = { ...nodeFixture, id: 'n1', log: sinon.stub(), warn: sinon.stub(), status: sinon.stub() }
+    sinon.stub(amqplib, 'connect').resolves(result as any)
+
+    await amqp.connect()
+    events['close']()
+
+    expect(broker.nodeStates.n1).to.equal('disconnected')
+    expect(broker.lastError.n1?.message).to.equal('AMQP connection closed')
+  })
+
   it('connect() errors when broker missing', async () => {
     // no broker node returned
     RED.nodes.getNode.returns(undefined)
@@ -184,6 +224,55 @@ describe('Amqp Class', () => {
 
     await amqp2.close()
     expect(connectionStub.close.calledOnce).to.be.true
+  })
+
+  it('does not reuse a dead pooled connection', async () => {
+    const staleConnection = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+      connection: { stream: { destroyed: true } },
+    }
+    const freshConnection = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+      connection: { stream: { destroyed: false } },
+    }
+    ;(Amqp as any).connectionPool.set('b1:vh1', {
+      connection: staleConnection,
+      count: 1,
+    })
+    sinon.stub(amqplib, 'connect').resolves(freshConnection as any)
+
+    amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+    const connection = await amqp.connect()
+
+    expect(connection).to.equal(freshConnection)
+    expect(amqplib.connect.calledOnce).to.be.true
+  })
+
+  it('evicts pooled connection on close event', async () => {
+    const events: { [key: string]: Function[] } = {}
+    const connectionStub = {
+      on: (event: string, cb: Function): void => {
+        if (!events[event]) {
+          events[event] = []
+        }
+        events[event].push(cb)
+      },
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+      connection: { stream: { destroyed: false } },
+    }
+    sinon.stub(amqplib, 'connect').resolves(connectionStub as any)
+
+    amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+    await amqp.connect()
+
+    expect((Amqp as any).connectionPool.size).to.equal(1)
+    events.close.forEach(cb => cb())
+    expect((Amqp as any).connectionPool.size).to.equal(0)
   })
 
   it('awaits connection close before removing from pool', async () => {
@@ -315,6 +404,37 @@ describe('Amqp Class', () => {
     ).to.equal(true)
   })
 
+  it('consume() ignores null consumer delivery without throwing', async () => {
+    const assertQueueStub = sinon.stub().resolves()
+    const bindQueueStub = sinon.stub().resolves()
+    const send = sinon.stub()
+    const error = sinon.stub()
+    const warn = sinon.stub()
+    const ack = sinon.stub()
+    const node = { send, error, warn, log: sinon.stub() }
+    const channel = {
+      consume: function (
+        _queue: string,
+        cb: (arg0: any) => void,
+      ): void {
+        cb(null)
+      },
+      ack,
+    }
+    amqp.channel = channel as any
+    amqp.assertQueue = assertQueueStub
+    amqp.bindQueue = bindQueueStub
+    amqp.q = { queue: 'queueName' } as any
+    amqp.node = node as any
+
+    await amqp.consume()
+
+    expect(send.called).to.equal(false)
+    expect(ack.called).to.equal(false)
+    expect(error.called).to.equal(false)
+    expect(warn.calledWithMatch('consumer was cancelled')).to.equal(true)
+  })
+
   it('assembleMessage retains reference and parses payload', () => {
     const amqpMessage: any = { content: Buffer.from('{"a":1}'), fields: { deliveryTag: 1 }, properties: {} }
     const result = (amqp as any).assembleMessage(amqpMessage)
@@ -440,6 +560,20 @@ describe('Amqp Class', () => {
       }
       expect(publishStub.calledOnce).to.equal(true)
       expect(errorStub.calledOnce).to.equal(true)
+    })
+
+    it('serializes object payloads before publishing', async () => {
+      const publishStub = sinon.stub()
+      amqp.channel = {
+        publish: publishStub,
+      }
+
+      await amqp.publish({ a: 1 })
+
+      expect(publishStub.calledOnce).to.equal(true)
+      const publishedBuffer = publishStub.firstCall.args[2]
+      expect(Buffer.isBuffer(publishedBuffer)).to.equal(true)
+      expect(publishedBuffer.toString()).to.equal('{"a":1}')
     })
   })
 
@@ -1070,7 +1204,7 @@ describe('Amqp Class', () => {
             close: closeChannelStub,
         };
         amqp.connection = poolConnection;
-        amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1', connections: {} };
+        amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1' };
         (Amqp as any).connectionPool.set('b1:vh1', { connection: poolConnection, count: 1 });
 
         amqp.config.outputs = 1;
@@ -1107,7 +1241,14 @@ describe('Amqp Class', () => {
   it('connect() handles connection failure', async () => {
     const connectStub = sinon.stub(amqplib, 'connect').rejects(new Error('connection failed'));
     const warnStub = sinon.stub();
-    amqp.node = { ...nodeFixture, warn: warnStub, log: sinon.stub() };
+    const broker = {
+      ...brokerConfigFixture,
+      vhost: 'vh1',
+      nodeStates: {},
+      lastError: {},
+    }
+    RED.nodes.getNode.returns(broker)
+    amqp.node = { ...nodeFixture, id: 'n1', warn: warnStub, log: sinon.stub(), status: sinon.stub() };
 
     try {
         await amqp.connect();
@@ -1116,6 +1257,8 @@ describe('Amqp Class', () => {
         expect(connectStub.calledOnce).to.be.true;
         expect(warnStub.calledWithMatch('Failed to connect to AMQP broker')).to.be.true;
         expect(e.message).to.equal('connection failed');
+        expect(broker.nodeStates.n1).to.equal('errored');
+        expect(broker.lastError.n1?.message).to.equal('connection failed');
     }
   });
 
@@ -1153,7 +1296,13 @@ describe('Amqp Class', () => {
       })
 
       amqp.connection = connectionStub as any
-      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1', connections: {} }
+      amqp.broker = {
+        ...brokerConfigFixture,
+        vhost: 'vh1',
+        id: 'b1',
+        nodeStates: { [nodeFixture.id]: 'errored' },
+        lastError: { [nodeFixture.id]: { message: 'previous error', at: new Date().toISOString() } },
+      }
 
       await (amqp as any).releaseConnection()
 
@@ -1161,6 +1310,8 @@ describe('Amqp Class', () => {
       expect(poolEntry.count).to.equal(1)
       expect(connectionStub.close.called).to.be.false
       expect(amqp.node.status.calledWith(NODE_STATUS.Disconnected)).to.be.true
+      expect(amqp.broker.nodeStates[nodeFixture.id]).to.equal('disconnected')
+      expect(amqp.broker.lastError[nodeFixture.id]).to.equal(undefined)
     })
 
     it('removes the connection from the pool when count reaches zero', async () => {
@@ -1185,7 +1336,7 @@ describe('Amqp Class', () => {
       })
 
       amqp.connection = connectionStub as any
-      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1', connections: {} }
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1' }
 
       await (amqp as any).releaseConnection()
 
@@ -1210,7 +1361,7 @@ describe('Amqp Class', () => {
       });
 
       amqp.connection = connectionStub as any;
-      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1', connections: {} };
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1' };
       amqp.config.broker = 'b1';
 
       await (amqp as any).releaseConnection();
