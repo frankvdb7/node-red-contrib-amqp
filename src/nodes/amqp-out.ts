@@ -21,6 +21,7 @@ module.exports = function (RED: NodeRedApp): void {
   ): void {
     let reconnectTimeout: NodeJS.Timeout
     let reconnect: (() => Promise<void>) | null = null
+    let reconnectScheduled = false
     let isShuttingDown = false
     let connection: ChannelModel | null = null
     let channel: Channel | null = null
@@ -50,6 +51,7 @@ module.exports = function (RED: NodeRedApp): void {
 
     const setupEventListeners = (nodeIns: Node): void => {
       onConnClose = async () => {
+        nodeIns.warn('AMQP connection closed event received')
         await reconnect()
       }
 
@@ -61,6 +63,7 @@ module.exports = function (RED: NodeRedApp): void {
       }
 
       onChannelClose = async () => {
+        nodeIns.warn('AMQP channel closed event received')
         await reconnect()
       }
 
@@ -134,14 +137,20 @@ module.exports = function (RED: NodeRedApp): void {
         case 'msg':
         case 'flow':
         case 'global':
-          amqp.setRoutingKey(
-            RED.util.evaluateNodeProperty(
-              exchangeRoutingKey,
-              exchangeRoutingKeyType,
-              this,
-              msg,
-            ),
-          )
+          try {
+            amqp.setRoutingKey(
+              RED.util.evaluateNodeProperty(
+                exchangeRoutingKey,
+                exchangeRoutingKeyType,
+                this,
+                msg,
+              ),
+            )
+          } catch (err) {
+            this.error(`Failed to evaluate routing key: ${err}`)
+            done && done(toError(err))
+            return
+          }
           break
         case 'jsonata': {
           const expr = RED.util.prepareJSONataExpression(exchangeRoutingKey, this)
@@ -228,21 +237,31 @@ module.exports = function (RED: NodeRedApp): void {
 
     async function initializeNode(nodeIns: Node) {
       reconnect = async () => {
-        if (isShuttingDown) {
+        if (isShuttingDown || reconnectScheduled) {
+          if (isShuttingDown) {
+            nodeIns.log('Reconnect skipped: node is shutting down')
+          }
           return
         }
+        reconnectScheduled = true
+        nodeIns.log('Reconnect requested: closing AMQP resources')
         removeEventListeners()
         await amqp.close()
         channel = null
         connection = null
 
         clearTimeout(reconnectTimeout)
+        nodeIns.log('Reconnect scheduled in 2000ms')
         reconnectTimeout = setTimeout(() => {
+          reconnectScheduled = false
           if (isShuttingDown) {
+            nodeIns.log('Reconnect timer fired but node is shutting down')
             return
           }
+          nodeIns.log('Reconnect timer fired: re-initializing AMQP node')
           void initializeNode(nodeIns).catch(() => {
             if (typeof reconnect === 'function') {
+              nodeIns.warn('Reconnect attempt failed during initialization; retrying')
               void reconnect()
             }
           })
@@ -257,6 +276,7 @@ module.exports = function (RED: NodeRedApp): void {
           nodeIns.status(NODE_STATUS.Connected)
         }
       } catch (e) {
+        await amqp.close().catch(() => undefined)
         await handleError(e, nodeIns)
       }
     }

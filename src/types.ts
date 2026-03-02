@@ -14,7 +14,19 @@ export interface BrokerConfig extends Node {
 }
 
 export interface AmqpBrokerNode extends BrokerConfig {
-  connections: Record<string, boolean>
+  nodeStates: Record<string, BrokerNodeState>
+  lastError: Record<string, BrokerNodeError>
+}
+
+export type BrokerNodeState =
+  | 'connected'
+  | 'disconnected'
+  | 'errored'
+
+export interface BrokerNodeError {
+  message: string
+  code?: string
+  at: string
 }
 
 export interface AmqpConfig {

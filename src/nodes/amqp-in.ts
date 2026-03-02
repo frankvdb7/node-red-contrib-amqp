@@ -15,6 +15,7 @@ module.exports = function (RED: NodeRedApp): void {
   function AmqpIn(config: EditorNodeProperties): void {
     let reconnectTimeout: NodeJS.Timeout
     let reconnect: (() => Promise<void>) | null = null
+    let reconnectScheduled = false
     let isShuttingDown = false
     let connection: ChannelModel | null = null
     let channel: Channel | null = null
@@ -77,9 +78,14 @@ module.exports = function (RED: NodeRedApp): void {
 
     async function initializeNode(nodeIns: Node) {
       reconnect = async () => {
-        if (isShuttingDown) {
+        if (isShuttingDown || reconnectScheduled) {
+          if (isShuttingDown) {
+            nodeIns.log('Reconnect skipped: node is shutting down')
+          }
           return
         }
+        reconnectScheduled = true
+        nodeIns.log('Reconnect requested: closing AMQP resources')
         removeEventListeners()
         await amqp.close()
         channel = null
@@ -87,12 +93,17 @@ module.exports = function (RED: NodeRedApp): void {
 
         // always clear timer before set it;
         clearTimeout(reconnectTimeout)
+        nodeIns.log('Reconnect scheduled in 2000ms')
         reconnectTimeout = setTimeout(() => {
+          reconnectScheduled = false
           if (isShuttingDown) {
+            nodeIns.log('Reconnect timer fired but node is shutting down')
             return
           }
+          nodeIns.log('Reconnect timer fired: re-initializing AMQP node')
           void initializeNode(nodeIns).catch(() => {
             if (typeof reconnect === 'function') {
+              nodeIns.warn('Reconnect attempt failed during initialization; retrying')
               void reconnect()
             }
           })
@@ -108,6 +119,7 @@ module.exports = function (RED: NodeRedApp): void {
           await amqp.consume()
 
           onConnClose = async () => {
+            nodeIns.warn('AMQP connection closed event received')
             await reconnect()
           }
 
@@ -119,6 +131,7 @@ module.exports = function (RED: NodeRedApp): void {
           }
 
           onChannelClose = async () => {
+            nodeIns.warn('AMQP channel closed event received')
             await reconnect()
           }
 
@@ -137,6 +150,7 @@ module.exports = function (RED: NodeRedApp): void {
           nodeIns.status(NODE_STATUS.Connected)
         }
       } catch (e: unknown) {
+        await amqp.close().catch(() => undefined)
         const err = isErrorLike(e) ? e : {}
         if (
           err.code === ErrorType.InvalidLogin ||

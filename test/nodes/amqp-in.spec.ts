@@ -248,6 +248,21 @@ describe('amqp-in Node', () => {
     expect(closeStub.calledOnce).to.be.true
   })
 
+  it('closes amqp when initialization fails after connect', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').rejects(new Error('init failed'))
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
+
+    await helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+    )
+
+    expect(closeStub.called).to.be.true
+  })
+
   it('should reconnect on input message', done => {
     const connectStub = sinon.stub(Amqp.prototype, 'connect')
     const closeStub = sinon.stub(Amqp.prototype, 'close')
@@ -371,6 +386,32 @@ describe('amqp-in Node', () => {
     await onCallback('late connection close')
 
     expect(closeStub.calledOnce).to.be.true
+  })
+
+  it('coalesces duplicate reconnect triggers into a single reconnect cycle', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    const connectStub = sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
+
+    await helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture
+    )
+
+    const onConnClose = connectionMock.on.withArgs('close').getCall(0).args[1]
+    const onChannelClose = channelMock.on.withArgs('close').getCall(0).args[1]
+
+    await onConnClose()
+    await onChannelClose()
+    expect(closeStub.calledOnce).to.be.true
+
+    await clock.tickAsync(2001)
+    expect(connectStub.callCount).to.equal(2)
+    clock.restore()
   })
 
   it('handles channel close', async function () {

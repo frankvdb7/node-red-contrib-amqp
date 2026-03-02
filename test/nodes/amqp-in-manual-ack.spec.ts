@@ -285,6 +285,21 @@ describe('amqp-in-manual-ack Node', () => {
     expect(closeStub.calledOnce).to.be.true
   })
 
+  it('closes amqp when initialization fails after connect', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').rejects(new Error('init failed'))
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
+
+    await helper.load(
+      [amqpInManualAck, amqpBroker],
+      amqpInManualAckFlowFixture,
+      credentialsFixture,
+    )
+
+    expect(closeStub.called).to.be.true
+  })
+
   it('should reconnect on input message', done => {
     const connectStub = sinon.stub(Amqp.prototype, 'connect')
     const closeStub = sinon.stub(Amqp.prototype, 'close')
@@ -608,6 +623,22 @@ describe('amqp-in-manual-ack Node', () => {
     const onCallback = connectionMock.on.withArgs('error').getCall(0).args[1]
     onCallback('connection error')
     expect(closeStub.called).to.be.false
+  });
+
+  it('reconnects on connection error without error argument when reconnectOnError is true', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
+    const channelMock = { on: sinon.stub(), off: sinon.stub() };
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves();
+
+    const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture));
+    flow[0].reconnectOnError = true;
+
+    await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
+    const onCallback = connectionMock.on.withArgs('error').getCall(0).args[1]
+    await onCallback()
+    expect(closeStub.calledOnce).to.be.true
   });
 
   it('does not reconnect on initialization failure when reconnectOnError is false', async function () {
