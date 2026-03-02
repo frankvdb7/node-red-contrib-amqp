@@ -208,24 +208,37 @@ describe('amqp-out Node', () => {
     expect(publishStub.notCalled).to.be.true;
   });
 
-  it('should not stringify payload when doNotStringifyPayload header is set', function (done) {
-    const payload = { data: 'test' };
-    const publishStub = sinon.stub(Amqp.prototype, 'publish');
-    const flowFixture = [...amqpOutFlowFixture];
+  it('passes object payload to publish without pre-serializing', function (done) {
+    const payload = { data: 'test' }
+    const publishStub = sinon.stub(Amqp.prototype, 'publish')
+    const flowFixture = [...amqpOutFlowFixture]
 
     helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, function () {
-      const amqpOutNode = helper.getNode('n1');
-      amqpOutNode.receive({
-        payload,
-        properties: { headers: { doNotStringifyPayload: true } },
-      });
+      const amqpOutNode = helper.getNode('n1')
+      amqpOutNode.receive({ payload })
 
       setTimeout(() => {
-        expect(publishStub.calledOnceWith(payload, sinon.match.any)).to.be.true;
-        done();
-      }, 50);
-    });
-  });
+        expect(publishStub.calledOnceWith(payload, sinon.match.any)).to.be.true
+        done()
+      }, 50)
+    })
+  })
+
+  it('passes string payload to publish without JSON stringifying', function (done) {
+    const payload = 'hello'
+    const publishStub = sinon.stub(Amqp.prototype, 'publish')
+    const flowFixture = [...amqpOutFlowFixture]
+
+    helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, function () {
+      const amqpOutNode = helper.getNode('n1')
+      amqpOutNode.receive({ payload })
+
+      setTimeout(() => {
+        expect(publishStub.calledOnceWith(payload, sinon.match.any)).to.be.true
+        done()
+      }, 50)
+    })
+  })
 
   it('handles error when switching vhost', async function () {
     const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').rejects(new Error('vhost switch failed'));

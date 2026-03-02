@@ -235,13 +235,14 @@
     persisted or routed by the broker before downstream nodes continue processing.
   </p>
 
-  <h3>Payload stringification</h3>
-  <p>By default the payload is run through `JSON.stringify()` before being published. To override this behavior include
-    <code>
-      doNotStringifyPayload: true
-    </code>
-    in the message's properties.headers object
-  </p>
+  <h3>Payload encoding</h3>
+  <p>Payloads are encoded before publish using the following rules:</p>
+  <ul>
+    <li><code>Buffer</code> and <code>Uint8Array</code> values are sent as raw bytes</li>
+    <li><code>string</code> values are sent as-is</li>
+    <li><code>undefined</code> is sent as an empty payload</li>
+    <li>All other values (including <code>null</code>, objects, arrays, numbers, and booleans) are JSON-serialized</li>
+  </ul>
 
   <h3>References</h3>
   <ul>
