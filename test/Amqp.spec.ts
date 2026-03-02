@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 export {}
 const { expect } = require('chai')
-import { NODE_STATUS } from '../src/constants'
+const { NODE_STATUS } = require('../src/constants')
 const sinon = require('sinon')
 const amqplib = require('amqplib')
 const Amqp = require('../src/Amqp').default
