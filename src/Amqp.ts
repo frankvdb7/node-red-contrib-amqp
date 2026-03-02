@@ -182,7 +182,7 @@ export default class Amqp {
           this.node.log(
             `Received message with deliveryTag: ${msg?.fields?.deliveryTag}`,
           )
-          this.node.send(msg)
+          this.node.send(msg as any)
           /* istanbul ignore else */
           if (!noAck && !this.isManualAck()) {
             this.ack(msg)
@@ -378,7 +378,7 @@ export default class Amqp {
           if (amqpMessage) {
             const msg = this.assembleMessage(amqpMessage)
             if (msg.properties.correlationId === correlationId) {
-              this.node.send(msg)
+              this.node.send(msg as any)
               /* istanbul ignore else */
               if (!rpcQueueHasBeenDeleted) {
                 await this.channel.deleteQueue(queueName)

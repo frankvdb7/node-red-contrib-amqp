@@ -342,7 +342,7 @@ describe('amqp-in Node', () => {
     )
     // Get the 'on' callback for connection close
     const onCallback = connectionMock.on.withArgs('close').getCall(0).args[1]
-    onCallback('connection closed')
+    await onCallback('connection closed')
     expect(closeStub.calledOnce).to.be.true
   })
 
