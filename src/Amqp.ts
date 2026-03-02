@@ -726,10 +726,18 @@ export default class Amqp {
     if (typeof msg === 'string') {
       return Buffer.from(msg)
     }
-    if (msg === null || msg === undefined) {
+    if (msg === undefined) {
       return Buffer.from('')
     }
-
-    return Buffer.from(JSON.stringify(msg))
+    try {
+      const serialized = JSON.stringify(msg)
+      if (serialized === undefined) {
+        return Buffer.from('')
+      }
+      return Buffer.from(serialized)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error(`Could not serialize payload: ${reason}`)
+    }
   }
 }

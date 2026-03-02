@@ -575,6 +575,58 @@ describe('Amqp Class', () => {
       expect(Buffer.isBuffer(publishedBuffer)).to.equal(true)
       expect(publishedBuffer.toString()).to.equal('{"a":1}')
     })
+
+    it('serializes null payload to JSON null', async () => {
+      const publishStub = sinon.stub()
+      amqp.channel = {
+        publish: publishStub,
+      }
+
+      await amqp.publish(null)
+
+      expect(publishStub.calledOnce).to.equal(true)
+      const publishedBuffer = publishStub.firstCall.args[2]
+      expect(Buffer.isBuffer(publishedBuffer)).to.equal(true)
+      expect(publishedBuffer.toString()).to.equal('null')
+    })
+
+    it('serializes undefined payload to an empty buffer', async () => {
+      const publishStub = sinon.stub()
+      amqp.channel = {
+        publish: publishStub,
+      }
+
+      await amqp.publish(undefined)
+
+      expect(publishStub.calledOnce).to.equal(true)
+      const publishedBuffer = publishStub.firstCall.args[2]
+      expect(Buffer.isBuffer(publishedBuffer)).to.equal(true)
+      expect(publishedBuffer.length).to.equal(0)
+    })
+
+    it('throws a clear error for non-serializable payloads', async () => {
+      const publishStub = sinon.stub()
+      const errorStub = sinon.stub()
+      const circular: any = {}
+      circular.self = circular
+      amqp.channel = {
+        publish: publishStub,
+      }
+      amqp.node = {
+        ...nodeFixture,
+        error: errorStub,
+      }
+
+      try {
+        await amqp.publish(circular)
+        expect.fail('publish should throw')
+      } catch (err: any) {
+        expect(String(err.message)).to.match(/Could not serialize payload/)
+      }
+
+      expect(publishStub.called).to.equal(false)
+      expect(errorStub.calledOnce).to.equal(true)
+    })
   })
 
   describe('close()', () => {
