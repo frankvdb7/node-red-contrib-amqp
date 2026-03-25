@@ -1059,7 +1059,12 @@ describe('Amqp Class', () => {
     amqp.node = { send: sinon.stub(), error: errorStub }
     amqp.q = { queue: 'queueName' }
 
-    await amqp.consume()
+    try {
+      await amqp.consume()
+      expect.fail('consume should throw')
+    } catch (e: any) {
+      expect(String(e.message)).to.match(/bind fail/)
+    }
     expect(consumeStub.called).to.equal(false)
     expect(errorStub.calledOnce).to.equal(true)
   })
@@ -1235,6 +1240,86 @@ describe('Amqp Class', () => {
         expect(errorStub.calledWithMatch('Error trying to cancel RPC consumer')).to.be.true;
     });
 
+    it('handles error when deleting queue after receiving RPC reply', async () => {
+        const sendStub = sinon.stub();
+        const deleteQueueStub = sinon.stub().rejects(new Error('delete failed'));
+        const cancelStub = sinon.stub().resolves();
+        const assertQueueStub = sinon.stub().resolves('rpc-queue');
+        const errorStub = sinon.stub();
+        let consumeCallback;
+        const consumeStub = sinon.stub().callsFake((queue, cb) => {
+            consumeCallback = cb;
+            return Promise.resolve({ consumerTag: 'rpc-consumer-tag' });
+        });
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: errorStub };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            cancel: cancelStub,
+            publish: sinon.stub(),
+        };
+
+        amqp.config.outputs = 1;
+
+        await amqp.publish('a message', {
+            correlationId: 'test-correlation-id',
+            replyTo: 'rpc-queue',
+        });
+
+        await consumeCallback({
+            properties: { correlationId: 'test-correlation-id' },
+            content: Buffer.from('{"response": true}'),
+        });
+        await Promise.resolve();
+
+        expect(sendStub.calledOnce).to.be.true;
+        expect(deleteQueueStub.calledOnce).to.be.true;
+        expect(cancelStub.calledOnceWith('rpc-consumer-tag')).to.be.true;
+        expect(errorStub.calledWithMatch('Error trying to cancel RPC consumer')).to.be.true;
+    });
+
+    it('emits only one output when RPC times out and a late reply arrives during cleanup', async () => {
+        const sendStub = sinon.stub();
+        const assertQueueStub = sinon.stub().resolves('rpc-queue');
+        let consumeCallback;
+        let resolveDelete;
+        const deleteQueueStub = sinon.stub().callsFake(() =>
+            new Promise(resolve => {
+                resolveDelete = resolve;
+            })
+        );
+        const consumeStub = sinon.stub().callsFake((queue, cb) => {
+            consumeCallback = cb;
+            return Promise.resolve();
+        });
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub() };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            publish: sinon.stub(),
+        };
+
+        amqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+
+        await amqp.publish('a message', { correlationId: 'test-correlation-id' });
+        await clock.tickAsync(1001);
+
+        consumeCallback({
+            properties: { correlationId: 'test-correlation-id' },
+            content: Buffer.from('{"response": true}'),
+        });
+        resolveDelete();
+        await Promise.resolve();
+
+        expect(sendStub.calledOnce).to.be.true;
+        expect(sendStub.firstCall.args[0].payload.message).to.match(/Timeout while waiting for RPC response/);
+    });
+
     it('clears RPC timeout when closed before timeout elapses', async () => {
         const sendStub = sinon.stub();
         const deleteQueueStub = sinon.stub().resolves();
@@ -1273,18 +1358,96 @@ describe('Amqp Class', () => {
     it('handles error during RPC setup', async () => {
         const errorStub = sinon.stub();
         const assertQueueStub = sinon.stub().rejects(new Error('assert failed'));
+        const publishStub = sinon.stub();
 
         amqp.node = { ...nodeFixture, error: errorStub };
         amqp.channel = {
             assertQueue: assertQueueStub,
-            publish: sinon.stub(),
+            publish: publishStub,
         };
 
         amqp.config.outputs = 1; // Enable RPC
 
-        await amqp.publish('a message');
+        try {
+            await amqp.publish('a message');
+            expect.fail('publish should throw');
+        } catch (e) {
+            expect(e.message).to.equal('assert failed');
+        }
 
         expect(assertQueueStub.calledOnce).to.be.true;
+        expect(publishStub.called).to.be.false;
+        expect(errorStub.calledWithMatch('Could not consume RPC message')).to.be.true;
+        expect(errorStub.calledWithMatch('Could not publish message')).to.be.true;
+    });
+
+    it('does not emit an RPC timeout when publish fails after RPC setup', async () => {
+        const sendStub = sinon.stub();
+        const errorStub = sinon.stub();
+        const assertQueueStub = sinon.stub().resolves('rpc-queue');
+        const consumeStub = sinon.stub().resolves({ consumerTag: 'rpc-consumer-tag' });
+        const deleteQueueStub = sinon.stub().resolves();
+        const publishStub = sinon.stub().throws(new Error('publish failed'));
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: errorStub };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            publish: publishStub,
+        };
+
+        amqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+
+        try {
+            await amqp.publish('a message', {
+                correlationId: 'test-correlation-id',
+                replyTo: 'rpc-queue',
+            });
+            expect.fail('publish should throw');
+        } catch (e) {
+            expect(e.message).to.equal('publish failed');
+        }
+
+        await clock.tickAsync(1001);
+
+        expect(sendStub.called).to.be.false;
+        expect(deleteQueueStub.calledOnceWith('rpc-queue')).to.be.true;
+        expect(errorStub.calledWithMatch('Could not publish message')).to.be.true;
+    });
+
+    it('cleans up asserted RPC queue when consume setup fails', async () => {
+        const errorStub = sinon.stub();
+        const assertQueueStub = sinon.stub().resolves('rpc-queue');
+        const consumeStub = sinon.stub().rejects(new Error('consume setup failed'));
+        const deleteQueueStub = sinon.stub().resolves();
+        const publishStub = sinon.stub();
+
+        amqp.node = { ...nodeFixture, error: errorStub };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            publish: publishStub,
+        };
+
+        amqp.config.outputs = 1;
+
+        try {
+            await amqp.publish('a message', {
+                correlationId: 'test-correlation-id',
+                replyTo: 'rpc-queue',
+            });
+            expect.fail('publish should throw');
+        } catch (e) {
+            expect(e.message).to.equal('consume setup failed');
+        }
+
+        expect(assertQueueStub.calledOnce).to.be.true;
+        expect(consumeStub.calledOnce).to.be.true;
+        expect(deleteQueueStub.calledOnceWith('rpc-queue')).to.be.true;
+        expect(publishStub.called).to.be.false;
         expect(errorStub.calledWithMatch('Could not consume RPC message')).to.be.true;
     });
 

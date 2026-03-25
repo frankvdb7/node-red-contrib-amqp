@@ -43,20 +43,42 @@ module.exports = function (RED: NodeRedApp): void {
     const reconnectOnError = configAmqp.reconnectOnError
 
     const removeEventListeners = (): void => {
-      connection?.off?.('close', onConnClose)
-      connection?.off?.('error', onConnError)
-      channel?.off?.('close', onChannelClose)
-      channel?.off?.('error', onChannelError)
+      if (typeof onConnClose === 'function') {
+        connection?.off?.('close', onConnClose)
+      }
+      if (typeof onConnError === 'function') {
+        connection?.off?.('error', onConnError)
+      }
+      if (typeof onChannelClose === 'function') {
+        channel?.off?.('close', onChannelClose)
+      }
+      if (typeof onChannelError === 'function') {
+        channel?.off?.('error', onChannelError)
+      }
     }
 
     const setupEventListeners = (nodeIns: Node): void => {
       onConnClose = async () => {
         nodeIns.warn('AMQP connection closed event received')
-        await reconnect()
+        try {
+          await reconnect()
+        } catch (reconnectError) {
+          nodeIns.error(`Reconnect failed after connection close: ${reconnectError}`, {
+            payload: { error: reconnectError, location: ErrorLocationEnum.ConnectionErrorEvent },
+          })
+        }
       }
 
       onConnError = async e => {
-        reconnectOnError && (await reconnect())
+        if (reconnectOnError) {
+          try {
+            await reconnect()
+          } catch (reconnectError) {
+            nodeIns.error(`Reconnect failed after connection error: ${reconnectError}`, {
+              payload: { error: reconnectError, location: ErrorLocationEnum.ConnectionErrorEvent },
+            })
+          }
+        }
         nodeIns.error(`Connection error ${e}`, {
           payload: { error: e, location: ErrorLocationEnum.ConnectionErrorEvent },
         })
@@ -64,11 +86,25 @@ module.exports = function (RED: NodeRedApp): void {
 
       onChannelClose = async () => {
         nodeIns.warn('AMQP channel closed event received')
-        await reconnect()
+        try {
+          await reconnect()
+        } catch (reconnectError) {
+          nodeIns.error(`Reconnect failed after channel close: ${reconnectError}`, {
+            payload: { error: reconnectError, location: ErrorLocationEnum.ChannelErrorEvent },
+          })
+        }
       }
 
       onChannelError = async e => {
-        reconnectOnError && (await reconnect())
+        if (reconnectOnError) {
+          try {
+            await reconnect()
+          } catch (reconnectError) {
+            nodeIns.error(`Reconnect failed after channel error: ${reconnectError}`, {
+              payload: { error: reconnectError, location: ErrorLocationEnum.ChannelErrorEvent },
+            })
+          }
+        }
         nodeIns.error(`Channel error ${e}`, {
           payload: { error: e, location: ErrorLocationEnum.ChannelErrorEvent },
         })
@@ -153,8 +189,8 @@ module.exports = function (RED: NodeRedApp): void {
           }
           break
         case 'jsonata': {
-          const expr = RED.util.prepareJSONataExpression(exchangeRoutingKey, this)
           try {
+            const expr = RED.util.prepareJSONataExpression(exchangeRoutingKey, this)
             const result = await new Promise<unknown>((resolve, reject) => {
               RED.util.evaluateJSONataExpression(expr, msg, (err, value) => {
                 if (err) {
@@ -240,28 +276,33 @@ module.exports = function (RED: NodeRedApp): void {
           return
         }
         reconnectScheduled = true
-        nodeIns.log('Reconnect requested: closing AMQP resources')
-        removeEventListeners()
-        await amqp.close()
-        channel = null
-        connection = null
-
         clearTimeout(reconnectTimeout)
-        nodeIns.log('Reconnect scheduled in 2000ms')
-        reconnectTimeout = setTimeout(() => {
-          reconnectScheduled = false
-          if (isShuttingDown) {
-            nodeIns.log('Reconnect timer fired but node is shutting down')
-            return
-          }
-          nodeIns.log('Reconnect timer fired: re-initializing AMQP node')
-          void initializeNode(nodeIns).catch(() => {
-            if (typeof reconnect === 'function') {
-              nodeIns.warn('Reconnect attempt failed during initialization; retrying')
-              void reconnect()
+        try {
+          nodeIns.log('Reconnect requested: closing AMQP resources')
+          removeEventListeners()
+          await amqp.close()
+          channel = null
+          connection = null
+
+          nodeIns.log('Reconnect scheduled in 2000ms')
+          reconnectTimeout = setTimeout(() => {
+            reconnectScheduled = false
+            if (isShuttingDown) {
+              nodeIns.log('Reconnect timer fired but node is shutting down')
+              return
             }
-          })
-        }, 2000)
+            nodeIns.log('Reconnect timer fired: re-initializing AMQP node')
+            void initializeNode(nodeIns).catch(() => {
+              if (typeof reconnect === 'function') {
+                nodeIns.warn('Reconnect attempt failed during initialization; retrying')
+                void reconnect()
+              }
+            })
+          }, 2000)
+        } catch (error) {
+          reconnectScheduled = false
+          throw error
+        }
       }
 
       try {
