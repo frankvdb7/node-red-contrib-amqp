@@ -133,6 +133,36 @@ describe('amqp-out Node', () => {
     expect(publishStub.notCalled).to.be.true;
   });
 
+  it('calls done with error when JSONata expression is malformed', async function () {
+    const publishStub = sinon.stub(Amqp.prototype, 'publish');
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
+    const channelMock = { on: sinon.stub(), off: sinon.stub() };
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
+
+    const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
+    flowFixture[0].exchangeRoutingKeyType = 'jsonata';
+    flowFixture[0].exchangeRoutingKey = '(';
+
+    await helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture);
+    const amqpOutNode = helper.getNode('n1');
+    const callErrors: unknown[] = [];
+    amqpOutNode.on('call:error', call => {
+      callErrors.push(call.args[0]);
+    });
+
+    await amqpOutNode.receive({ payload: 'foo' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    const doneError = callErrors.find(arg => arg instanceof Error) as Error | undefined;
+    const hasLoggedJsonataError = callErrors.some(arg =>
+      /Failed to evaluate JSONata expression/i.test(String(arg)),
+    );
+    expect(doneError).to.not.equal(undefined);
+    expect(hasLoggedJsonataError).to.be.true;
+    expect(publishStub.notCalled).to.be.true;
+  });
+
   it('should handle dynamic routing key from `flow` context', async function () {
     const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
     sinon.stub(Amqp.prototype, 'publish');
@@ -360,6 +390,23 @@ describe('amqp-out Node', () => {
     )
 
     expect(closeStub.called).to.be.true
+  })
+
+  it('closes cleanly before listeners are assigned', async function () {
+    sinon.stub(Amqp.prototype, 'connect').resolves({ on: sinon.stub(), off: sinon.stub(), close: sinon.stub() } as any)
+    sinon.stub(Amqp.prototype, 'initialize').returns(new Promise(() => undefined) as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
+
+    await helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+    )
+
+    const amqpOutNode = helper.getNode('n1')
+    await amqpOutNode.close()
+
+    expect(closeStub.calledOnce).to.be.true
   })
 
   it('should connect to the server and send some messages with a dynamic routing key from `msg`', function (done) {
@@ -676,6 +723,68 @@ describe('amqp-out Node', () => {
         done()
       },
     )
+  })
+
+  it('allows repeated reconnect attempts after close failure', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .resolves(connectionMock as any)
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .resolves(channelMock as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close').rejects(new Error('reconnect failed'))
+
+    await helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+    )
+
+    const onConnClose = connectionMock.on.withArgs('close').getCall(0).args[1]
+    await onConnClose().catch(() => undefined)
+    await onConnClose().catch(() => undefined)
+
+    expect(closeStub.calledTwice).to.be.true
+  })
+
+  it('does not emit unhandled rejection when reconnect fails in connection close handler', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'close').rejects(new Error('reconnect failed'))
+
+    await helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+    )
+
+    const n1 = helper.getNode('n1')
+    const callErrors: unknown[] = []
+    n1.on('call:error', call => {
+      callErrors.push(call.args[0])
+    })
+
+    let unhandledReason: unknown
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledReason = reason
+    }
+    process.once('unhandledRejection', onUnhandledRejection)
+    try {
+      const onConnClose = connectionMock.on.withArgs('close').getCall(0).args[1]
+      onConnClose()
+      await new Promise(resolve => setTimeout(resolve, 50))
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandledRejection)
+    }
+
+    expect(unhandledReason).to.equal(undefined)
+    expect(
+      callErrors.some(error => /Reconnect failed after connection close/i.test(String(error))),
+    ).to.be.true
   })
 
   it('does not reconnect after node close when late connection close event arrives', async function () {

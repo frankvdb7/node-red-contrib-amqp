@@ -192,6 +192,7 @@ export default class Amqp {
       )
     } catch (e) {
       this.node.error(`Could not consume message: ${e}`)
+      throw e
     }
   }
 
@@ -303,6 +304,8 @@ export default class Amqp {
       outputs: rpcRequested,
     } = config
 
+    let cancelRpcConsumer: (() => Promise<void>) | null = null
+
     try {
       let correlationId = ''
       let replyTo = ''
@@ -315,7 +318,10 @@ export default class Amqp {
           uuidv4()
         replyTo =
           properties?.replyTo || this.config.amqpProperties?.replyTo || uuidv4()
-        await this.handleRemoteProcedureCall(correlationId, replyTo)
+        cancelRpcConsumer = await this.handleRemoteProcedureCall(
+          correlationId,
+          replyTo,
+        )
       }
 
       const options = {
@@ -337,6 +343,9 @@ export default class Amqp {
         await (this.channel as ConfirmChannel).waitForConfirms()
       }
     } catch (e) {
+      if (cancelRpcConsumer) {
+        await cancelRpcConsumer()
+      }
       this.node.error(`Could not publish message: ${e}`)
       throw e
     }
@@ -357,36 +366,87 @@ export default class Amqp {
   private async handleRemoteProcedureCall(
     correlationId: string,
     replyTo: string,
-  ): Promise<void> {
+  ): Promise<() => Promise<void>> {
     const rpcConfig = this.getRpcConfig(replyTo)
+    let queueName = ''
 
     try {
       // If we try to delete a queue that's already deleted
       // bad things will happen.
       let rpcQueueHasBeenDeleted = false
+      let rpcResponseFinalized = false
       let additionalErrorMessaging = ''
       let rpcTimeout: NodeJS.Timeout | null = null
+      let rpcConsumerTag = ''
+      let cleanupPromise: Promise<void> | null = null
+
+      const clearRpcTimeout = (): void => {
+        if (rpcTimeout) {
+          clearTimeout(rpcTimeout)
+          this.rpcTimeouts.delete(rpcTimeout)
+          rpcTimeout = null
+        }
+      }
+
+      const finalizeRpcResponse = (): boolean => {
+        if (rpcResponseFinalized) {
+          return false
+        }
+        rpcResponseFinalized = true
+        clearRpcTimeout()
+        return true
+      }
+
+      const cleanupRpcResources = async (): Promise<void> => {
+        if (rpcQueueHasBeenDeleted || !queueName) {
+          return
+        }
+
+        if (!cleanupPromise) {
+          cleanupPromise = (async () => {
+            try {
+              await this.channel.deleteQueue(queueName)
+              rpcQueueHasBeenDeleted = true
+            } catch (deleteError) {
+              this.node.error(`Error trying to cancel RPC consumer: ${deleteError}`)
+
+              const canCancelConsumer = typeof this.channel.cancel === 'function'
+              if (canCancelConsumer && rpcConsumerTag) {
+                try {
+                  await this.channel.cancel(rpcConsumerTag)
+                  rpcQueueHasBeenDeleted = true
+                } catch (cancelError) {
+                  this.node.error(`Error trying to cancel RPC consumer: ${cancelError}`)
+                }
+              }
+            } finally {
+              cleanupPromise = null
+            }
+          })()
+        }
+
+        await cleanupPromise
+      }
+
+      const cancelRpcConsumer = async (): Promise<void> => {
+        finalizeRpcResponse()
+        await cleanupRpcResources()
+      }
 
       /************************************
        * assert queue and set up consumer
        ************************************/
-      const queueName = await this.assertQueue(rpcConfig)
+      queueName = await this.assertQueue(rpcConfig)
 
-      await this.channel.consume(
+      const consumeResponse = await this.channel.consume(
         queueName,
-        async amqpMessage => {
+        amqpMessage => {
           if (amqpMessage) {
             const msg = this.assembleMessage(amqpMessage)
             if (msg.properties.correlationId === correlationId) {
-              this.node.send(msg as any)
-              /* istanbul ignore else */
-              if (!rpcQueueHasBeenDeleted) {
-                await this.channel.deleteQueue(queueName)
-                rpcQueueHasBeenDeleted = true
-                if (rpcTimeout) {
-                  clearTimeout(rpcTimeout)
-                  this.rpcTimeouts.delete(rpcTimeout)
-                }
+              if (finalizeRpcResponse()) {
+                this.node.send(msg as any)
+                void cleanupRpcResources()
               }
             } else {
               additionalErrorMessaging += ` Correlation ids do not match. Expecting: ${correlationId}, received: ${msg.properties.correlationId}`
@@ -395,28 +455,27 @@ export default class Amqp {
         },
         { noAck: rpcConfig.noAck },
       )
+      rpcConsumerTag = consumeResponse?.consumerTag || ''
 
       /****************************************
        * Check if RPC has timed out and handle
        ****************************************/
       rpcTimeout = setTimeout(async () => {
-        if (rpcTimeout) {
-          this.rpcTimeouts.delete(rpcTimeout)
-        }
+        clearRpcTimeout()
         if (this.closed) {
           return
         }
 
         try {
-          if (!rpcQueueHasBeenDeleted) {
+          if (finalizeRpcResponse()) {
             this.node.send({
               payload: {
                 message: `Timeout while waiting for RPC response.${additionalErrorMessaging}`,
                 config: rpcConfig,
               },
             })
-            await this.channel.deleteQueue(queueName)
           }
+          await cleanupRpcResources()
         } catch (e) {
           // TODO: Keep an eye on this
           // This might close the whole channel
@@ -424,8 +483,16 @@ export default class Amqp {
         }
       }, rpcConfig.rpcTimeout || 3000)
       this.rpcTimeouts.add(rpcTimeout)
+      return cancelRpcConsumer
     } catch (e) {
+      // If setup failed after queue assertion, try to clean up the temporary RPC queue.
+      if (queueName) {
+        await this.channel.deleteQueue(queueName).catch(deleteError => {
+          this.node.error(`Error trying to cancel RPC consumer: ${deleteError}`)
+        })
+      }
       this.node.error(`Could not consume RPC message: ${e}`)
+      throw e
     }
   }
 
