@@ -135,7 +135,7 @@
     <label style="width:auto; margin-top:7px;" for="node-input-exchangeDurable">Durable</label>
   </div>
   <hr>
-  <h4>Queue Info<h4>
+  <h4>Queue Info</h4>
   <div class="form-row wide-label-amqp-in-manual-ack">
     <label for="node-input-queueName"><i class="fa fa-tag"></i>&nbsp;&nbsp;Queue Name</label>
     <input type="text" id="node-input-queueName" placeholder="Leave blank to auto-generate">
@@ -168,20 +168,20 @@
 
 <script type="text/html" data-help-name="amqp-in-manual-ack">
   <p>Connects to an AMQP broker, receives messages, and <strong>manually acknowledges receipt</strong>.</p>
-  <p>This node sets <em>noAck</em> to false by default. <em style="color: firebrick;">You must manually ack or nack receipt by sending the message back through the input of the node</em>. Any un-acked message will be requeued once the client goes down or restarts. If you don't need to manually ack messages like this just use the <strong>amqp-in</strong> node instead. Please see the example flows in the import library for a better idea on how to use this node.</p>
+  <p>This node sets <em>noAck</em> to false by default. <em style="color: firebrick;">You must ack, nack, or reject by sending the same message object back through the node input.</em> If a message is not acknowledged, RabbitMQ will requeue it when the consumer disconnects.</p>
 
   <h3>Inputs</h3>
   <dl class="message-properties">
     <dt>msg
       <span class="property-type">object</span>
     </dt>
-    <dd>The entire message sent through the output of this node should be sent back through the input to successfully ack or nack</dd>
+    <dd>Send the entire message from this node's output back into its input to perform acknowledgement operations.</dd>
   </dl>
   <dl class="message-properties">
     <dt>msg.manualAck
       <span class="property-type">object</span>
     </dt>
-    <dd>An optional configuration object that can specify ack mode and behavior. If not specified the message itself is still acked.</dd>
+    <dd>An optional object to control acknowledgment behavior. If not specified, the message is acknowledged.</dd>
   </dl>
   <dl class="message-properties">
     <dt>msg.manualAck.ackMode
@@ -205,11 +205,14 @@
     <dt>msg.manualAck.requeue
       <span class="property-type">boolean</span>
     </dt>
-    <dd><code>requeue</code> option for nacking. If true will nack and requeue the message. If false will nack and dead letter. Defaults to false.</dd>
+    <dd><code>requeue</code> option for <code>nack</code>, <code>nackAll</code>, and <code>reject</code>. If true the message is requeued; if false it can be dead-lettered. Defaults to true.</dd>
   </dl>
-  <p>
-    <code>msg.payload</code> control amqp-broker reconnect by send {"reconnectCall": true}, 
-  </p>
+  <dl class="message-properties">
+    <dt>payload.reconnectCall
+      <span class="property-type">boolean</span>
+    </dt>
+    <dd>Set to <code>true</code> to trigger a reconnect.</dd>
+  </dl>
 
   <h3>Outputs</h3>
   <dl class="message-properties">
@@ -248,7 +251,7 @@
         <li><code>userId</code>: any | undefined</li>
         <li><code>appId</code>: any | undefined</li>
         <li><code>clusterId</code>: any | undefined</li>
-      </ul>>
+      </ul>
     </dd>
     <dt>content
       <span class="property-type">buffer</span>
@@ -259,17 +262,15 @@
     <dd>the payload of the message received. </dd>
   </dl>
 
-  <h3>Details</h3>
-  <p>
-    <code>fields</code>, <code>properties</code>, and <code>content</code> all come from the <a href="http://www.squaremobius.net/amqp.node" target="_blank">amqplib</a> object attached to the incoming message.
-  </p>
-  <p>
-    <code>msg.payload</code> is used as the payload of the received message.
-    If it contains a string that can be parsed in to json it will be run through JSON.parse(). Otherwise it will be sent as is.
-  </p>
+  <h3>Behavior Notes</h3>
+  <ul>
+    <li>If <code>msg.manualAck</code> is omitted, the message is acknowledged.</li>
+    <li><code>requeue</code> defaults to <code>true</code> for <code>nack</code>, <code>nackAll</code>, and <code>reject</code>.</li>
+    <li>Incoming payload is parsed as JSON when possible; if parsing fails, the raw value is passed through.</li>
+  </ul>
   <h3>References</h3>
   <ul>
-    <li>This node relies heavily on the <a href="http://www.squaremobius.net/amqp.node/" target="_blank">amqplib</a> library.
-    <li>View the github repo: <a href="https://github.com/MeowWolf/node-red-contrib-mw-amqp" target="_blank">https://github.com/MeowWolf/node-red-contrib-mw-amqp</a>
+    <li>This node relies on the <a href="http://www.squaremobius.net/amqp.node/" target="_blank">amqplib</a> library.</li>
+    <li>Project repository: <a href="https://github.com/frankvdb7/node-red-contrib-amqp" target="_blank">https://github.com/frankvdb7/node-red-contrib-amqp</a></li>
   </ul>
 </script>

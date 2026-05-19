@@ -74,9 +74,11 @@
 
 
 <script type="text/html" data-help-name="amqp-broker">
+  <p>Configures broker connection settings shared by AMQP nodes.</p>
+
   <h3>Get credentials from settings</h3>
   <p>
-    If this is checked, variables specified in the settings.js file will be used for the username and password to connect to the broker
+    If enabled, credentials are read from Node-RED settings instead of storing username/password in node credentials.
   </p>
   <p>
     The field names used for username and password are:
@@ -86,7 +88,7 @@
     <strong>MW_CONTRIB_AMQP_PASSWORD</strong> respectively.
   </p>
   <p>
-    They can be added to the settings.js file along with the other fields:
+    Add them to <code>settings.js</code>:
   </p>
     <pre>
 module.exports = {
@@ -97,13 +99,17 @@ module.exports = {
 }
     </pre>
 
+  <h3>Health endpoint</h3>
   <p>
-    A good setup would be:
-    <ol>
-      <li>Use environment variables with the <em>dotenv</em> npm package to specify your credentials.</li>
-      <li>In the settings file set them as exports like in the above example.</li>
-      <li>Set them to empty strings in the environment like this: `process.env.MW_CONTRIB_AMQP_PASSWORD = ''`.</li>
-    </ol>
-    The last step is very important because environment variables are accessible via the front end and can be accessed by any user.
+    This node also exposes an admin endpoint at <code>/amqp-broker/health</code> that reports broker status for connected AMQP nodes.
+    It returns HTTP <code>200</code> when all configured brokers are connected and <code>503</code> otherwise.
   </p>
+
+  <p>A recommended setup is:</p>
+  <ol>
+    <li>Use environment variables with the <em>dotenv</em> npm package to specify your credentials.</li>
+    <li>In the settings file set them as exports like in the above example.</li>
+    <li>Set public environment values to empty strings where needed to avoid exposing secrets in client-accessible configuration.</li>
+  </ol>
+  <p>This helps reduce accidental exposure of broker credentials.</p>
 </script>

@@ -26,7 +26,14 @@
     "headers": "{}",
     "x": 180,
     "y": 180,
-    "wires": [["8d539ac3.728408", "28d902c.a0374fe"]]
+    "wires": [
+      [
+        "8d539ac3.728408",
+        "28d902c.a0374fe"
+      ]
+    ],
+    "queueType": "quorum",
+    "queueArguments": "{}"
   },
   {
     "id": "8d539ac3.728408",
@@ -58,7 +65,11 @@
     "libs": [],
     "x": 210,
     "y": 240,
-    "wires": [["7d0c827e.032efc"]]
+    "wires": [
+      [
+        "7d0c827e.032efc"
+      ]
+    ]
   },
   {
     "id": "7373712.cbbce9",
@@ -73,14 +84,21 @@
     "libs": [],
     "x": 470,
     "y": 360,
-    "wires": [["ff9d6956.6f9e68", "6a6ae2e0.36238c"]]
+    "wires": [
+      [
+        "ff9d6956.6f9e68",
+        "6a6ae2e0.36238c"
+      ]
+    ]
   },
   {
     "id": "6a6ae2e0.36238c",
     "type": "link out",
     "z": "4ac46355.6b3ddc",
     "name": "",
-    "links": ["29a65c8a.cdd984"],
+    "links": [
+      "29a65c8a.cdd984"
+    ],
     "x": 635,
     "y": 360,
     "wires": []
@@ -90,10 +108,16 @@
     "type": "link in",
     "z": "4ac46355.6b3ddc",
     "name": "",
-    "links": ["6a6ae2e0.36238c"],
+    "links": [
+      "6a6ae2e0.36238c"
+    ],
     "x": 75,
     "y": 120,
-    "wires": [["9a0f6314.32cc9"]]
+    "wires": [
+      [
+        "9a0f6314.32cc9"
+      ]
+    ]
   },
   {
     "id": "7d0c827e.032efc",
@@ -112,7 +136,11 @@
     "drop": false,
     "x": 310,
     "y": 300,
-    "wires": [["7373712.cbbce9"]]
+    "wires": [
+      [
+        "7373712.cbbce9"
+      ]
+    ]
   },
   {
     "id": "ff9d6956.6f9e68",
@@ -136,7 +164,15 @@
     "type": "inject",
     "z": "4ac46355.6b3ddc",
     "name": "",
-    "props": [{ "p": "payload" }, { "p": "topic", "vt": "str" }],
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
     "repeat": "",
     "crontab": "",
     "once": false,
@@ -146,7 +182,11 @@
     "payloadType": "date",
     "x": 140,
     "y": 60,
-    "wires": [["2ebcd4ca.ce551c"]]
+    "wires": [
+      [
+        "2ebcd4ca.ce551c"
+      ]
+    ]
   },
   {
     "id": "2ebcd4ca.ce551c",
@@ -164,6 +204,8 @@
     "outputs": 0,
     "x": 380,
     "y": 60,
-    "wires": []
+    "wires": [],
+    "reconnectOnError": false,
+    "waitForConfirms": false
   }
 ]

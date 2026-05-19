@@ -39,10 +39,18 @@
     "queueExclusive": false,
     "queueDurable": false,
     "queueAutoDelete": false,
-    "headers": "",
+    "headers": "{}",
     "x": 240,
     "y": 200,
-    "wires": [["72db3892.5e0e78", "8d988bdd.46d508"]]
+    "wires": [
+      [
+        "72db3892.5e0e78",
+        "8d988bdd.46d508"
+      ]
+    ],
+    "queueType": "quorum",
+    "queueArguments": "{}",
+    "noAck": false
   },
   {
     "id": "8d988bdd.46d508",
@@ -61,24 +69,37 @@
     "drop": false,
     "x": 440,
     "y": 260,
-    "wires": [["dc2363d.8f5b9a", "8b98b224.5675"]]
+    "wires": [
+      [
+        "dc2363d.8f5b9a",
+        "8b98b224.5675"
+      ]
+    ]
   },
   {
     "id": "9d861002.d13da",
     "type": "link in",
     "z": "6408ba88.c1e304",
     "name": "Send Ack",
-    "links": ["dc2363d.8f5b9a"],
+    "links": [
+      "dc2363d.8f5b9a"
+    ],
     "x": 75,
     "y": 200,
-    "wires": [["1129b47c.81b8dc"]]
+    "wires": [
+      [
+        "1129b47c.81b8dc"
+      ]
+    ]
   },
   {
     "id": "dc2363d.8f5b9a",
     "type": "link out",
     "z": "6408ba88.c1e304",
     "name": "Acknowledge",
-    "links": ["9d861002.d13da"],
+    "links": [
+      "9d861002.d13da"
+    ],
     "x": 595,
     "y": 260,
     "wires": []
@@ -96,7 +117,10 @@
     "amqpProperties": "{\"appId\":\"app-123\"}",
     "x": 380,
     "y": 100,
-    "wires": []
+    "wires": [],
+    "reconnectOnError": false,
+    "exchangeRoutingKeyType": "str",
+    "waitForConfirms": false
   },
   {
     "id": "2410e130.331b2e",
@@ -104,7 +128,9 @@
     "z": "6408ba88.c1e304",
     "name": "Topic Input",
     "props": [
-      { "p": "payload" },
+      {
+        "p": "payload"
+      },
       {
         "p": "properties",
         "v": "{\"correlationId\":\"correlation-123\",\"headers\":{\"arbitrary\":\"data\"}}",
@@ -120,7 +146,11 @@
     "payloadType": "json",
     "x": 140,
     "y": 100,
-    "wires": [["be7918ee.7dee98"]]
+    "wires": [
+      [
+        "be7918ee.7dee98"
+      ]
+    ]
   },
   {
     "id": "8b98b224.5675",

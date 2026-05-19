@@ -102,7 +102,7 @@
 
 <script type="text/html" data-template-name="amqp-out">
   <div class="form-row">
-    <label for="node-input-name"><i class="fa fa-tag"></i>&nbsp;&nbsp;名称</label>
+    <label for="node-input-name"><i class="fa fa-tag"></i>&nbsp;&nbsp;Name</label>
     <input type="text" id="node-input-name" placeholder="Leave blank to use exchange name">
   </div>
   <div class="form-row">
@@ -203,6 +203,12 @@
     <dd>
       If the node's routing key field type is specified as a string, the value of this field will override the node's configured routing key(s). If the node's routing key field type is not specified as a string, this value will have no effect and the value of the typedinput will be used as the routing key.
     </dd>
+    <dt>vhost
+      <span class="property-type">string</span>
+    </dt>
+    <dd>
+      Optional virtual host override. When provided, the node reconnects using this vhost before publishing.
+    </dd>
     <dt>properties
       <span class="property-type">object</span>
     </dt>
@@ -228,6 +234,13 @@
     </dd>
   </dl>
 
+  <h3>Behavior Notes</h3>
+  <ul>
+    <li><code>msg.properties</code> is shallow-merged over configured AMQP properties.</li>
+    <li><code>msg.routingKey</code> only overrides when routing key type is <code>str</code>.</li>
+    <li>When <code>msg.vhost</code> is provided, the node reconnects with that vhost before publish.</li>
+  </ul>
+
   <h3>Publisher confirmations</h3>
   <p>
     Enabling the <em>Wait for publisher confirmations</em> option configures the node to publish on a confirm channel and to
@@ -246,7 +259,7 @@
 
   <h3>References</h3>
   <ul>
-    <li>This node relies heavily on the <a href="http://www.squaremobius.net/amqp.node/" target="_blank">amqplib</a> library.
-    <li>View the github repo: <a href="https://github.com/MeowWolf/node-red-contrib-mw-amqp" target="_blank">https://github.com/MeowWolf/node-red-contrib-mw-amqp</a>
+    <li>This node relies on the <a href="http://www.squaremobius.net/amqp.node/" target="_blank">amqplib</a> library.</li>
+    <li>Project repository: <a href="https://github.com/frankvdb7/node-red-contrib-amqp" target="_blank">https://github.com/frankvdb7/node-red-contrib-amqp</a></li>
   </ul>
 </script>
