@@ -21,7 +21,14 @@
     "outputs": 1,
     "x": 360,
     "y": 180,
-    "wires": [["6d2ea4fe.b5731c"]]
+    "wires": [
+      [
+        "6d2ea4fe.b5731c"
+      ]
+    ],
+    "reconnectOnError": false,
+    "exchangeRoutingKeyType": "str",
+    "waitForConfirms": false
   },
   {
     "id": "faa23e4.affc0c",
@@ -43,14 +50,24 @@
     "headers": "{}",
     "x": 160,
     "y": 280,
-    "wires": [["cc27c446.274c18"]]
+    "wires": [
+      [
+        "cc27c446.274c18"
+      ]
+    ],
+    "queueType": "quorum",
+    "queueArguments": "{}"
   },
   {
     "id": "91cf531e.4455c",
     "type": "inject",
     "z": "eefbe223.cc053",
     "name": "",
-    "props": [{ "p": "payload" }],
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
     "repeat": "",
     "crontab": "",
     "once": false,
@@ -60,7 +77,11 @@
     "payloadType": "date",
     "x": 170,
     "y": 180,
-    "wires": [["108e6de3.693562"]]
+    "wires": [
+      [
+        "108e6de3.693562"
+      ]
+    ]
   },
   {
     "id": "83f0ae3b.a732f",
@@ -77,7 +98,10 @@
     "outputs": 0,
     "x": 600,
     "y": 280,
-    "wires": []
+    "wires": [],
+    "reconnectOnError": false,
+    "exchangeRoutingKeyType": "str",
+    "waitForConfirms": false
   },
   {
     "id": "6d2ea4fe.b5731c",
@@ -124,6 +148,10 @@
     "reg": false,
     "x": 380,
     "y": 280,
-    "wires": [["83f0ae3b.a732f"]]
+    "wires": [
+      [
+        "83f0ae3b.a732f"
+      ]
+    ]
   }
 ]
