@@ -39,10 +39,18 @@
     "queueExclusive": false,
     "queueDurable": false,
     "queueAutoDelete": false,
-    "headers": "",
+    "headers": "{}",
     "x": 280,
     "y": 180,
-    "wires": [["54883a06.6ce0f4", "e6a075e1.1c4b28"]]
+    "wires": [
+      [
+        "54883a06.6ce0f4",
+        "e6a075e1.1c4b28"
+      ]
+    ],
+    "queueType": "quorum",
+    "queueArguments": "{}",
+    "noAck": false
   },
   {
     "id": "e6a075e1.1c4b28",
@@ -61,7 +69,11 @@
     "drop": false,
     "x": 460,
     "y": 240,
-    "wires": [["eb547c9e.cf806"]]
+    "wires": [
+      [
+        "eb547c9e.cf806"
+      ]
+    ]
   },
   {
     "id": "eb547c9e.cf806",
@@ -93,7 +105,10 @@
     "amqpProperties": "{\"appId\":\"app-123\"}",
     "x": 500,
     "y": 80,
-    "wires": []
+    "wires": [],
+    "reconnectOnError": false,
+    "exchangeRoutingKeyType": "str",
+    "waitForConfirms": false
   },
   {
     "id": "b34052fb.fd329",
@@ -101,7 +116,9 @@
     "z": "da0e69ee.791638",
     "name": "Topic Input",
     "props": [
-      { "p": "payload" },
+      {
+        "p": "payload"
+      },
       {
         "p": "properties",
         "v": "{\"correlationId\":\"correlation-123\",\"headers\":{\"arbitrary\":\"data\"}}",
@@ -117,17 +134,27 @@
     "payloadType": "json",
     "x": 140,
     "y": 80,
-    "wires": [["25cc7051.4b336"]]
+    "wires": [
+      [
+        "25cc7051.4b336"
+      ]
+    ]
   },
   {
     "id": "32b91549.383ffa",
     "type": "complete",
     "z": "da0e69ee.791638",
     "name": "ack",
-    "scope": ["eb547c9e.cf806"],
+    "scope": [
+      "eb547c9e.cf806"
+    ],
     "uncaught": false,
     "x": 90,
     "y": 180,
-    "wires": [["42a93135.4cad3"]]
+    "wires": [
+      [
+        "42a93135.4cad3"
+      ]
+    ]
   }
 ]

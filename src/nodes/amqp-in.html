@@ -108,7 +108,7 @@
   </div>
   <div class="form-tips">
     <i class="fa fa-info-circle"></i>
-    If noAck is unchecked here the message will be acked upon successfull receipt <em>before</em> it is sent through the output. If you need more control over when the ack is sent use the <strong>amqp-in-manual-ack</strong> node instead.
+    If noAck is unchecked here the message will be acknowledged upon successful receipt <em>before</em> it is sent through the output. If you need more control over when acknowledgment happens, use the <strong>amqp-in-manual-ack</strong> node.
   </div>
   <hr>
   <h4>Exchange Info</h4>
@@ -144,7 +144,7 @@
     <label style="width:auto; margin-top:7px;" for="node-input-exchangeDurable">Durable</label>
   </div>
   <hr>
-  <h4>Queue Info<h4>
+  <h4>Queue Info</h4>
   <div class="form-row wide-label-amqp-in">
     <label for="node-input-queueName"><i class="fa fa-tag"></i>&nbsp;&nbsp;Queue Name</label>
     <input type="text" id="node-input-queueName" placeholder="Leave blank to auto-generate">
@@ -227,21 +227,21 @@
   </dl>
 
   <h3>Inputs</h3>
-  <p>
-    <code>msg.payload</code> control amqp-broker reconnect by send {"reconnectCall": true}, 
-  </p>
+  <dl class="message-properties">
+    <dt>payload.reconnectCall
+      <span class="property-type">boolean</span>
+    </dt>
+    <dd>Set to <code>true</code> to trigger a reconnect.</dd>
+  </dl>
 
-  <h3>Details</h3>
-  <p>
-    <code>fields</code>, <code>properties</code>, and <code>content</code> all come from the <a href="http://www.squaremobius.net/amqp.node" target="_blank">amqplib</a> object attached to the incoming message.
-  </p>
-  <p>
-    <code>msg.payload</code> is used as the payload of the received message.
-    If it contains a string that can be parsed in to json it will be run through JSON.parse(). Otherwise it will be sent as is.
-  </p>
+  <h3>Behavior Notes</h3>
+  <ul>
+    <li>When <code>noAck</code> is <code>false</code>, the node acknowledges messages immediately after receipt and before downstream processing.</li>
+    <li>Incoming payload is parsed as JSON when possible; if parsing fails, the raw value is passed through.</li>
+  </ul>
   <h3>References</h3>
   <ul>
-    <li>This node relies heavily on the <a href="http://www.squaremobius.net/amqp.node/" target="_blank">amqplib</a> library.
-    <li>View the github repo: <a href="https://github.com/MeowWolf/node-red-contrib-mw-amqp" target="_blank">https://github.com/MeowWolf/node-red-contrib-mw-amqp</a>
+    <li>This node relies on the <a href="http://www.squaremobius.net/amqp.node/" target="_blank">amqplib</a> library.</li>
+    <li>Project repository: <a href="https://github.com/frankvdb7/node-red-contrib-amqp" target="_blank">https://github.com/frankvdb7/node-red-contrib-amqp</a></li>
   </ul>
 </script>
