@@ -130,12 +130,7 @@ module.exports = function (RED: NodeRedApp): void {
               return
             }
             nodeIns.log('Reconnect timer fired: re-initializing AMQP node')
-            void initializeNode(nodeIns).catch(() => {
-              if (typeof reconnect === 'function') {
-                nodeIns.warn('Reconnect attempt failed during initialization; retrying')
-                void reconnect().catch(() => undefined)
-              }
-            })
+            void initializeNode(nodeIns)
           }, reconnectDelayMs)
         } catch (error) {
           reconnectScheduled = false
