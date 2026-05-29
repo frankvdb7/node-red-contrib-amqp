@@ -207,6 +207,31 @@ describe('amqp-in Node', () => {
     )
   })
 
+  it('logs Error details when connection setup fails', function (done) {
+    sinon.stub(Amqp.prototype, 'connect').rejects(new Error('socket exploded'))
+
+    helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+      function () {
+        const amqpInNode = helper.getNode('n1')
+        amqpInNode.on('call:error', call => {
+          const message = String(call.args[0])
+          if (message.startsWith('AmqpIn()')) {
+            try {
+              expect(message).to.include('Error: socket exploded')
+              expect(message).to.not.include('{}')
+              done()
+            } catch (err) {
+              done(err)
+            }
+          }
+        })
+      },
+    )
+  })
+
   it('handles non-object connect errors', function (done) {
     const connectStub = sinon.stub(Amqp.prototype, 'connect').throws('boom')
     helper.load(

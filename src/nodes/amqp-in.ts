@@ -234,7 +234,7 @@ module.exports = function (RED: NodeRedApp): void {
             nodeIns.status(NODE_STATUS.Invalid)
           }
         } else {
-          nodeIns.error(`AmqpIn() ${JSON.stringify(e)}`, {
+          nodeIns.error(`AmqpIn() ${e}`, {
             payload: { error: e, location: ErrorLocationEnum.ConnectError },
           })
           if (reconnectOnError) {
