@@ -133,7 +133,7 @@ module.exports = function (RED: NodeRedApp): void {
             void initializeNode(nodeIns).catch(() => {
               if (typeof reconnect === 'function') {
                 nodeIns.warn('Reconnect attempt failed during initialization; retrying')
-                void reconnect()
+                void reconnect().catch(() => undefined)
               }
             })
           }, reconnectDelayMs)

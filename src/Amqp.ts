@@ -647,24 +647,19 @@ export default class Amqp {
       configParams?.exchange || this.config.exchange
     const { headers } = configParams?.amqpProperties || this.config
 
-    try {
-      if (this.canHaveRoutingKey(type) && name) {
-        const promises = this.parseRoutingKeys(routingKey).map(key =>
-          this.channel.bindQueue(this.q.queue, name, key),
-        )
-        await Promise.all(promises)
-      }
+    if (this.canHaveRoutingKey(type) && name) {
+      const promises = this.parseRoutingKeys(routingKey).map(key =>
+        this.channel.bindQueue(this.q.queue, name, key),
+      )
+      await Promise.all(promises)
+    }
 
-      if (type === ExchangeType.Fanout) {
-        await this.channel.bindQueue(this.q.queue, name, '')
-      }
+    if (type === ExchangeType.Fanout) {
+      await this.channel.bindQueue(this.q.queue, name, '')
+    }
 
-      if (type === ExchangeType.Headers) {
-        await this.channel.bindQueue(this.q.queue, name, '', headers)
-      }
-    } catch (e) {
-      this.node.error(`Could not bind queue: ${e}`)
-      throw e
+    if (type === ExchangeType.Headers) {
+      await this.channel.bindQueue(this.q.queue, name, '', headers)
     }
   }
 

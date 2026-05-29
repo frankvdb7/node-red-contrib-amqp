@@ -1132,14 +1132,12 @@ describe('Amqp Class', () => {
     )
   })
 
-  it('bindQueue() logs and rethrows errors', async () => {
+  it('bindQueue() rethrows errors', async () => {
     const queue = 'queueName'
     const error = new Error('bind fail')
     const bindQueueStub = sinon.stub().rejects(error)
-    const errorStub = sinon.stub()
     amqp.channel = { bindQueue: bindQueueStub }
     amqp.q = { queue }
-    amqp.node = { error: errorStub }
 
     try {
       await amqp.bindQueue()
@@ -1147,17 +1145,14 @@ describe('Amqp Class', () => {
     } catch (e) {
       expect(e).to.equal(error)
     }
-    expect(errorStub.calledOnce).to.equal(true)
   })
 
   it('bindQueue() rethrows binding errors so consume setup can retry', async () => {
     const queue = 'queueName'
     const error = new Error('bind fail')
     const bindQueueStub = sinon.stub().rejects(error)
-    const errorStub = sinon.stub()
     amqp.channel = { bindQueue: bindQueueStub }
     amqp.q = { queue }
-    amqp.node = { error: errorStub }
 
     try {
       await amqp.bindQueue()
@@ -1165,7 +1160,6 @@ describe('Amqp Class', () => {
     } catch (e) {
       expect(e).to.equal(error)
     }
-    expect(errorStub.calledOnceWithMatch('Could not bind queue')).to.equal(true)
   })
 
   it('consume() does not register a consumer when real queue binding fails', async () => {
@@ -1189,7 +1183,6 @@ describe('Amqp Class', () => {
     }
 
     expect(consumeStub.called).to.equal(false)
-    expect(errorStub.calledWithMatch('Could not bind queue')).to.equal(true)
     expect(errorStub.calledWithMatch('Could not consume message')).to.equal(true)
   })
 
