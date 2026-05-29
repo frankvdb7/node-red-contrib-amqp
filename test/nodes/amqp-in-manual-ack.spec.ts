@@ -317,7 +317,12 @@ describe('amqp-in-manual-ack Node', () => {
 
   it('does not ack reconnect control messages', done => {
     const ackStub = sinon.stub(Amqp.prototype, 'ack')
-    const closeStub = sinon.stub(Amqp.prototype, 'close')
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
     const flow = [
       { id: 'n1', type: NodeType.AmqpInManualAck, name: 'test name', broker: 'b1', wires: [[]] },
       { id: 'b1', type: 'amqp-broker', name: 'test broker' },
@@ -335,7 +340,12 @@ describe('amqp-in-manual-ack Node', () => {
   it('prioritizes reconnect control over manualAck instructions', done => {
     const ackStub = sinon.stub(Amqp.prototype, 'ack')
     const nackStub = sinon.stub(Amqp.prototype, 'nack')
-    const closeStub = sinon.stub(Amqp.prototype, 'close')
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
     const flow = [
       { id: 'n1', type: NodeType.AmqpInManualAck, name: 'test name', broker: 'b1', wires: [[]] },
       { id: 'b1', type: 'amqp-broker', name: 'test broker' },
@@ -438,7 +448,7 @@ describe('amqp-in-manual-ack Node', () => {
       credentialsFixture,
     )
     const onCallback = connectionMock.on.withArgs('close').getCall(0).args[1]
-    onCallback()
+    await onCallback()
     expect(closeStub.calledOnce).to.be.true
   })
 
@@ -455,11 +465,11 @@ describe('amqp-in-manual-ack Node', () => {
     const closeStub = sinon.stub(Amqp.prototype, 'close')
 
     const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture))
-    flow[1].reconnectOnError = false
+    flow[0].reconnectOnError = false
 
     await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
     const onCallback = channelMock.on.withArgs('close').getCall(0).args[1]
-    onCallback()
+    await onCallback()
     expect(closeStub.calledOnce).to.be.true
   })
 
@@ -597,6 +607,42 @@ describe('amqp-in-manual-ack Node', () => {
     expect(closeStub.calledOnce).to.be.true
   })
 
+  it('does not schedule reconnect when node closes while reconnect is closing resources', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+      const channelMock = { on: sinon.stub(), off: sinon.stub() }
+      const connectStub = sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+      sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+      sinon.stub(Amqp.prototype, 'consume').resolves()
+      let releaseClose: () => void = () => undefined
+      const closeDuringReconnect = new Promise<void>(resolve => {
+        releaseClose = resolve
+      })
+      const closeStub = sinon.stub(Amqp.prototype, 'close')
+      closeStub.onFirstCall().returns(closeDuringReconnect)
+      closeStub.onSecondCall().resolves()
+
+      await helper.load(
+        [amqpInManualAck, amqpBroker],
+        amqpInManualAckFlowFixture,
+        credentialsFixture,
+      )
+
+      const n1 = helper.getNode('n1')
+      const onConnClose = connectionMock.on.withArgs('close').getCall(0).args[1]
+      const reconnectPromise = onConnClose()
+      await n1.close()
+      releaseClose()
+      await reconnectPromise
+      await clock.tickAsync(2001)
+
+      expect(connectStub.calledOnce).to.be.true
+    } finally {
+      clock.restore()
+    }
+  })
+
   it('coalesces duplicate reconnect triggers into a single reconnect cycle', async function () {
     const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
@@ -664,7 +710,26 @@ describe('amqp-in-manual-ack Node', () => {
       credentialsFixture,
     )
     const onCallback = channelMock.on.withArgs('close').getCall(0).args[1]
-    onCallback()
+    await onCallback()
+    expect(closeStub.calledOnce).to.be.true
+  })
+
+  it('reconnects when AMQP consumer is cancelled', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
+    const closeStub = sinon.stub(Amqp.prototype, 'close')
+
+    await helper.load(
+      [amqpInManualAck, amqpBroker],
+      amqpInManualAckFlowFixture,
+      credentialsFixture,
+    )
+    const node = helper.getNode('n1')
+    node.emit('amqp:consumer-cancelled')
+    await new Promise(resolve => setImmediate(resolve))
     expect(closeStub.calledOnce).to.be.true
   })
 
@@ -677,7 +742,7 @@ describe('amqp-in-manual-ack Node', () => {
     const closeStub = sinon.stub(Amqp.prototype, 'close')
 
     const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture))
-    flow[1].reconnectOnError = false
+    flow[0].reconnectOnError = false
 
     await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
     const onCallback = channelMock.on.withArgs('error').getCall(0).args[1]
@@ -714,12 +779,23 @@ describe('amqp-in-manual-ack Node', () => {
     const closeStub = sinon.stub(Amqp.prototype, 'close');
 
     const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture));
-    flow[1].reconnectOnError = false;
+    flow[0].reconnectOnError = false;
 
     await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
+    const amqpInNode = helper.getNode('n1')
+    closeStub.resetHistory()
+
+    const errorPromise = new Promise<void>(resolve => {
+      amqpInNode.on('call:error', () => {
+        resolve()
+      })
+    })
+
     const onCallback = connectionMock.on.withArgs('error').getCall(0).args[1]
     onCallback('connection error')
-    expect(closeStub.called).to.be.false
+    await errorPromise
+
+    expect(closeStub.notCalled).to.be.true
   });
 
   it('reconnects on connection error without error argument when reconnectOnError is true', async function () {
@@ -739,6 +815,86 @@ describe('amqp-in-manual-ack Node', () => {
     expect(closeStub.calledOnce).to.be.true
   });
 
+  it('retries initialization on unclassified connect errors when reconnectOnError is true', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const transientError = new Error('socket hang up')
+      const connectStub = sinon.stub(Amqp.prototype, 'connect')
+      connectStub.onFirstCall().rejects(transientError)
+      connectStub.onSecondCall().resolves({ on: sinon.stub(), off: sinon.stub(), close: sinon.stub() } as any)
+      sinon.stub(Amqp.prototype, 'initialize').resolves({ on: sinon.stub(), off: sinon.stub() } as any)
+      sinon.stub(Amqp.prototype, 'consume').resolves()
+      sinon.stub(Amqp.prototype, 'close').resolves()
+
+      const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture))
+      flow[0].reconnectOnError = true
+
+      await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
+      expect(connectStub.callCount).to.equal(1)
+
+      await clock.tickAsync(2001)
+
+      expect(connectStub.callCount).to.equal(2)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('retries initialization on auth errors when reconnectOnError is true', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const connectStub = sinon.stub(Amqp.prototype, 'connect')
+      connectStub.onFirstCall().rejects(new CustomError(ErrorType.InvalidLogin))
+      connectStub.onSecondCall().resolves({ on: sinon.stub(), off: sinon.stub(), close: sinon.stub() } as any)
+      sinon.stub(Amqp.prototype, 'initialize').resolves({ on: sinon.stub(), off: sinon.stub() } as any)
+      sinon.stub(Amqp.prototype, 'consume').resolves()
+      sinon.stub(Amqp.prototype, 'close').resolves()
+
+      const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture))
+      flow[0].reconnectOnError = true
+
+      await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
+      expect(connectStub.callCount).to.equal(1)
+
+      await clock.tickAsync(2001)
+
+      expect(connectStub.callCount).to.equal(2)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('backs off repeated reconnect initialization failures', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const transientError = new Error('socket hang up')
+      const connectStub = sinon.stub(Amqp.prototype, 'connect')
+      connectStub.onFirstCall().rejects(transientError)
+      connectStub.onSecondCall().rejects(transientError)
+      connectStub.onThirdCall().resolves({ on: sinon.stub(), off: sinon.stub(), close: sinon.stub() } as any)
+      sinon.stub(Amqp.prototype, 'initialize').resolves({ on: sinon.stub(), off: sinon.stub() } as any)
+      sinon.stub(Amqp.prototype, 'consume').resolves()
+      sinon.stub(Amqp.prototype, 'close').resolves()
+
+      const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture))
+      flow[0].reconnectOnError = true
+
+      await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
+      expect(connectStub.callCount).to.equal(1)
+
+      await clock.tickAsync(2001)
+      expect(connectStub.callCount).to.equal(2)
+
+      await clock.tickAsync(2000)
+      expect(connectStub.callCount).to.equal(2)
+
+      await clock.tickAsync(2000)
+      expect(connectStub.callCount).to.equal(3)
+    } finally {
+      clock.restore()
+    }
+  })
+
   it('does not reconnect on initialization failure when reconnectOnError is false', async function () {
     const error = new Error('Initial connection failed');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -749,7 +905,9 @@ describe('amqp-in-manual-ack Node', () => {
     sinon.stub(Amqp.prototype, 'initialize').resolves(initChannelMock as any)
     sinon.stub(Amqp.prototype, 'consume').resolves()
 
-    await helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture);
+    const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture))
+    flow[0].reconnectOnError = false
+    await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture);
     expect(connectStub.callCount).to.equal(1);
   });
 })

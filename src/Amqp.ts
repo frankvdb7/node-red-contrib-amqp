@@ -132,9 +132,6 @@ export default class Amqp {
       }
     }
 
-    this.setBrokerNodeState('connected')
-    this.node.status(NODE_STATUS.Connected)
-
     entry.count += 1
     this.connection = entry.connection
 
@@ -160,6 +157,11 @@ export default class Amqp {
     return this.connection
   }
 
+  public markConnected(): void {
+    this.setBrokerNodeState('connected')
+    this.node.status(NODE_STATUS.Connected)
+  }
+
   public async initialize(): Promise<Channel> {
     await this.createChannel()
     await this.assertExchange()
@@ -176,6 +178,9 @@ export default class Amqp {
         amqpMessage => {
           if (!amqpMessage) {
             this.node.warn('AMQP consumer was cancelled')
+            this.node.status(NODE_STATUS.Disconnected)
+            const eventEmitterNode = this.node as unknown as { emit?: (event: string) => void }
+            eventEmitterNode.emit?.('amqp:consumer-cancelled')
             return
           }
           const msg = this.assembleMessage(amqpMessage)
@@ -213,6 +218,7 @@ export default class Amqp {
       this.vhostOverride = newVhost
       await this.connect()
       await this.initialize()
+      this.markConnected()
     } catch (e) {
       this.node.error(`Could not switch vhost: ${e}`)
       throw e
@@ -658,6 +664,7 @@ export default class Amqp {
       }
     } catch (e) {
       this.node.error(`Could not bind queue: ${e}`)
+      throw e
     }
   }
 

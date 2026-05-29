@@ -4,7 +4,9 @@ export {}
 const { expect } = require('chai')
 const sinon = require('sinon')
 const helper = require('node-red-node-test-helper')
+const Amqp = require('../../src/Amqp').default
 const amqpBroker = require('../../src/nodes/amqp-broker')
+const amqpInManualAck = require('../../src/nodes/amqp-in-manual-ack')
 
 helper.init(require.resolve('node-red'))
 
@@ -114,6 +116,80 @@ describe('amqp-broker Node', () => {
               })
               done()
             } catch(e) {
+              done(e)
+            }
+          })
+      })
+    })
+
+    it('should return 503 when one node on a broker is disconnected', done => {
+      const flow = [
+        {
+          id: 'b1',
+          type: 'amqp-broker',
+          name: 'broker 1',
+          nodeStates: {
+            amqpInManualAck: 'disconnected',
+            amqpOut: 'connected',
+          },
+        },
+      ]
+      helper.load(amqpBroker, flow, () => {
+        helper
+          .request()
+          .get('/amqp-broker/health')
+          .expect(503)
+          .end((err, res) => {
+            try {
+              if (err) return done(err)
+              expect(res.body).to.deep.equal({
+                overallStatus: 'unhealthy',
+                brokers: [
+                  { id: 'b1', name: 'broker 1', status: 'disconnected' },
+                ],
+              })
+              done()
+            } catch (e) {
+              done(e)
+            }
+          })
+      })
+    })
+
+    it('should return 503 when a configured broker node has not reported state yet', done => {
+      sinon.stub(Amqp.prototype, 'connect').returns(new Promise(() => undefined))
+      const flow = [
+        {
+          id: 'b1',
+          type: 'amqp-broker',
+          name: 'broker 1',
+          nodeStates: {
+            amqpOut: 'connected',
+          },
+        },
+        {
+          id: 'amqpInManualAck',
+          type: 'amqp-in-manual-ack',
+          broker: 'b1',
+          name: 'manual ack input',
+        },
+      ]
+      helper.load([amqpBroker, amqpInManualAck], flow, () => {
+        helper
+          .request()
+          .get('/amqp-broker/health')
+          .expect(503)
+          .end((err, res) => {
+            try {
+              if (err) return done(err)
+              expect(res.body).to.deep.equal({
+                overallStatus: 'unhealthy',
+                brokers: [
+                  { id: 'b1', name: 'broker 1', status: 'disconnected' },
+                ],
+              })
+              done()
+            } catch (e) {
               done(e)
             }
           })
