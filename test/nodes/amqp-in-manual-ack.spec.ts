@@ -864,6 +864,39 @@ describe('amqp-in-manual-ack Node', () => {
     }
   })
 
+  it('does not emit unhandled rejection when reconnect fails during initialization error handling', async function () {
+    sinon.stub(Amqp.prototype, 'connect').rejects(new Error('initial connect failed'))
+    sinon.stub(Amqp.prototype, 'initialize').resolves({ on: sinon.stub(), off: sinon.stub() } as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
+    sinon.stub(Amqp.prototype, 'close').rejects(new Error('close failed'))
+
+    const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture))
+    flow[0].reconnectOnError = true
+
+    let unhandledReason: unknown
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledReason = reason
+    }
+    process.once('unhandledRejection', onUnhandledRejection)
+    try {
+      await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
+      const amqpInNode = helper.getNode('n1')
+      const callErrors: unknown[] = []
+      amqpInNode.on('call:error', call => {
+        callErrors.push(call.args[0])
+      })
+
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      expect(unhandledReason).to.equal(undefined)
+      expect(
+        callErrors.some(error => /Reconnect failed during initialization/i.test(String(error))),
+      ).to.be.true
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandledRejection)
+    }
+  })
+
   it('backs off repeated reconnect initialization failures', async function () {
     const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
     try {
