@@ -6,3 +6,8 @@ export const NODE_STATUS: { [index: string]: NodeStatus } = Object.freeze({
   Error: { fill: 'red', shape: 'dot', text: 'Error' },
   Invalid: { fill: 'red', shape: 'ring', text: 'Unable to connect' },
 })
+
+export const RECONNECT_BACKOFF = Object.freeze({
+  initialMs: 2000,
+  maxMs: 300000,
+})
