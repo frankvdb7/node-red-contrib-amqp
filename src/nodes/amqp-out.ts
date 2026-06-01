@@ -248,13 +248,13 @@ module.exports = function (RED: NodeRedApp): void {
 
       if (vhost) {
         try {
-          clearTimeout(reconnectTimeout);
-          reconnectScheduled = false;
+          clearTimeout(reconnectTimeout)
+          reconnectScheduled = false
 
-          removeEventListeners();
-          await amqp.setVhost(vhost);
+          removeEventListeners()
+          await amqp.setVhost(vhost)
 
-          connection = amqp.getConnection();
+          connection = amqp.getConnection()
           channel = amqp.getChannel()
           setupEventListeners(me)
           amqp.markConnected()
