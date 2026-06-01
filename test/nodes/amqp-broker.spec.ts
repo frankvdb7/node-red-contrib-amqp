@@ -47,6 +47,7 @@ describe('amqp-broker Node', () => {
     })
 
     it('should return 200 when all brokers are connected', done => {
+      sinon.stub(Amqp.prototype, 'connect').returns(new Promise(() => undefined))
       const flow = [
         {
           id: 'b1',
@@ -60,8 +61,10 @@ describe('amqp-broker Node', () => {
           name: 'broker 2',
           nodeStates: { n2: 'connected' },
         },
+        { id: 'n1', type: 'amqp-in-manual-ack', broker: 'b1', name: 'input 1' },
+        { id: 'n2', type: 'amqp-in-manual-ack', broker: 'b2', name: 'input 2' },
       ]
-      helper.load(amqpBroker, flow, () => {
+      helper.load([amqpBroker, amqpInManualAck], flow, () => {
         helper
           .request()
           .get('/amqp-broker/health')
@@ -85,6 +88,7 @@ describe('amqp-broker Node', () => {
     })
 
     it('should return 503 when one broker is disconnected', done => {
+      sinon.stub(Amqp.prototype, 'connect').returns(new Promise(() => undefined))
       const flow = [
         {
           id: 'b1',
@@ -98,8 +102,10 @@ describe('amqp-broker Node', () => {
           name: 'broker 2',
           nodeStates: { n2: 'disconnected' },
         },
+        { id: 'n1', type: 'amqp-in-manual-ack', broker: 'b1', name: 'input 1' },
+        { id: 'n2', type: 'amqp-in-manual-ack', broker: 'b2', name: 'input 2' },
       ]
-      helper.load(amqpBroker, flow, () => {
+      helper.load([amqpBroker, amqpInManualAck], flow, () => {
         helper
           .request()
           .get('/amqp-broker/health')
@@ -196,7 +202,46 @@ describe('amqp-broker Node', () => {
       })
     })
 
+    it('should ignore stale nodeStates for nodes not present in the active flow', done => {
+      sinon.stub(Amqp.prototype, 'connect').returns(new Promise(() => undefined))
+      const flow = [
+        {
+          id: 'b1',
+          type: 'amqp-broker',
+          name: 'broker 1',
+          nodeStates: {
+            deletedNode: 'connected',
+          },
+        },
+        {
+          id: 'amqpInManualAck',
+          type: 'amqp-in-manual-ack',
+          broker: 'b1',
+          name: 'manual ack input',
+        },
+      ]
+      helper.load([amqpBroker, amqpInManualAck], flow, () => {
+        helper
+          .request()
+          .get('/amqp-broker/health')
+          .expect(503)
+          .end((err, res) => {
+            try {
+              if (err) return done(err)
+              expect(res.body).to.deep.equal({
+                overallStatus: 'unhealthy',
+                brokers: [{ id: 'b1', name: 'broker 1', status: 'disconnected' }],
+              })
+              done()
+            } catch (e) {
+              done(e)
+            }
+          })
+      })
+    })
+
     it('should return 503 when a broker has an errored node state', done => {
+      sinon.stub(Amqp.prototype, 'connect').returns(new Promise(() => undefined))
       const flow = [
         {
           id: 'b1',
@@ -211,8 +256,9 @@ describe('amqp-broker Node', () => {
             },
           },
         },
+        { id: 'n1', type: 'amqp-in-manual-ack', broker: 'b1', name: 'input 1' },
       ]
-      helper.load(amqpBroker, flow, () => {
+      helper.load([amqpBroker, amqpInManualAck], flow, () => {
         helper
           .request()
           .get('/amqp-broker/health')
@@ -293,6 +339,7 @@ describe('amqp-broker Node', () => {
     })
 
     it('should return 503 when a broker has no nodeStates property', done => {
+      sinon.stub(Amqp.prototype, 'connect').returns(new Promise(() => undefined))
       const flow = [
         {
           id: 'b1',
@@ -305,8 +352,10 @@ describe('amqp-broker Node', () => {
           type: 'amqp-broker',
           name: 'broker 2',
         },
+        { id: 'n1', type: 'amqp-in-manual-ack', broker: 'b1', name: 'input 1' },
+        { id: 'n2', type: 'amqp-in-manual-ack', broker: 'b2', name: 'input 2' },
       ]
-      helper.load(amqpBroker, flow, () => {
+      helper.load([amqpBroker, amqpInManualAck], flow, () => {
         helper
           .request()
           .get('/amqp-broker/health')
@@ -366,6 +415,7 @@ describe('amqp-broker Node', () => {
     })
 
     it('should reflect the removal of a broker', done => {
+      sinon.stub(Amqp.prototype, 'connect').returns(new Promise(() => undefined))
       const flow = [
         {
           id: 'b1',
@@ -379,8 +429,10 @@ describe('amqp-broker Node', () => {
           name: 'broker 2',
           nodeStates: { n2: 'connected' },
         },
+        { id: 'n1', type: 'amqp-in-manual-ack', broker: 'b1', name: 'input 1' },
+        { id: 'n2', type: 'amqp-in-manual-ack', broker: 'b2', name: 'input 2' },
       ]
-      helper.load(amqpBroker, flow, () => {
+      helper.load([amqpBroker, amqpInManualAck], flow, () => {
         const b2 = helper.getNode('b2')
         b2.close()
         // No setTimeout needed, the 'close' event is synchronous

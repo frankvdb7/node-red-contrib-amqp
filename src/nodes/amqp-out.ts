@@ -333,11 +333,17 @@ module.exports = function (RED: NodeRedApp): void {
         connection = await amqp.connect()
         if (connection) {
           channel = await amqp.initialize()
+          if (isShuttingDown) {
+            return
+          }
           setupEventListeners(nodeIns)
           amqp.markConnected()
           reconnectBackoff.reset()
         }
       } catch (e) {
+        if (isShuttingDown) {
+          return
+        }
         await amqp.close().catch(() => undefined)
         await handleError(e, nodeIns)
       }

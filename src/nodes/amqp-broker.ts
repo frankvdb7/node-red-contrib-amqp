@@ -92,16 +92,14 @@ module.exports = function (RED: NodeRedApp): void {
   function getEffectiveNodeStates(
     brokerNode: AmqpBrokerNode,
   ): Record<string, BrokerNodeState> {
-    const states: Record<string, BrokerNodeState> = {
-      ...(brokerNode.nodeStates || {}),
-    }
+    const states: Record<string, BrokerNodeState> = {}
     const nodes = RED.nodes as unknown as {
       eachNode?: (callback: (node: ConfiguredAmqpNode) => void) => void
     }
 
     nodes.eachNode?.(node => {
       if (node.broker === brokerNode.id && amqpNodeTypes.has(node.type)) {
-        states[node.id] = states[node.id] || 'disconnected'
+        states[node.id] = brokerNode.nodeStates?.[node.id] || 'disconnected'
       }
     })
 

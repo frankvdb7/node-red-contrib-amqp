@@ -392,6 +392,56 @@ describe('amqp-out Node', () => {
     expect(closeStub.called).to.be.true
   })
 
+  it('does not register listeners or mark connected when node closes during initialization', async function () {
+    let resolveInitialize: (value: unknown) => void
+    const initializePromise = new Promise(resolve => {
+      resolveInitialize = resolve
+    })
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').returns(initializePromise as any)
+    sinon.stub(Amqp.prototype, 'close').resolves()
+    const markConnectedStub = sinon.stub(Amqp.prototype, 'markConnected')
+
+    await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture)
+    const amqpOutNode = helper.getNode('n1')
+    const closePromise = amqpOutNode.close()
+    resolveInitialize!(channelMock)
+    await closePromise
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(markConnectedStub.called).to.be.false
+    expect(connectionMock.on.called).to.be.false
+    expect(channelMock.on.called).to.be.false
+  })
+
+  it('does not set error or invalid status when initialization fails during shutdown', async function () {
+    let rejectInitialize: (reason?: unknown) => void
+    const initializePromise = new Promise((_, reject) => {
+      rejectInitialize = reject
+    })
+    sinon.stub(Amqp.prototype, 'connect').resolves({ on: sinon.stub(), off: sinon.stub(), close: sinon.stub() } as any)
+    sinon.stub(Amqp.prototype, 'initialize').returns(initializePromise as any)
+    sinon.stub(Amqp.prototype, 'close').resolves()
+
+    await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture)
+    const amqpOutNode = helper.getNode('n1')
+    const statuses: unknown[] = []
+    amqpOutNode.on('call:status', call => statuses.push(call.args[0]))
+
+    const closePromise = amqpOutNode.close()
+    rejectInitialize!(new Error('init failed during shutdown'))
+    await closePromise
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const hasErrorOrInvalid = statuses.some(status => {
+      const text = status && typeof status === 'object' ? (status as { text?: string }).text : ''
+      return text === NODE_STATUS.Error.text || text === NODE_STATUS.Invalid.text
+    })
+    expect(hasErrorOrInvalid).to.be.false
+  })
+
   it('closes cleanly before listeners are assigned', async function () {
     sinon.stub(Amqp.prototype, 'connect').resolves({ on: sinon.stub(), off: sinon.stub(), close: sinon.stub() } as any)
     sinon.stub(Amqp.prototype, 'initialize').returns(new Promise(() => undefined) as any)

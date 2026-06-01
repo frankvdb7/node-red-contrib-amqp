@@ -192,6 +192,9 @@ module.exports = function (RED: NodeRedApp): void {
         if (connection) {
           channel = await amqp.initialize()
           await amqp.consume()
+          if (isShuttingDown) {
+            return
+          }
 
           onConnClose = async () => {
             nodeIns.warn('AMQP connection closed event received')
@@ -262,6 +265,9 @@ module.exports = function (RED: NodeRedApp): void {
           reconnectBackoff.reset()
         }
       } catch (e: unknown) {
+        if (isShuttingDown) {
+          return
+        }
         await amqp.close().catch(() => undefined)
         const err = isErrorLike(e) ? e : {}
         if (isInvalidLoginError(err)) {
