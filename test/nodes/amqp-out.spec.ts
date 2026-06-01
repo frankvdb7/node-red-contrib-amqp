@@ -863,15 +863,22 @@ describe('amqp-out Node', () => {
     expect(closeStub.calledOnce).to.be.true
   })
 
-  it('clears pending reconnect timer when switching vhost dynamically', async function () {
+  it('clears pending reconnect timer before switching vhost dynamically', async function () {
     const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
     try {
       const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
       const channelMock = { on: sinon.stub(), off: sinon.stub() }
+
       const connectStub = sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
       sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
       sinon.stub(Amqp.prototype, 'close').resolves()
-      sinon.stub(Amqp.prototype, 'setVhost').resolves()
+
+      let releaseSetVhost: () => void = () => undefined
+      const setVhostPromise = new Promise<void>(resolve => {
+        releaseSetVhost = resolve
+      })
+
+      sinon.stub(Amqp.prototype, 'setVhost').returns(setVhostPromise as any)
       sinon.stub(Amqp.prototype, 'publish').resolves()
       sinon.stub(Amqp.prototype, 'getConnection').returns(connectionMock as any)
       sinon.stub(Amqp.prototype, 'getChannel').returns(channelMock as any)
@@ -884,13 +891,22 @@ describe('amqp-out Node', () => {
 
       const onConnClose = connectionMock.on.withArgs('close').getCall(0).args[1]
       await onConnClose()
+
+      // Timer is now scheduled for 2000ms.
       await clock.tickAsync(1000)
 
       const amqpOutNode = helper.getNode('n1')
       amqpOutNode.receive({ payload: 'foo', vhost: 'vh2' })
+
+      // Advance beyond the original reconnect deadline while setVhost is still pending.
+      await clock.tickAsync(2000)
+
+      // No reconnect should have fired while the dynamic vhost switch is in progress.
+      expect(connectStub.calledOnce).to.be.true
+
+      releaseSetVhost()
       await clock.tickAsync(0)
 
-      await clock.tickAsync(3000)
       expect(connectStub.calledOnce).to.be.true
     } finally {
       clock.restore()
