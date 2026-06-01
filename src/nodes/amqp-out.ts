@@ -279,15 +279,23 @@ module.exports = function (RED: NodeRedApp): void {
       isShuttingDown = true
       clearTimeout(reconnectTimeout)
       removeEventListeners()
+      let closeError: unknown
       try {
         await amqp.close()
+      } catch (e) {
+        closeError = e
+      } finally {
         if (removed) {
           amqp.removeBrokerNodeState()
         }
-        done && done()
-      } catch (e) {
-        done && done(toError(e))
       }
+
+      if (closeError) {
+        done && done(toError(closeError))
+        return
+      }
+
+      done && done()
     })
 
     async function initializeNode(nodeIns: Node) {

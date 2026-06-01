@@ -863,6 +863,25 @@ describe('amqp-out Node', () => {
     expect(closeStub.calledOnce).to.be.true
   })
 
+  it('removes broker node state when delete close fails', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'close').rejects(new Error('close failed'))
+    const removeBrokerNodeStateStub = sinon.stub(Amqp.prototype, 'removeBrokerNodeState')
+
+    await helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+    )
+    const amqpOutNode = helper.getNode('n1')
+    await amqpOutNode.close(true)
+
+    expect(removeBrokerNodeStateStub.calledOnce).to.be.true
+  })
+
   it('removes broker node state when node is permanently deleted', async function () {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }

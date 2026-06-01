@@ -240,6 +240,67 @@ describe('amqp-broker Node', () => {
       })
     })
 
+    it('should ignore stale lastError entries for nodes not present in the active flow', done => {
+      sinon.stub(Amqp.prototype, 'connect').returns(new Promise(() => undefined))
+      const flow = [
+        {
+          id: 'b1',
+          type: 'amqp-broker',
+          name: 'broker 1',
+          nodeStates: {
+            activeNode: 'errored',
+            deletedNode: 'errored',
+          },
+          lastError: {
+            activeNode: {
+              message: 'Active node error',
+              at: '2026-03-02T00:00:00.000Z',
+            },
+            deletedNode: {
+              message: 'Stale node error',
+              at: '2026-03-02T00:00:00.000Z',
+            },
+          },
+        },
+        {
+          id: 'activeNode',
+          type: 'amqp-in-manual-ack',
+          broker: 'b1',
+          name: 'active input',
+        },
+      ]
+      helper.load([amqpBroker, amqpInManualAck], flow, () => {
+        helper
+          .request()
+          .get('/amqp-broker/health')
+          .expect(503)
+          .end((err, res) => {
+            try {
+              if (err) return done(err)
+              expect(res.body).to.deep.equal({
+                overallStatus: 'unhealthy',
+                brokers: [
+                  {
+                    id: 'b1',
+                    name: 'broker 1',
+                    status: 'errored',
+                    lastError: {
+                      activeNode: {
+                        message: 'Active node error',
+                        at: '2026-03-02T00:00:00.000Z',
+                      },
+                    },
+                  },
+                ],
+              })
+              done()
+            } catch (e) {
+              done(e)
+            }
+          })
+      })
+    })
+
     it('should return 503 when a broker has an errored node state', done => {
       sinon.stub(Amqp.prototype, 'connect').returns(new Promise(() => undefined))
       const flow = [
@@ -292,6 +353,7 @@ describe('amqp-broker Node', () => {
     })
 
     it('should return 503 with disconnected status and lastError when a connection closes unexpectedly', done => {
+      sinon.stub(Amqp.prototype, 'connect').returns(new Promise(() => undefined))
       const flow = [
         {
           id: 'b1',
@@ -305,8 +367,9 @@ describe('amqp-broker Node', () => {
             },
           },
         },
+        { id: 'n1', type: 'amqp-in-manual-ack', broker: 'b1', name: 'input 1' },
       ]
-      helper.load(amqpBroker, flow, () => {
+      helper.load([amqpBroker, amqpInManualAck], flow, () => {
         helper
           .request()
           .get('/amqp-broker/health')

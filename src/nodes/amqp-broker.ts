@@ -69,9 +69,10 @@ module.exports = function (RED: NodeRedApp): void {
         status,
       }
 
-      const hasLastError = Object.keys(brokerNode.lastError || {}).length > 0
+      const activeLastError = getActiveLastError(brokerNode, states)
+      const hasLastError = Object.keys(activeLastError).length > 0
       if (hasLastError) {
-        brokerStatus.lastError = brokerNode.lastError
+        brokerStatus.lastError = activeLastError
       }
 
       return brokerStatus
@@ -104,5 +105,21 @@ module.exports = function (RED: NodeRedApp): void {
     })
 
     return states
+  }
+
+  function getActiveLastError(
+    brokerNode: AmqpBrokerNode,
+    states: Record<string, BrokerNodeState>,
+  ): AmqpBrokerNode['lastError'] {
+    const source = brokerNode.lastError || {}
+    const filtered: AmqpBrokerNode['lastError'] = {}
+
+    Object.keys(states).forEach(nodeId => {
+      if (source[nodeId]) {
+        filtered[nodeId] = source[nodeId]
+      }
+    })
+
+    return filtered
   }
 }
