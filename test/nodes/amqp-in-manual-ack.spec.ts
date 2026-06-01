@@ -452,6 +452,26 @@ describe('amqp-in-manual-ack Node', () => {
     expect(closeStub.calledOnce).to.be.true
   })
 
+  it('removes broker node state when node is permanently deleted', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
+    sinon.stub(Amqp.prototype, 'close').resolves()
+    const removeBrokerNodeStateStub = sinon.stub(Amqp.prototype, 'removeBrokerNodeState')
+
+    await helper.load(
+      [amqpInManualAck, amqpBroker],
+      amqpInManualAckFlowFixture,
+      credentialsFixture,
+    )
+    const node = helper.getNode('n1')
+    await node.close(true)
+
+    expect(removeBrokerNodeStateStub.calledOnce).to.be.true
+  })
+
   it('reconnects on channel close even when reconnectOnError is false', async function () {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }

@@ -252,6 +252,25 @@ describe('Amqp Class', () => {
     expect(statusStub.calledWith(NODE_STATUS.Connected)).to.equal(true)
   })
 
+  it('removeBrokerNodeState() removes node runtime state and last error', () => {
+    amqp.node = { ...nodeFixture, id: 'n1' }
+    amqp.broker = {
+      ...brokerConfigFixture,
+      nodeStates: { n1: 'disconnected', n2: 'connected' },
+      lastError: {
+        n1: { message: 'stale', at: new Date().toISOString() },
+        n2: { message: 'active', at: new Date().toISOString() },
+      },
+    }
+
+    amqp.removeBrokerNodeState()
+
+    expect(amqp.broker.nodeStates.n1).to.equal(undefined)
+    expect(amqp.broker.lastError.n1).to.equal(undefined)
+    expect(amqp.broker.nodeStates.n2).to.equal('connected')
+    expect(amqp.broker.lastError.n2?.message).to.equal('active')
+  })
+
   it('shares connection among instances for same vhost', async () => {
     const connectionStub = {
       on: sinon.stub(),

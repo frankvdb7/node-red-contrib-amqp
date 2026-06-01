@@ -162,6 +162,20 @@ export default class Amqp {
     this.node.status(NODE_STATUS.Connected)
   }
 
+  public removeBrokerNodeState(): void {
+    if (!this.broker || !this.node?.id) {
+      return
+    }
+
+    if (this.broker.nodeStates) {
+      delete this.broker.nodeStates[this.node.id]
+    }
+
+    if (this.broker.lastError) {
+      delete this.broker.lastError[this.node.id]
+    }
+  }
+
   public async initialize(): Promise<Channel> {
     await this.createChannel()
     await this.assertExchange()

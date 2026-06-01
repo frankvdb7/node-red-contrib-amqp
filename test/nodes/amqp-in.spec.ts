@@ -523,6 +523,26 @@ describe('amqp-in Node', () => {
     expect(closeStub.calledOnce).to.be.true
   })
 
+  it('removes broker node state when node is permanently deleted', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub(), consume: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
+    sinon.stub(Amqp.prototype, 'close').resolves()
+    const removeBrokerNodeStateStub = sinon.stub(Amqp.prototype, 'removeBrokerNodeState')
+
+    await helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+    )
+    const amqpInNode = helper.getNode('n1')
+    await amqpInNode.close(true)
+
+    expect(removeBrokerNodeStateStub.calledOnce).to.be.true
+  })
+
   it('does not schedule reconnect when node closes while reconnect is closing resources', async function () {
     const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
     try {
