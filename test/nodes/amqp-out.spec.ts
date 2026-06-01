@@ -956,8 +956,12 @@ describe('amqp-out Node', () => {
       await helper.load([amqpOut, amqpBroker], flow, credentialsFixture)
       const amqpOutNode = helper.getNode('n1')
       const callErrors: unknown[] = []
+      const callStatuses: unknown[] = []
       amqpOutNode.on('call:error', call => {
         callErrors.push(call.args[0])
+      })
+      amqpOutNode.on('call:status', call => {
+        callStatuses.push(call.args[0])
       })
 
       await new Promise(resolve => setTimeout(resolve, 50))
@@ -965,6 +969,11 @@ describe('amqp-out Node', () => {
       expect(unhandledReason).to.equal(undefined)
       expect(
         callErrors.some(error => /Reconnect failed during initialization/i.test(String(error))),
+      ).to.be.true
+      expect(
+        callStatuses.some(
+          status => status && typeof status === 'object' && (status as { text?: string }).text === NODE_STATUS.Error.text,
+        ),
       ).to.be.true
     } finally {
       process.removeListener('unhandledRejection', onUnhandledRejection)

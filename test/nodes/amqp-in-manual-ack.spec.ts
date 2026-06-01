@@ -902,8 +902,12 @@ describe('amqp-in-manual-ack Node', () => {
       await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
       const amqpInNode = helper.getNode('n1')
       const callErrors: unknown[] = []
+      const callStatuses: unknown[] = []
       amqpInNode.on('call:error', call => {
         callErrors.push(call.args[0])
+      })
+      amqpInNode.on('call:status', call => {
+        callStatuses.push(call.args[0])
       })
 
       await new Promise(resolve => setTimeout(resolve, 50))
@@ -911,6 +915,11 @@ describe('amqp-in-manual-ack Node', () => {
       expect(unhandledReason).to.equal(undefined)
       expect(
         callErrors.some(error => /Reconnect failed during initialization/i.test(String(error))),
+      ).to.be.true
+      expect(
+        callStatuses.some(
+          status => status && typeof status === 'object' && (status as { text?: string }).text === NODE_STATUS.Error.text,
+        ),
       ).to.be.true
     } finally {
       process.removeListener('unhandledRejection', onUnhandledRejection)

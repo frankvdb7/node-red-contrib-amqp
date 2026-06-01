@@ -230,12 +230,17 @@ module.exports = function (RED: NodeRedApp): void {
           nodeIns.status(NODE_STATUS.Invalid)
           nodeIns.error(`AmqpIn() Could not connect to broker ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectError } })
           if (reconnectOnError) {
+            let reconnectFailed = false
             await reconnect().catch(reconnectError => {
+              reconnectFailed = true
+              nodeIns.status(NODE_STATUS.Error)
               nodeIns.error(`Reconnect failed during initialization: ${reconnectError}`, {
                 payload: { error: reconnectError, location: ErrorLocationEnum.ConnectError },
               })
             })
-            nodeIns.status(NODE_STATUS.Invalid)
+            if (!reconnectFailed) {
+              nodeIns.status(NODE_STATUS.Invalid)
+            }
           }
         } else {
           nodeIns.error(`AmqpIn() ${e}`, {
@@ -243,6 +248,7 @@ module.exports = function (RED: NodeRedApp): void {
           })
           if (reconnectOnError) {
             await reconnect().catch(reconnectError => {
+              nodeIns.status(NODE_STATUS.Error)
               nodeIns.error(`Reconnect failed during initialization: ${reconnectError}`, {
                 payload: { error: reconnectError, location: ErrorLocationEnum.ConnectError },
               })
