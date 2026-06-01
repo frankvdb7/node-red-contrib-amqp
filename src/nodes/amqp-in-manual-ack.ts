@@ -193,6 +193,7 @@ module.exports = function (RED: NodeRedApp): void {
           channel = await amqp.initialize()
           await amqp.consume()
           if (isShuttingDown) {
+            await amqp.close().catch(() => undefined)
             return
           }
 
@@ -265,10 +266,10 @@ module.exports = function (RED: NodeRedApp): void {
           reconnectBackoff.reset()
         }
       } catch (e: unknown) {
+        await amqp.close().catch(() => undefined)
         if (isShuttingDown) {
           return
         }
-        await amqp.close().catch(() => undefined)
         const err = isErrorLike(e) ? e : {}
         if (isInvalidLoginError(err)) {
           nodeIns.status(NODE_STATUS.Invalid)

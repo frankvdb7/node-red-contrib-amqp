@@ -784,7 +784,7 @@ export default class Amqp {
 
     if (error !== undefined) {
       this.broker.lastError[this.node.id] = this.toBrokerNodeError(error)
-    } else {
+    } else if (state === 'connected') {
       delete this.broker.lastError[this.node.id]
     }
   }

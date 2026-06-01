@@ -333,7 +333,7 @@ describe('amqp-in-manual-ack Node', () => {
     sinon.stub(Amqp.prototype, 'connect').resolves({ on: sinon.stub(), off: sinon.stub(), close: sinon.stub() } as any)
     sinon.stub(Amqp.prototype, 'initialize').returns(initializePromise as any)
     sinon.stub(Amqp.prototype, 'consume').resolves()
-    sinon.stub(Amqp.prototype, 'close').resolves()
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
 
     await helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture)
     const node = helper.getNode('n1')
@@ -350,6 +350,7 @@ describe('amqp-in-manual-ack Node', () => {
       return text === NODE_STATUS.Error.text || text === NODE_STATUS.Invalid.text
     })
     expect(hasErrorOrInvalid).to.be.false
+    expect(closeStub.called).to.be.true
   })
 
   it('should reconnect on input message', done => {

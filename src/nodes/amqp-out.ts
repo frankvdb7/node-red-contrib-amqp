@@ -334,6 +334,7 @@ module.exports = function (RED: NodeRedApp): void {
         if (connection) {
           channel = await amqp.initialize()
           if (isShuttingDown) {
+            await amqp.close().catch(() => undefined)
             return
           }
           setupEventListeners(nodeIns)
@@ -341,10 +342,10 @@ module.exports = function (RED: NodeRedApp): void {
           reconnectBackoff.reset()
         }
       } catch (e) {
+        await amqp.close().catch(() => undefined)
         if (isShuttingDown) {
           return
         }
-        await amqp.close().catch(() => undefined)
         await handleError(e, nodeIns)
       }
     }

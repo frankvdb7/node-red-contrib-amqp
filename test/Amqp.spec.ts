@@ -271,6 +271,34 @@ describe('Amqp Class', () => {
     expect(amqp.broker.lastError.n2?.message).to.equal('active')
   })
 
+  it('setBrokerNodeState() preserves lastError when transitioning to disconnected without new error', () => {
+    amqp.node = { ...nodeFixture, id: 'n1' }
+    amqp.broker = {
+      ...brokerConfigFixture,
+      nodeStates: { n1: 'errored' },
+      lastError: { n1: { message: 'connection dropped', at: new Date().toISOString() } },
+    }
+
+    ;(amqp as any).setBrokerNodeState('disconnected')
+
+    expect(amqp.broker.nodeStates.n1).to.equal('disconnected')
+    expect(amqp.broker.lastError.n1?.message).to.equal('connection dropped')
+  })
+
+  it('setBrokerNodeState() clears lastError when transitioning to connected', () => {
+    amqp.node = { ...nodeFixture, id: 'n1' }
+    amqp.broker = {
+      ...brokerConfigFixture,
+      nodeStates: { n1: 'disconnected' },
+      lastError: { n1: { message: 'previous error', at: new Date().toISOString() } },
+    }
+
+    ;(amqp as any).setBrokerNodeState('connected')
+
+    expect(amqp.broker.nodeStates.n1).to.equal('connected')
+    expect(amqp.broker.lastError.n1).to.equal(undefined)
+  })
+
   it('shares connection among instances for same vhost', async () => {
     const connectionStub = {
       on: sinon.stub(),
@@ -1684,7 +1712,7 @@ describe('Amqp Class', () => {
       expect(connectionStub.close.called).to.be.false
       expect(amqp.node.status.calledWith(NODE_STATUS.Disconnected)).to.be.true
       expect(amqp.broker.nodeStates[nodeFixture.id]).to.equal('disconnected')
-      expect(amqp.broker.lastError[nodeFixture.id]).to.equal(undefined)
+      expect(amqp.broker.lastError[nodeFixture.id]?.message).to.equal('previous error')
     })
 
     it('removes the connection from the pool when count reaches zero', async () => {
