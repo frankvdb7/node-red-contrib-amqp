@@ -159,6 +159,26 @@ describe('Amqp Class', () => {
     expect(broker.lastError.n1?.message).to.equal('AMQP connection closed')
   })
 
+  it('connect() does not mark node connected before channel and consumer setup complete', async () => {
+    const result = { on: sinon.stub() }
+    const broker = {
+      ...brokerConfigFixture,
+      vhost: 'vh1',
+      nodeStates: {},
+      lastError: {},
+    }
+    const statusStub = sinon.stub()
+
+    RED.nodes.getNode.returns(broker)
+    amqp.node = { ...nodeFixture, id: 'n1', log: sinon.stub(), warn: sinon.stub(), status: statusStub }
+    sinon.stub(amqplib, 'connect').resolves(result as any)
+
+    await amqp.connect()
+
+    expect(statusStub.calledWith(NODE_STATUS.Connected)).to.equal(false)
+    expect(broker.nodeStates.n1).to.equal(undefined)
+  })
+
   it('connect() errors when broker missing', async () => {
     // no broker node returned
     RED.nodes.getNode.returns(undefined)
@@ -199,6 +219,84 @@ describe('Amqp Class', () => {
 
       expect(url).to.equal('amqp://username:password@host:222/')
     })
+
+    it('uses credentials from settings when configured', () => {
+      RED.settings = {
+        MW_CONTRIB_AMQP_USERNAME: 'settings user',
+        MW_CONTRIB_AMQP_PASSWORD: 'settings/password',
+      }
+      const broker = {
+        ...brokerConfigFixture,
+        vhost: 'vhost',
+        credsFromSettings: true,
+        credentials: { username: 'ignored', password: 'ignored' },
+      }
+
+      const url = (amqp as any).getBrokerUrl(broker)
+
+      expect(url).to.equal('amqp://settings%20user:settings%2Fpassword@host:222/vhost')
+    })
+  })
+
+  it('markConnected() initializes missing broker state maps', () => {
+    const statusStub = sinon.stub()
+    amqp.node = { ...nodeFixture, id: 'n1', status: statusStub }
+    amqp.broker = { ...brokerConfigFixture }
+    delete amqp.broker.nodeStates
+    delete amqp.broker.lastError
+
+    amqp.markConnected()
+
+    expect(amqp.broker.nodeStates.n1).to.equal('connected')
+    expect(amqp.broker.lastError).to.deep.equal({})
+    expect(statusStub.calledWith(NODE_STATUS.Connected)).to.equal(true)
+  })
+
+  it('removeBrokerNodeState() removes node runtime state and last error', () => {
+    amqp.node = { ...nodeFixture, id: 'n1' }
+    amqp.broker = {
+      ...brokerConfigFixture,
+      nodeStates: { n1: 'disconnected', n2: 'connected' },
+      lastError: {
+        n1: { message: 'stale', at: new Date().toISOString() },
+        n2: { message: 'active', at: new Date().toISOString() },
+      },
+    }
+
+    amqp.removeBrokerNodeState()
+
+    expect(amqp.broker.nodeStates.n1).to.equal(undefined)
+    expect(amqp.broker.lastError.n1).to.equal(undefined)
+    expect(amqp.broker.nodeStates.n2).to.equal('connected')
+    expect(amqp.broker.lastError.n2?.message).to.equal('active')
+  })
+
+  it('setBrokerNodeState() preserves lastError when transitioning to disconnected without new error', () => {
+    amqp.node = { ...nodeFixture, id: 'n1' }
+    amqp.broker = {
+      ...brokerConfigFixture,
+      nodeStates: { n1: 'errored' },
+      lastError: { n1: { message: 'connection dropped', at: new Date().toISOString() } },
+    }
+
+    ;(amqp as any).setBrokerNodeState('disconnected')
+
+    expect(amqp.broker.nodeStates.n1).to.equal('disconnected')
+    expect(amqp.broker.lastError.n1?.message).to.equal('connection dropped')
+  })
+
+  it('setBrokerNodeState() clears lastError when transitioning to connected', () => {
+    amqp.node = { ...nodeFixture, id: 'n1' }
+    amqp.broker = {
+      ...brokerConfigFixture,
+      nodeStates: { n1: 'disconnected' },
+      lastError: { n1: { message: 'previous error', at: new Date().toISOString() } },
+    }
+
+    ;(amqp as any).setBrokerNodeState('connected')
+
+    expect(amqp.broker.nodeStates.n1).to.equal('connected')
+    expect(amqp.broker.lastError.n1).to.equal(undefined)
   })
 
   it('shares connection among instances for same vhost', async () => {
@@ -410,8 +508,10 @@ describe('Amqp Class', () => {
     const send = sinon.stub()
     const error = sinon.stub()
     const warn = sinon.stub()
+    const status = sinon.stub()
+    const emit = sinon.stub()
     const ack = sinon.stub()
-    const node = { send, error, warn, log: sinon.stub() }
+    const node = { send, error, warn, status, emit, log: sinon.stub() }
     const channel = {
       consume: function (
         _queue: string,
@@ -433,6 +533,8 @@ describe('Amqp Class', () => {
     expect(ack.called).to.equal(false)
     expect(error.called).to.equal(false)
     expect(warn.calledWithMatch('consumer was cancelled')).to.equal(true)
+    expect(status.calledWith(NODE_STATUS.Disconnected)).to.equal(true)
+    expect(emit.calledWith('amqp:consumer-cancelled')).to.equal(true)
   })
 
   it('assembleMessage retains reference and parses payload', () => {
@@ -602,6 +704,45 @@ describe('Amqp Class', () => {
       const publishedBuffer = publishStub.firstCall.args[2]
       expect(Buffer.isBuffer(publishedBuffer)).to.equal(true)
       expect(publishedBuffer.length).to.equal(0)
+    })
+
+    it('publishes Buffer payloads without copying or serializing', async () => {
+      const publishStub = sinon.stub()
+      const payload = Buffer.from('raw-buffer')
+      amqp.channel = {
+        publish: publishStub,
+      }
+
+      await amqp.publish(payload)
+
+      expect(publishStub.calledOnce).to.equal(true)
+      expect(publishStub.firstCall.args[2]).to.equal(payload)
+    })
+
+    it('publishes Uint8Array payloads as buffers', async () => {
+      const publishStub = sinon.stub()
+      const payload = new Uint8Array([1, 2, 3])
+      amqp.channel = {
+        publish: publishStub,
+      }
+
+      await amqp.publish(payload)
+
+      const publishedBuffer = publishStub.firstCall.args[2]
+      expect(Buffer.isBuffer(publishedBuffer)).to.equal(true)
+      expect([...publishedBuffer]).to.deep.equal([1, 2, 3])
+    })
+
+    it('serializes function payloads to an empty buffer', async () => {
+      const publishStub = sinon.stub()
+      amqp.channel = {
+        publish: publishStub,
+      }
+
+      await amqp.publish(() => undefined)
+
+      expect(publishStub.calledOnce).to.equal(true)
+      expect(publishStub.firstCall.args[2].length).to.equal(0)
     })
 
     it('throws a clear error for non-serializable payloads', async () => {
@@ -887,7 +1028,9 @@ describe('Amqp Class', () => {
     const logStub = sinon.stub()
     const warnStub = sinon.stub()
     const errorStub = sinon.stub()
-    amqp.node = { ...nodeFixture, log: logStub, warn: warnStub, error: errorStub }
+    const statusStub = sinon.stub()
+    amqp.node = { ...nodeFixture, log: logStub, warn: warnStub, error: errorStub, status: statusStub }
+    amqp.broker = { ...brokerConfigFixture, nodeStates: {}, lastError: {} }
 
     await amqp.createChannel()
 
@@ -898,6 +1041,8 @@ describe('Amqp Class', () => {
     expect(logStub.calledWithMatch('AMQP Channel closed')).to.be.true
     expect(warnStub.calledWithMatch('AMQP Message returned')).to.be.true
     expect(errorStub.calledWithMatch('AMQP Connection Error')).to.be.true
+    expect(statusStub.calledWith(NODE_STATUS.Disconnected)).to.be.true
+    expect(amqp.broker.nodeStates[nodeFixture.id]).to.equal('errored')
   })
 
   it('assertExchange()', async () => {
@@ -1034,17 +1179,58 @@ describe('Amqp Class', () => {
     )
   })
 
-  it('bindQueue() handles errors', async () => {
+  it('bindQueue() rethrows errors', async () => {
     const queue = 'queueName'
     const error = new Error('bind fail')
     const bindQueueStub = sinon.stub().rejects(error)
-    const errorStub = sinon.stub()
     amqp.channel = { bindQueue: bindQueueStub }
     amqp.q = { queue }
-    amqp.node = { error: errorStub }
 
-    await amqp.bindQueue()
-    expect(errorStub.calledOnce).to.equal(true)
+    try {
+      await amqp.bindQueue()
+      expect.fail('bindQueue should throw')
+    } catch (e) {
+      expect(e).to.equal(error)
+    }
+  })
+
+  it('bindQueue() rethrows binding errors so consume setup can retry', async () => {
+    const queue = 'queueName'
+    const error = new Error('bind fail')
+    const bindQueueStub = sinon.stub().rejects(error)
+    amqp.channel = { bindQueue: bindQueueStub }
+    amqp.q = { queue }
+
+    try {
+      await amqp.bindQueue()
+      expect.fail('bindQueue should throw')
+    } catch (e) {
+      expect(e).to.equal(error)
+    }
+  })
+
+  it('consume() does not register a consumer when real queue binding fails', async () => {
+    const assertQueueStub = sinon.stub().resolves({ queue: 'queueName' })
+    const bindQueueStub = sinon.stub().rejects(new Error('bind fail'))
+    const consumeStub = sinon.stub()
+    const errorStub = sinon.stub()
+
+    amqp.channel = {
+      assertQueue: assertQueueStub,
+      bindQueue: bindQueueStub,
+      consume: consumeStub,
+    }
+    amqp.node = { send: sinon.stub(), error: errorStub }
+
+    try {
+      await amqp.consume()
+      expect.fail('consume should throw')
+    } catch (e: any) {
+      expect(String(e.message)).to.match(/bind fail/)
+    }
+
+    expect(consumeStub.called).to.equal(false)
+    expect(errorStub.calledWithMatch('Could not consume message')).to.equal(true)
   })
 
   it('consume() logs error when bindQueue fails', async () => {
@@ -1526,7 +1712,7 @@ describe('Amqp Class', () => {
       expect(connectionStub.close.called).to.be.false
       expect(amqp.node.status.calledWith(NODE_STATUS.Disconnected)).to.be.true
       expect(amqp.broker.nodeStates[nodeFixture.id]).to.equal('disconnected')
-      expect(amqp.broker.lastError[nodeFixture.id]).to.equal(undefined)
+      expect(amqp.broker.lastError[nodeFixture.id]?.message).to.equal('previous error')
     })
 
     it('removes the connection from the pool when count reaches zero', async () => {

@@ -1,8 +1,19 @@
 import { NodeRedApp } from 'node-red'
-import { AmqpBrokerNode, BrokerNodeState } from '../types'
+import { AmqpBrokerNode, BrokerNodeState, NodeType } from '../types'
+
+type ConfiguredAmqpNode = {
+  id: string
+  type: string
+  broker?: string
+}
 
 module.exports = function (RED: NodeRedApp): void {
   const brokerNodes: AmqpBrokerNode[] = []
+  const amqpNodeTypes = new Set<string>([
+    NodeType.AmqpIn,
+    NodeType.AmqpInManualAck,
+    NodeType.AmqpOut,
+  ])
 
   function AmqpBroker(this: AmqpBrokerNode, n): void {
     // wtf happened to the types?
@@ -39,12 +50,13 @@ module.exports = function (RED: NodeRedApp): void {
   RED.httpAdmin.get('/amqp-broker/health', (_req, res) => {
     const brokerStatuses = brokerNodes.map(brokerNode => {
       const states = getEffectiveNodeStates(brokerNode)
-      const uniqueStates = new Set(Object.values(states))
-      const status: BrokerNodeState = uniqueStates.has('errored')
+      const stateValues = Object.values(states)
+      const uniqueStates = new Set(stateValues)
+      const status: BrokerNodeState = stateValues.length > 0 && stateValues.every(state => state === 'connected')
+        ? 'connected'
+        : uniqueStates.has('errored')
         ? 'errored'
-        : uniqueStates.has('connected')
-          ? 'connected'
-          : 'disconnected'
+        : 'disconnected'
 
       const brokerStatus: {
         id: string
@@ -57,9 +69,10 @@ module.exports = function (RED: NodeRedApp): void {
         status,
       }
 
-      const hasLastError = Object.keys(brokerNode.lastError || {}).length > 0
+      const activeLastError = getActiveLastError(brokerNode, states)
+      const hasLastError = Object.keys(activeLastError).length > 0
       if (hasLastError) {
-        brokerStatus.lastError = brokerNode.lastError
+        brokerStatus.lastError = activeLastError
       }
 
       return brokerStatus
@@ -80,6 +93,33 @@ module.exports = function (RED: NodeRedApp): void {
   function getEffectiveNodeStates(
     brokerNode: AmqpBrokerNode,
   ): Record<string, BrokerNodeState> {
-    return brokerNode.nodeStates || {}
+    const states: Record<string, BrokerNodeState> = {}
+    const nodes = RED.nodes as unknown as {
+      eachNode?: (callback: (node: ConfiguredAmqpNode) => void) => void
+    }
+
+    nodes.eachNode?.(node => {
+      if (node.broker === brokerNode.id && amqpNodeTypes.has(node.type)) {
+        states[node.id] = brokerNode.nodeStates?.[node.id] || 'disconnected'
+      }
+    })
+
+    return states
+  }
+
+  function getActiveLastError(
+    brokerNode: AmqpBrokerNode,
+    states: Record<string, BrokerNodeState>,
+  ): AmqpBrokerNode['lastError'] {
+    const source = brokerNode.lastError || {}
+    const filtered: AmqpBrokerNode['lastError'] = {}
+
+    Object.keys(states).forEach(nodeId => {
+      if (source[nodeId]) {
+        filtered[nodeId] = source[nodeId]
+      }
+    })
+
+    return filtered
   }
 }
