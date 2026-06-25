@@ -80,7 +80,7 @@
     "access": "public"
   },
   "dependencies": {
-    "amqplib": "^0.10.9",
+    "amqplib": "^2.0.1",
     "uuid": "^14.0.0"
   }
 }
