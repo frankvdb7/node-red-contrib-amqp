@@ -36,6 +36,7 @@ export interface AmqpConfig {
   reconnectOnError?: boolean
   noAck: boolean
   waitForConfirms?: boolean
+  topologySetup: TopologySetup
   exchange: {
     name: string
     type: ExchangeType
@@ -62,6 +63,7 @@ export interface AmqpInNodeDefaults {
   prefetch?: number
   reconnectOnError?: boolean
   noAck?: boolean
+  topologySetup?: TopologySetup
   exchangeName?: string
   exchangeType?: ExchangeType
   exchangeRoutingKey?: string
@@ -132,6 +134,11 @@ export enum ExchangeType {
   Fanout = 'fanout',
   Topic = 'topic',
   Headers = 'headers',
+}
+
+export enum TopologySetup {
+  Assert = 'assert',
+  ConsumeOnly = 'consume-only',
 }
 
 export enum DefaultExchangeName {

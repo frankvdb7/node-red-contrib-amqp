@@ -24,6 +24,7 @@ import {
   AmqpOutNodeDefaults,
   BrokerNodeState,
   BrokerNodeError,
+  TopologySetup,
 } from './types'
 import { NODE_STATUS } from './constants'
 
@@ -55,6 +56,7 @@ export default class Amqp {
       reconnectOnError: config.reconnectOnError,
       noAck: config.noAck,
       waitForConfirms: config.waitForConfirms ?? false,
+      topologySetup: config.topologySetup ?? TopologySetup.Assert,
       exchange: {
         name: config.exchangeName,
         type: config.exchangeType,
@@ -178,15 +180,21 @@ export default class Amqp {
 
   public async initialize(): Promise<Channel> {
     await this.createChannel()
-    await this.assertExchange()
+    if (this.shouldAssertTopology()) {
+      await this.assertExchange()
+    }
     return this.channel;
   }
 
   public async consume(): Promise<void> {
     try {
       const { noAck } = this.config
-      await this.assertQueue()
-      await this.bindQueue()
+      if (this.shouldAssertTopology()) {
+        await this.assertQueue()
+        await this.bindQueue()
+      } else {
+        this.useExistingQueue()
+      }
       await this.channel.consume(
         this.q.queue,
         amqpMessage => {
@@ -378,6 +386,7 @@ export default class Amqp {
     rpcConfig.queue.autoDelete = true
     rpcConfig.queue.exclusive = true
     rpcConfig.queue.durable = false
+    rpcConfig.topologySetup = TopologySetup.Assert
     rpcConfig.noAck = true
 
     return rpcConfig
@@ -550,7 +559,11 @@ export default class Amqp {
 
     // Keep bindings for long-lived queues so reconnects don't temporarily
     // remove routes and drop unroutable messages in-flight.
-    return !name || exclusive || autoDelete
+    return this.shouldAssertTopology() && (!name || exclusive || autoDelete)
+  }
+
+  private shouldAssertTopology(configParams?: AmqpConfig): boolean {
+    return (configParams || this.config).topologySetup !== TopologySetup.ConsumeOnly
   }
 
   private async closeChannel(): Promise<void> {
@@ -652,6 +665,19 @@ export default class Amqp {
         ...(queueArguments || {}),
       },
     })
+
+    return name
+  }
+
+  private useExistingQueue(configParams?: AmqpConfig): string {
+    const { queue } = configParams || this.config
+    const { name } = queue
+
+    if (!name) {
+      throw new Error('Queue Name is required when Topology Setup is set to "Use existing queue only"')
+    }
+
+    this.q = { queue: name } as Replies.AssertQueue
 
     return name
   }

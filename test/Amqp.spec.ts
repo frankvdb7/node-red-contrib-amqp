@@ -11,7 +11,7 @@ const {
   nodeFixture,
   brokerConfigFixture,
 } = require('./doubles')
-const { ExchangeType, DefaultExchangeName } = require('../src/types')
+const { ExchangeType, DefaultExchangeName, TopologySetup } = require('../src/types')
 import type { GenericJsonObject, BrokerConfig } from '../src/types'
 
 let RED: any
@@ -438,6 +438,22 @@ describe('Amqp Class', () => {
     expect(assertExchangeStub.calledOnce).to.equal(true)
   })
 
+  it('initialize() skips exchange assertion when topology setup is consume-only', async () => {
+    amqp = new Amqp(RED, nodeFixture, {
+      ...nodeConfigFixture,
+      topologySetup: TopologySetup.ConsumeOnly,
+    })
+    const createChannelStub = sinon.stub()
+    const assertExchangeStub = sinon.stub()
+
+    amqp.createChannel = createChannelStub
+    amqp.assertExchange = assertExchangeStub
+
+    await amqp.initialize()
+    expect(createChannelStub.calledOnce).to.equal(true)
+    expect(assertExchangeStub.called).to.equal(false)
+  })
+
   it('nackAll() logs and delegates to channel', () => {
     const msg = { content: 'foo', manualAck: { requeue: true } }
     const nackAllStub = sinon.stub()
@@ -500,6 +516,59 @@ describe('Amqp Class', () => {
         payload: messageContent,
       }),
     ).to.equal(true)
+  })
+
+  it('consume() can use an existing queue without asserting or checking topology', async () => {
+    amqp = new Amqp(RED, nodeFixture, {
+      ...nodeConfigFixture,
+      topologySetup: TopologySetup.ConsumeOnly,
+      queueName: 'existing.queue',
+    })
+    const assertQueueStub = sinon.stub()
+    const bindQueueStub = sinon.stub()
+    const checkQueueStub = sinon.stub()
+    const consumeStub = sinon.stub()
+
+    amqp.channel = {
+      checkQueue: checkQueueStub,
+      consume: consumeStub,
+    } as any
+    amqp.assertQueue = assertQueueStub
+    amqp.bindQueue = bindQueueStub
+    amqp.node = { send: sinon.stub(), error: sinon.stub(), log: sinon.stub() }
+
+    await amqp.consume()
+
+    expect(assertQueueStub.called).to.equal(false)
+    expect(bindQueueStub.called).to.equal(false)
+    expect(checkQueueStub.called).to.equal(false)
+    expect(consumeStub.calledOnce).to.equal(true)
+    expect(consumeStub.firstCall.args[0]).to.equal('existing.queue')
+  })
+
+  it('consume() requires a named queue when topology setup is consume-only', async () => {
+    amqp = new Amqp(RED, nodeFixture, {
+      ...nodeConfigFixture,
+      topologySetup: TopologySetup.ConsumeOnly,
+      queueName: '',
+    })
+    const checkQueueStub = sinon.stub()
+    const consumeStub = sinon.stub()
+    const errorStub = sinon.stub()
+
+    amqp.channel = { checkQueue: checkQueueStub, consume: consumeStub } as any
+    amqp.node = { send: sinon.stub(), error: errorStub, log: sinon.stub() }
+
+    try {
+      await amqp.consume()
+      expect.fail('consume should throw')
+    } catch (e: any) {
+      expect(String(e.message)).to.match(/Queue Name is required/)
+    }
+
+    expect(checkQueueStub.called).to.equal(false)
+    expect(consumeStub.called).to.equal(false)
+    expect(errorStub.calledWithMatch('Could not consume message')).to.equal(true)
   })
 
   it('consume() ignores null consumer delivery without throwing', async () => {
@@ -1098,6 +1167,16 @@ describe('Amqp Class', () => {
         arguments: { "x-queue-type": queueType },
       }),
     ).to.equal(true)
+  })
+
+  it('useExistingQueue() selects an existing named queue without declaring it', () => {
+    const queueName = amqp.useExistingQueue({
+      ...amqp.config,
+      queue: { ...amqp.config.queue, name: 'existing.queue' },
+    } as any)
+
+    expect(queueName).to.equal('existing.queue')
+    expect(amqp.q.queue).to.equal('existing.queue')
   })
 
   it('bindQueue() topic exchange', () => {
