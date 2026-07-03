@@ -36,18 +36,19 @@ export interface AmqpConfig {
   reconnectOnError?: boolean
   noAck: boolean
   waitForConfirms?: boolean
-  topologySetup: TopologySetup
   exchange: {
     name: string
     type: ExchangeType
     routingKey: string
     durable: boolean
+    autoCreate: boolean
   }
   queue: {
     name: string
     exclusive: boolean
     durable: boolean
     autoDelete: boolean
+    autoCreate: boolean
     queueType: string
     queueArguments?: GenericJsonObject
   }
@@ -63,16 +64,17 @@ export interface AmqpInNodeDefaults {
   prefetch?: number
   reconnectOnError?: boolean
   noAck?: boolean
-  topologySetup?: TopologySetup
   exchangeName?: string
   exchangeType?: ExchangeType
   exchangeRoutingKey?: string
   exchangeDurable?: boolean
+  autoCreateExchangeBindings?: boolean
   queueName?: string
   queueType?: string
   queueExclusive?: boolean
   queueDurable?: boolean
   queueAutoDelete?: boolean
+  autoCreateQueue?: boolean
   queueArguments?: JsonObject
   headers?: JsonObject
 }
@@ -84,6 +86,7 @@ export interface AmqpOutNodeDefaults {
   exchangeType?: ExchangeType
   exchangeRoutingKey?: string
   exchangeDurable?: boolean
+  autoCreateExchangeBindings?: boolean
   amqpProperties?: MessageProperties | JsonObject | string
   outputs?: number
   rpcTimeoutMilliseconds?: number
@@ -134,11 +137,6 @@ export enum ExchangeType {
   Fanout = 'fanout',
   Topic = 'topic',
   Headers = 'headers',
-}
-
-export enum TopologySetup {
-  Assert = 'assert',
-  ConsumeOnly = 'consume-only',
 }
 
 export enum DefaultExchangeName {

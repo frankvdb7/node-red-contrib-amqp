@@ -10,6 +10,8 @@
       exchangeType: { value: 'topic' },
       exchangeRoutingKey: { value: '' },
       exchangeRoutingKeyType: { value: 'str' },
+      showExchangeConfiguration: { value: false },
+      autoCreateExchangeBindings: { value: false },
       exchangeDurable: { value: true },
       amqpProperties: {
         value: '{ "headers": {} }',
@@ -48,23 +50,36 @@
         types: ['num'],
       })
 
-      $('#node-input-exchangeType').change(function (e) {
-        const exchangeType = this.value
+      function updateExchangeFields() {
+        const exchangeType = $('#node-input-exchangeType').val()
+        const showExchangeConfiguration = $('#node-input-showExchangeConfiguration').is(':checked')
+
+        $('.exchange-configuration-section').toggle(showExchangeConfiguration)
 
         // hide/show routing key field
-        if (['fanout', 'headers'].includes(exchangeType)) {
+        if (!showExchangeConfiguration || ['fanout', 'headers'].includes(exchangeType)) {
           $('.routing-key-form-input').hide()
         } else {
           $('.routing-key-form-input').show()
         }
 
         // hide/show headers exchange help text
-        if (['headers'].includes(exchangeType)) {
+        if (showExchangeConfiguration && ['headers'].includes(exchangeType)) {
           $('.headers-form-input').show()
         } else {
           $('.headers-form-input').hide()
         }
+      }
+
+      $('#node-input-exchangeType').change(function (e) {
+        updateExchangeFields()
       })
+
+      $('#node-input-showExchangeConfiguration').change(function (e) {
+        updateExchangeFields()
+      })
+
+      updateExchangeFields()
     },
   })
 
@@ -115,8 +130,17 @@
     <label for="node-input-reconnectOnError" style="width:auto; margin-top:7px;">reconnectOnError</label>
   </div>
   <hr>
-  <h4>Exchange Info</h4>
-  <div class="form-row wide-label-amqp-out">
+  <div class="form-row">
+    <label>&nbsp;</label>
+    <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-showExchangeConfiguration">
+    <label style="width:auto; margin-top:7px;" for="node-input-showExchangeConfiguration">Exchange Configuration</label>
+  </div>
+  <div class="form-row exchange-configuration-section">
+    <label>&nbsp;</label>
+    <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-autoCreateExchangeBindings">
+    <label style="width:auto; margin-top:7px;" for="node-input-autoCreateExchangeBindings">Auto-create exchange</label>
+  </div>
+  <div class="form-row wide-label-amqp-out exchange-configuration-section">
     <label for="node-input-exchangeType"><i class="fa fa-filter"></i>&nbsp;&nbsp;Type</label>
     <select id="node-input-exchangeType">
       <option value="topic">Topic</option>
@@ -125,24 +149,24 @@
       <option value="headers">Headers</option>
     </select>
   </div>
-  <div class="form-tips headers-form-input">
+  <div class="form-tips headers-form-input exchange-configuration-section">
     <i class="fa fa-info-circle"></i>
     Add key/value pairs to a `headers` field in the AMQP Properties field below
   </div>
-  <div class="form-row wide-label-amqp-out">
+  <div class="form-row wide-label-amqp-out exchange-configuration-section">
     <label for="node-input-exchangeName"><i class="fa fa-tag"></i>&nbsp;&nbsp;Exchange Name</label>
     <input type="text" class="simple-input" id="node-input-exchangeName" placeholder="Leave blank for the default exchange">
   </div>
-  <div class="form-row wide-label-amqp-out routing-key-form-input">
+  <div class="form-row wide-label-amqp-out routing-key-form-input exchange-configuration-section">
     <label for="node-input-exchangeRoutingKey"><i class="fa fa-filter"></i>&nbsp;&nbsp;Routing Key</label>
     <input type="text" id="node-input-exchangeRoutingKey">
     <input type="hidden" id="node-input-exchangeRoutingKeyType" />
   </div>
-  <div class="form-tips routing-key-form-input">
+  <div class="form-tips routing-key-form-input exchange-configuration-section">
     <i class="fa fa-info-circle"></i>
     You can specify multiple routing keys separated by commas
   </div>
-  <div class="form-row">
+  <div class="form-row exchange-configuration-section">
     <label>&nbsp;</label>
     <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-exchangeDurable">
     <label style="width:auto; margin-top:7px;" for="node-input-exchangeDurable">Durable</label>

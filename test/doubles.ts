@@ -5,7 +5,6 @@ import {
   NodeType,
   AmqpInNodeDefaults,
   AmqpOutNodeDefaults,
-  TopologySetup,
 } from '../src/types'
 
 export const amqpInFlowFixture = [
@@ -99,9 +98,8 @@ export const nodeConfigFixture: AmqpInNodeDefaults & AmqpOutNodeDefaults = {
   queueType: 'quorom',
   queueExclusive: true,
   queueDurable: false,
-  queueAutoDelete: true,
+  queueAutoDelete: false,
   queueArguments: { 'x-dead-letter-exchange': 'dlx-exchange' },
-  topologySetup: TopologySetup.Assert,
   waitForConfirms: false,
 }
 

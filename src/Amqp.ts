@@ -24,7 +24,6 @@ import {
   AmqpOutNodeDefaults,
   BrokerNodeState,
   BrokerNodeError,
-  TopologySetup,
 } from './types'
 import { NODE_STATUS } from './constants'
 
@@ -56,18 +55,19 @@ export default class Amqp {
       reconnectOnError: config.reconnectOnError,
       noAck: config.noAck,
       waitForConfirms: config.waitForConfirms ?? false,
-      topologySetup: config.topologySetup ?? TopologySetup.Assert,
       exchange: {
         name: config.exchangeName,
         type: config.exchangeType,
         routingKey: config.exchangeRoutingKey,
         durable: config.exchangeDurable,
+        autoCreate: config.autoCreateExchangeBindings ?? false,
       },
       queue: {
         name: config.queueName,
         exclusive: config.queueExclusive,
         durable: config.queueDurable,
-        autoDelete: config.queueAutoDelete,
+        autoDelete: config.queueAutoDelete ?? false,
+        autoCreate: config.autoCreateQueue ?? false,
         queueType: config.queueType,
         queueArguments: this.parseJsonObject(config.queueArguments),
       },
@@ -180,7 +180,7 @@ export default class Amqp {
 
   public async initialize(): Promise<Channel> {
     await this.createChannel()
-    if (this.shouldAssertTopology()) {
+    if (this.shouldAutoCreateExchangeBindings()) {
       await this.assertExchange()
     }
     return this.channel;
@@ -189,11 +189,14 @@ export default class Amqp {
   public async consume(): Promise<void> {
     try {
       const { noAck } = this.config
-      if (this.shouldAssertTopology()) {
+      if (this.shouldAutoCreateQueue()) {
         await this.assertQueue()
-        await this.bindQueue()
       } else {
         this.useExistingQueue()
+      }
+
+      if (this.shouldAutoCreateExchangeBindings()) {
+        await this.bindQueue()
       }
       await this.channel.consume(
         this.q.queue,
@@ -386,7 +389,6 @@ export default class Amqp {
     rpcConfig.queue.autoDelete = true
     rpcConfig.queue.exclusive = true
     rpcConfig.queue.durable = false
-    rpcConfig.topologySetup = TopologySetup.Assert
     rpcConfig.noAck = true
 
     return rpcConfig
@@ -559,11 +561,15 @@ export default class Amqp {
 
     // Keep bindings for long-lived queues so reconnects don't temporarily
     // remove routes and drop unroutable messages in-flight.
-    return this.shouldAssertTopology() && (!name || exclusive || autoDelete)
+    return this.shouldAutoCreateExchangeBindings() && (!name || exclusive || autoDelete)
   }
 
-  private shouldAssertTopology(configParams?: AmqpConfig): boolean {
-    return (configParams || this.config).topologySetup !== TopologySetup.ConsumeOnly
+  private shouldAutoCreateExchangeBindings(configParams?: AmqpConfig): boolean {
+    return (configParams || this.config).exchange.autoCreate
+  }
+
+  private shouldAutoCreateQueue(configParams?: AmqpConfig): boolean {
+    return (configParams || this.config).queue.autoCreate
   }
 
   private async closeChannel(): Promise<void> {
