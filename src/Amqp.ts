@@ -680,7 +680,7 @@ export default class Amqp {
     const { name } = queue
 
     if (!name) {
-      throw new Error('Queue Name is required when Topology Setup is set to "Use existing queue only"')
+      throw new Error('Queue Name is required when "Auto-create" queue is disabled')
     }
 
     this.q = { queue: name } as Replies.AssertQueue
