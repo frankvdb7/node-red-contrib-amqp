@@ -118,15 +118,11 @@
     <label for="node-input-reconnectOnError" style="width:auto; margin-top:7px;">reconnectOnError</label>
   </div>
   <hr>
-  <div class="form-row exchange-configuration-toggle">
-    <label>&nbsp;</label>
-    <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-showExchangeConfiguration">
-    <label style="width:auto; margin-top:7px;" for="node-input-showExchangeConfiguration">Exchange Configuration</label>
-  </div>
-  <div class="form-row exchange-configuration-section">
-    <label>&nbsp;</label>
-    <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-autoCreateExchangeBindings">
-    <label style="width:auto; margin-top:7px;" for="node-input-autoCreateExchangeBindings">Auto-create exchange, bindings, and routing keys</label>
+  <div class="form-row">
+    <label for="node-input-showExchangeConfiguration" style="width:100%; font-weight:700; margin-bottom:0;">
+      <input id="node-input-showExchangeConfiguration" type="checkbox" style="width:20px; vertical-align:middle; margin-right:8px;">
+      Exchange Configuration
+    </label>
   </div>
   <div class="form-row wide-label-amqp-in-manual-ack exchange-configuration-section">
     <label for="node-input-exchangeType"><i class="fa fa-filter"></i>&nbsp;&nbsp;Type</label>
@@ -159,13 +155,13 @@
     <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-exchangeDurable">
     <label style="width:auto; margin-top:7px;" for="node-input-exchangeDurable">Durable</label>
   </div>
+  <div class="form-row exchange-configuration-section">
+    <label>&nbsp;</label>
+    <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-autoCreateExchangeBindings">
+    <label style="width:auto; margin-top:7px;" for="node-input-autoCreateExchangeBindings">Auto-create</label>
+  </div>
   <hr>
   <h4>Queue Configuration</h4>
-  <div class="form-row">
-    <label>&nbsp;</label>
-    <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-autoCreateQueue">
-    <label style="width:auto; margin-top:7px;" for="node-input-autoCreateQueue">Auto-create queue</label>
-  </div>
   <div class="form-row wide-label-amqp-in-manual-ack">
     <label for="node-input-queueName"><i class="fa fa-tag"></i>&nbsp;&nbsp;Queue Name</label>
     <input type="text" id="node-input-queueName" placeholder="Leave blank to auto-generate">
@@ -189,6 +185,11 @@
     <label>&nbsp;</label>
     <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-queueAutoDelete">
     <label style="width:auto; margin-top:7px;" for="node-input-queueAutoDelete">Auto Delete</label>
+  </div>
+  <div class="form-row">
+    <label>&nbsp;</label>
+    <input style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox" id="node-input-autoCreateQueue">
+    <label style="width:auto; margin-top:7px;" for="node-input-autoCreateQueue">Auto-create</label>
   </div>
   <div class="form-row wide-label-amqp-in-manual-ack">
     <label for="node-input-queueArguments"><i class="fa fa-tag"></i>&nbsp;&nbsp;Queue Arguments</label>
