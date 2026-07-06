@@ -85,8 +85,8 @@ describe('Amqp Class', () => {
       autoCreateExchangeBindings: undefined,
     })
 
-    expect(amqp.config.queue.autoCreate).to.equal(undefined)
-    expect(amqp.config.exchange.autoCreate).to.equal(undefined)
+    expect(amqp.config.queue.autoCreate).to.equal(false)
+    expect(amqp.config.exchange.autoCreate).to.equal(false)
   })
 
   it('connect() logs attempts', async () => {
