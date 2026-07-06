@@ -41,12 +41,14 @@ export interface AmqpConfig {
     type: ExchangeType
     routingKey: string
     durable: boolean
+    autoCreate: boolean
   }
   queue: {
     name: string
     exclusive: boolean
     durable: boolean
     autoDelete: boolean
+    autoCreate: boolean
     queueType: string
     queueArguments?: GenericJsonObject
   }
@@ -66,11 +68,13 @@ export interface AmqpInNodeDefaults {
   exchangeType?: ExchangeType
   exchangeRoutingKey?: string
   exchangeDurable?: boolean
+  autoCreateExchangeBindings?: boolean
   queueName?: string
   queueType?: string
   queueExclusive?: boolean
   queueDurable?: boolean
   queueAutoDelete?: boolean
+  autoCreateQueue?: boolean
   queueArguments?: JsonObject
   headers?: JsonObject
 }
@@ -82,6 +86,7 @@ export interface AmqpOutNodeDefaults {
   exchangeType?: ExchangeType
   exchangeRoutingKey?: string
   exchangeDurable?: boolean
+  autoCreateExchangeBindings?: boolean
   amqpProperties?: MessageProperties | JsonObject | string
   outputs?: number
   rpcTimeoutMilliseconds?: number

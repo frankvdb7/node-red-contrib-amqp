@@ -77,6 +77,18 @@ describe('Amqp Class', () => {
     expect(amqp.config.exchange.name).to.eq(DefaultExchangeName.Headers)
   })
 
+  it('defaults auto-create queue and exchange bindings to false when omitted', () => {
+    // @ts-ignore
+    amqp = new Amqp(RED, nodeFixture, {
+      ...nodeConfigFixture,
+      autoCreateQueue: undefined,
+      autoCreateExchangeBindings: undefined,
+    })
+
+    expect(amqp.config.queue.autoCreate).to.equal(false)
+    expect(amqp.config.exchange.autoCreate).to.equal(false)
+  })
+
   it('connect() logs attempts', async () => {
     const error = 'error!'
     const result = { on: sinon.stub() }
@@ -435,8 +447,56 @@ describe('Amqp Class', () => {
 
     await amqp.initialize()
     expect(createChannelStub.calledOnce).to.equal(true)
+    expect(assertExchangeStub.calledOnce).to.equal(false)
+  })
+
+  it('initialize() skips exchange assertion when auto-create exchange is disabled', async () => {
+    amqp = new Amqp(RED, nodeFixture, {
+      ...nodeConfigFixture,
+      autoCreateExchangeBindings: false,
+    })
+    const createChannelStub = sinon.stub()
+    const assertExchangeStub = sinon.stub()
+
+    amqp.createChannel = createChannelStub
+    amqp.assertExchange = assertExchangeStub
+
+    await amqp.initialize()
+    expect(createChannelStub.calledOnce).to.equal(true)
+    expect(assertExchangeStub.called).to.equal(false)
+  })
+
+  it('initialize() asserts exchange when autoCreateExchangeBindings is true', async () => {
+    amqp = new Amqp(RED, nodeFixture, {
+      ...nodeConfigFixture,
+      autoCreateExchangeBindings: true,
+    })
+
+    const createChannelStub = sinon.stub()
+    const assertExchangeStub = sinon.stub()
+
+    amqp.createChannel = createChannelStub
+    amqp.assertExchange = assertExchangeStub
+
+    await amqp.initialize()
+
+    expect(createChannelStub.calledOnce).to.equal(true)
     expect(assertExchangeStub.calledOnce).to.equal(true)
   })
+
+  it('initialize() skips exchange assertion by default', async () => {
+    const createChannelStub = sinon.stub()
+    const assertExchangeStub = sinon.stub()
+
+    amqp.createChannel = createChannelStub
+    amqp.assertExchange = assertExchangeStub
+
+    await amqp.initialize()
+
+    expect(createChannelStub.calledOnce).to.equal(true)
+    expect(assertExchangeStub.calledOnce).to.equal(false)
+  })
+
 
   it('nackAll() logs and delegates to channel', () => {
     const msg = { content: 'foo', manualAck: { requeue: true } }
@@ -484,12 +544,14 @@ describe('Amqp Class', () => {
     amqp.channel = channel as any
     amqp.assertQueue = assertQueueStub
     amqp.bindQueue = bindQueueStub
-    amqp.q = { queue: 'queueName' } as any
+    amqp.config.queue.name = 'queueName'
+    amqp.config.queue.autoCreate = false
+    amqp.config.exchange.autoCreate = false
     amqp.node = node as any
 
     await amqp.consume()
-    expect(assertQueueStub.calledOnce).to.equal(true)
-    expect(bindQueueStub.calledOnce).to.equal(true)
+    expect(assertQueueStub.calledOnce).to.equal(false)
+    expect(bindQueueStub.calledOnce).to.equal(false)
     expect(send.calledOnce).to.equal(true)
     expect(log.calledWithMatch('Received message')).to.equal(true)
     expect(ack.calledOnce).to.equal(true)
@@ -500,6 +562,109 @@ describe('Amqp Class', () => {
         payload: messageContent,
       }),
     ).to.equal(true)
+  })
+
+  it('consume() can use an existing queue without asserting queue or bindings', async () => {
+    amqp = new Amqp(RED, nodeFixture, {
+      ...nodeConfigFixture,
+      autoCreateQueue: false,
+      autoCreateExchangeBindings: false,
+      queueName: 'existing.queue',
+    })
+    const assertQueueStub = sinon.stub()
+    const bindQueueStub = sinon.stub()
+    const checkQueueStub = sinon.stub()
+    const consumeStub = sinon.stub()
+
+    amqp.channel = {
+      checkQueue: checkQueueStub,
+      consume: consumeStub,
+    } as any
+    amqp.assertQueue = assertQueueStub
+    amqp.bindQueue = bindQueueStub
+    amqp.node = { send: sinon.stub(), error: sinon.stub(), log: sinon.stub() }
+
+    await amqp.consume()
+
+    expect(assertQueueStub.called).to.equal(false)
+    expect(bindQueueStub.called).to.equal(false)
+    expect(checkQueueStub.called).to.equal(false)
+    expect(consumeStub.calledOnce).to.equal(true)
+    expect(consumeStub.firstCall.args[0]).to.equal('existing.queue')
+  })
+
+  it('consume() can bind an existing queue when auto-create queue is disabled but exchange binding is enabled', async () => {
+    amqp = new Amqp(RED, nodeFixture, {
+      ...nodeConfigFixture,
+      autoCreateQueue: false,
+      autoCreateExchangeBindings: true,
+      queueName: 'existing.queue',
+    })
+    const assertQueueStub = sinon.stub()
+    const bindQueueStub = sinon.stub()
+    const consumeStub = sinon.stub()
+
+    amqp.channel = { consume: consumeStub } as any
+    amqp.assertQueue = assertQueueStub
+    amqp.bindQueue = bindQueueStub
+    amqp.node = { send: sinon.stub(), error: sinon.stub(), log: sinon.stub() }
+
+    await amqp.consume()
+
+    expect(assertQueueStub.called).to.equal(false)
+    expect(bindQueueStub.calledOnce).to.equal(true)
+    expect(consumeStub.calledOnce).to.equal(true)
+    expect(consumeStub.firstCall.args[0]).to.equal('existing.queue')
+  })
+
+  it('consume() uses existing queue by default', async () => {
+    amqp = new Amqp(RED, nodeFixture, {
+      ...nodeConfigFixture,
+      queueName: 'existing.queue',
+      autoCreateQueue: false,
+      autoCreateExchangeBindings: false,
+    })
+
+    const assertQueueStub = sinon.stub()
+    const bindQueueStub = sinon.stub()
+    const consumeStub = sinon.stub()
+
+    amqp.channel = { consume: consumeStub } as any
+    amqp.assertQueue = assertQueueStub
+    amqp.bindQueue = bindQueueStub
+    amqp.node = { send: sinon.stub(), error: sinon.stub(), log: sinon.stub() }
+
+    await amqp.consume()
+
+    expect(assertQueueStub.called).to.equal(false)
+    expect(bindQueueStub.called).to.equal(false)
+    expect(consumeStub.calledOnce).to.equal(true)
+    expect(consumeStub.firstCall.args[0]).to.equal('existing.queue')
+  })
+
+  it('consume() requires a named queue when auto-create queue is disabled', async () => {
+    amqp = new Amqp(RED, nodeFixture, {
+      ...nodeConfigFixture,
+      autoCreateQueue: false,
+      queueName: '',
+    })
+    const checkQueueStub = sinon.stub()
+    const consumeStub = sinon.stub()
+    const errorStub = sinon.stub()
+
+    amqp.channel = { checkQueue: checkQueueStub, consume: consumeStub } as any
+    amqp.node = { send: sinon.stub(), error: errorStub, log: sinon.stub() }
+
+    try {
+      await amqp.consume()
+      expect.fail('consume should throw')
+    } catch (e: any) {
+      expect(String(e.message)).to.match(/Queue Name is required/)
+    }
+
+    expect(checkQueueStub.called).to.equal(false)
+    expect(consumeStub.called).to.equal(false)
+    expect(errorStub.calledWithMatch('Could not consume message')).to.equal(true)
   })
 
   it('consume() ignores null consumer delivery without throwing', async () => {
@@ -524,7 +689,9 @@ describe('Amqp Class', () => {
     amqp.channel = channel as any
     amqp.assertQueue = assertQueueStub
     amqp.bindQueue = bindQueueStub
-    amqp.q = { queue: 'queueName' } as any
+    amqp.config.queue.name = 'queueName'
+    amqp.config.queue.autoCreate = false
+    amqp.config.exchange.autoCreate = false
     amqp.node = node as any
 
     await amqp.consume()
@@ -813,6 +980,7 @@ describe('Amqp Class', () => {
       const unbindQueueStub = sinon.stub()
       amqp.channel = { unbindQueue: unbindQueueStub }
       amqp.q = { queue: queueName }
+      amqp.config.exchange.autoCreate = true
 
       await (amqp as any).unbindQueues()
 
@@ -892,6 +1060,7 @@ describe('Amqp Class', () => {
       const unbindQueueStub = sinon.stub()
       amqp.channel = { unbindQueue: unbindQueueStub }
       amqp.q = { queue: 'exclusive-queue' }
+      amqp.config.exchange.autoCreate = true
       amqp.config.queue = {
         ...amqp.config.queue,
         name: 'exclusive-queue',
@@ -911,6 +1080,7 @@ describe('Amqp Class', () => {
       const unbindQueueStub = sinon.stub()
       amqp.channel = { unbindQueue: unbindQueueStub }
       amqp.q = { queue: 'autodelete-queue' }
+      amqp.config.exchange.autoCreate = true
       amqp.config.queue = {
         ...amqp.config.queue,
         name: 'autodelete-queue',
@@ -930,6 +1100,7 @@ describe('Amqp Class', () => {
       const unbindQueueStub = sinon.stub()
       amqp.channel = { unbindQueue: unbindQueueStub }
       amqp.q = { queue: 'amq.gen-random' }
+      amqp.config.exchange.autoCreate = true
       amqp.config.queue = {
         ...amqp.config.queue,
         name: '',
@@ -950,6 +1121,7 @@ describe('Amqp Class', () => {
       amqp.channel = { unbindQueue: unbindQueueStub }
       amqp.q = { queue: 'queueName' }
       amqp.node = { error: errorStub }
+      amqp.config.exchange.autoCreate = true
 
       await (amqp as any).unbindQueues()
 
@@ -1100,6 +1272,16 @@ describe('Amqp Class', () => {
     ).to.equal(true)
   })
 
+  it('useExistingQueue() selects an existing named queue without declaring it', () => {
+    const queueName = amqp.useExistingQueue({
+      ...amqp.config,
+      queue: { ...amqp.config.queue, name: 'existing.queue' },
+    } as any)
+
+    expect(queueName).to.equal('existing.queue')
+    expect(amqp.q.queue).to.equal('existing.queue')
+  })
+
   it('bindQueue() topic exchange', () => {
     const queue = 'queueName'
     const bindQueueStub = sinon.stub()
@@ -1220,6 +1402,9 @@ describe('Amqp Class', () => {
       bindQueue: bindQueueStub,
       consume: consumeStub,
     }
+    amqp.config.queue.name = 'queueName'
+    amqp.config.queue.autoCreate = true
+    amqp.config.exchange.autoCreate = true
     amqp.node = { send: sinon.stub(), error: errorStub }
 
     try {
@@ -1242,6 +1427,9 @@ describe('Amqp Class', () => {
     amqp.assertQueue = assertQueueStub
     amqp.bindQueue = bindQueueStub
     amqp.channel = { consume: consumeStub }
+    amqp.config.queue.name = 'queueName'
+    amqp.config.queue.autoCreate = true
+    amqp.config.exchange.autoCreate = true
     amqp.node = { send: sinon.stub(), error: errorStub }
     amqp.q = { queue: 'queueName' }
 

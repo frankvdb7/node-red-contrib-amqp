@@ -54,18 +54,20 @@ export default class Amqp {
       prefetch: config.prefetch,
       reconnectOnError: config.reconnectOnError,
       noAck: config.noAck,
-      waitForConfirms: config.waitForConfirms ?? false,
+      waitForConfirms: config.waitForConfirms,
       exchange: {
         name: config.exchangeName,
         type: config.exchangeType,
         routingKey: config.exchangeRoutingKey,
         durable: config.exchangeDurable,
+        autoCreate: config.autoCreateExchangeBindings ?? false,
       },
       queue: {
         name: config.queueName,
         exclusive: config.queueExclusive,
         durable: config.queueDurable,
         autoDelete: config.queueAutoDelete,
+        autoCreate: config.autoCreateQueue ?? false,
         queueType: config.queueType,
         queueArguments: this.parseJsonObject(config.queueArguments),
       },
@@ -178,15 +180,24 @@ export default class Amqp {
 
   public async initialize(): Promise<Channel> {
     await this.createChannel()
-    await this.assertExchange()
+    if (this.shouldAutoCreateExchangeBindings()) {
+      await this.assertExchange()
+    }
     return this.channel;
   }
 
   public async consume(): Promise<void> {
     try {
       const { noAck } = this.config
-      await this.assertQueue()
-      await this.bindQueue()
+      if (this.shouldAutoCreateQueue()) {
+        await this.assertQueue()
+      } else {
+        this.useExistingQueue()
+      }
+
+      if (this.shouldAutoCreateExchangeBindings()) {
+        await this.bindQueue()
+      }
       await this.channel.consume(
         this.q.queue,
         amqpMessage => {
@@ -550,7 +561,15 @@ export default class Amqp {
 
     // Keep bindings for long-lived queues so reconnects don't temporarily
     // remove routes and drop unroutable messages in-flight.
-    return !name || exclusive || autoDelete
+    return this.shouldAutoCreateExchangeBindings() && (!name || exclusive || autoDelete)
+  }
+
+  private shouldAutoCreateExchangeBindings(configParams?: AmqpConfig): boolean {
+    return (configParams || this.config).exchange.autoCreate
+  }
+
+  private shouldAutoCreateQueue(configParams?: AmqpConfig): boolean {
+    return (configParams || this.config).queue.autoCreate
   }
 
   private async closeChannel(): Promise<void> {
@@ -652,6 +671,19 @@ export default class Amqp {
         ...(queueArguments || {}),
       },
     })
+
+    return name
+  }
+
+  private useExistingQueue(configParams?: AmqpConfig): string {
+    const { queue } = configParams || this.config
+    const { name } = queue
+
+    if (!name) {
+      throw new Error('Queue Name is required when "Auto-create" queue is disabled')
+    }
+
+    this.q = { queue: name } as Replies.AssertQueue
 
     return name
   }

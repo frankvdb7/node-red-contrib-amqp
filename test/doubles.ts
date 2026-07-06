@@ -98,7 +98,7 @@ export const nodeConfigFixture: AmqpInNodeDefaults & AmqpOutNodeDefaults = {
   queueType: 'quorom',
   queueExclusive: true,
   queueDurable: false,
-  queueAutoDelete: true,
+  queueAutoDelete: false,
   queueArguments: { 'x-dead-letter-exchange': 'dlx-exchange' },
   waitForConfirms: false,
 }
