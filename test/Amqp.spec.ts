@@ -77,7 +77,7 @@ describe('Amqp Class', () => {
     expect(amqp.config.exchange.name).to.eq(DefaultExchangeName.Headers)
   })
 
-  it('defaults auto-create queue and exchange bindings to true when omitted', () => {
+  it('defaults auto-create queue and exchange bindings to false when omitted', () => {
     // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, {
       ...nodeConfigFixture,
@@ -85,8 +85,8 @@ describe('Amqp Class', () => {
       autoCreateExchangeBindings: undefined,
     })
 
-    expect(amqp.config.queue.autoCreate).to.equal(true)
-    expect(amqp.config.exchange.autoCreate).to.equal(true)
+    expect(amqp.config.queue.autoCreate).to.equal(undefined)
+    expect(amqp.config.exchange.autoCreate).to.equal(undefined)
   })
 
   it('connect() logs attempts', async () => {
@@ -447,7 +447,7 @@ describe('Amqp Class', () => {
 
     await amqp.initialize()
     expect(createChannelStub.calledOnce).to.equal(true)
-    expect(assertExchangeStub.calledOnce).to.equal(true)
+    expect(assertExchangeStub.calledOnce).to.equal(false)
   })
 
   it('initialize() skips exchange assertion when auto-create exchange is disabled', async () => {
@@ -484,7 +484,7 @@ describe('Amqp Class', () => {
     expect(assertExchangeStub.calledOnce).to.equal(true)
   })
 
-  it('initialize() asserts exchange by default', async () => {
+  it('initialize() skips exchange assertion by default', async () => {
     const createChannelStub = sinon.stub()
     const assertExchangeStub = sinon.stub()
 
@@ -494,7 +494,7 @@ describe('Amqp Class', () => {
     await amqp.initialize()
 
     expect(createChannelStub.calledOnce).to.equal(true)
-    expect(assertExchangeStub.calledOnce).to.equal(true)
+    expect(assertExchangeStub.calledOnce).to.equal(false)
   })
 
 
