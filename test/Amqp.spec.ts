@@ -2083,6 +2083,76 @@ describe('Amqp Class', () => {
         expect(secondCallbacks).to.have.length(0);
     });
 
+    it('waits for shared RPC consumer cleanup before recreating its reply queue', async () => {
+        let finishDeleteQueue: () => void = () => undefined;
+        const deleteQueuePending = new Promise<void>(resolve => {
+            finishDeleteQueue = resolve;
+        });
+        const firstCallbacks: Array<(message: unknown) => void> = [];
+        const sharedConnection = {};
+        const secondAmqp: any = new Amqp(
+            RED,
+            { ...nodeFixture, id: 'rpc-node-two', send: sinon.stub(), error: sinon.stub() },
+            nodeConfigFixture,
+        );
+
+        amqp.node = {
+            ...nodeFixture,
+            id: 'rpc-node-one',
+            send: sinon.stub(),
+            error: sinon.stub(),
+        };
+        amqp.connection = sharedConnection;
+        secondAmqp.connection = sharedConnection;
+        amqp.channel = {
+            assertQueue: sinon.stub().resolves('shared-reply-queue'),
+            consume: sinon.stub().callsFake((queue, callback) => {
+                firstCallbacks.push(callback);
+                return Promise.resolve({ consumerTag: 'consumer-one' });
+            }),
+            deleteQueue: sinon.stub().returns(deleteQueuePending),
+            publish: sinon.stub(),
+        };
+        const secondConsumeStub = sinon.stub().resolves({
+            consumerTag: 'consumer-two',
+        });
+        amqp.config.outputs = 1;
+        secondAmqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+        secondAmqp.config.rpcTimeout = 1000;
+        secondAmqp.channel = {
+            assertQueue: sinon.stub().resolves('shared-reply-queue'),
+            consume: secondConsumeStub,
+            deleteQueue: sinon.stub().resolves(),
+            publish: sinon.stub(),
+        };
+
+        await amqp.publish('request-one', {
+            correlationId: 'correlation-one',
+            replyTo: 'shared-reply-queue',
+        });
+        firstCallbacks[0]({
+            fields: { deliveryTag: 1 },
+            properties: { correlationId: 'correlation-one' },
+            content: Buffer.from('{"response":1}'),
+        });
+        await Promise.resolve();
+
+        const secondPublish = secondAmqp.publish('request-two', {
+            correlationId: 'correlation-two',
+            replyTo: 'shared-reply-queue',
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(secondConsumeStub.called).to.equal(false);
+
+        finishDeleteQueue();
+        await secondPublish;
+
+        expect(secondConsumeStub.calledOnce).to.equal(true);
+    });
+
     it('handles error when deleting queue on timeout', async () => {
         const sendStub = sinon.stub();
         const deleteQueueStub = sinon.stub().rejects(new Error('delete failed'));

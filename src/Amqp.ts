@@ -661,7 +661,16 @@ export default class Amqp {
   ): Promise<RpcConsumerState> {
     const registry = this.getRpcConsumerRegistry()
     const existing = registry.get(replyTo)
-    if (existing && !existing.cleanedUp) {
+    if (existing?.cleanedUp) {
+      if (existing.cleanupPromise) {
+        await existing.cleanupPromise
+      }
+      if (registry.get(replyTo) === existing) {
+        registry.delete(replyTo)
+      }
+      return this.getOrCreateRpcConsumer(replyTo, rpcConfig)
+    }
+    if (existing) {
       existing.users.add(this)
       this.rpcConsumers.set(replyTo, existing)
       await existing.ready
@@ -745,9 +754,6 @@ export default class Amqp {
     }
 
     state.cleanedUp = true
-    if (state.registry.get(state.key) === state) {
-      state.registry.delete(state.key)
-    }
     for (const user of state.users) {
       if (user.rpcConsumers.get(state.key) === state) {
         user.rpcConsumers.delete(state.key)
@@ -776,7 +782,13 @@ export default class Amqp {
       }
     })()
 
-    await state.cleanupPromise
+    try {
+      await state.cleanupPromise
+    } finally {
+      if (state.registry.get(state.key) === state) {
+        state.registry.delete(state.key)
+      }
+    }
   }
 
   private async detachRpcConsumers(interruption?: Error): Promise<void> {
