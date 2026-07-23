@@ -395,13 +395,13 @@ module.exports = function (RED: NodeRedApp): void {
           const reconnectDelayMs = reconnectBackoff.nextDelayMs()
           nodeIns.log(`Reconnect scheduled in ${reconnectDelayMs}ms`)
           reconnectTimeout = setTimeout(() => {
-            reconnectScheduled = false
             if (isShuttingDown) {
+              reconnectScheduled = false
               nodeIns.log('Reconnect timer fired but node is shutting down')
               return
             }
             nodeIns.log('Reconnect timer fired: re-initializing AMQP node')
-            void queueInitialization(nodeIns)
+            void queueInitialization(nodeIns, true)
           }, reconnectDelayMs)
         } catch (error) {
           reconnectScheduled = false
@@ -438,11 +438,17 @@ module.exports = function (RED: NodeRedApp): void {
       }
     }
 
-    function queueInitialization(nodeIns: Node): Promise<void> {
+    function queueInitialization(nodeIns: Node, scheduledReconnect = false): Promise<void> {
       const previous = initializationPromise
+      const startInitialization = (): Promise<void> => {
+        if (scheduledReconnect) {
+          reconnectScheduled = false
+        }
+        return initializeNode(nodeIns)
+      }
       const operation = previous
-        ? previous.catch(() => undefined).then(() => initializeNode(nodeIns))
-        : initializeNode(nodeIns)
+        ? previous.catch(() => undefined).then(startInitialization)
+        : startInitialization()
       initializationPromise = operation
       void operation
         .finally(() => {

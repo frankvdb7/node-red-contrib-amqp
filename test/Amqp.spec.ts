@@ -1099,6 +1099,69 @@ describe('Amqp Class', () => {
       expect(completed).to.equal(true)
     })
 
+    it('gates later publishes through repeated channel drain cycles', async () => {
+      const { EventEmitter } = require('events')
+      const channel = new EventEmitter()
+      channel.publish = sinon.stub().returns(false)
+      amqp.channel = channel
+
+      const publishes = [
+        amqp.publish('first'),
+        amqp.publish('second'),
+        amqp.publish('third'),
+      ]
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(channel.publish.callCount).to.equal(1)
+      expect(channel.listenerCount('drain')).to.equal(1)
+      expect(channel.listenerCount('close')).to.equal(1)
+      expect(channel.listenerCount('error')).to.equal(1)
+
+      channel.emit('drain')
+      await new Promise(resolve => setImmediate(resolve))
+      expect(channel.publish.callCount).to.equal(2)
+      expect(channel.listenerCount('drain')).to.equal(1)
+
+      channel.emit('drain')
+      await new Promise(resolve => setImmediate(resolve))
+      expect(channel.publish.callCount).to.equal(3)
+      expect(channel.listenerCount('drain')).to.equal(1)
+
+      channel.emit('drain')
+      await Promise.all(publishes)
+      expect(channel.listenerCount('drain')).to.equal(0)
+      expect(channel.listenerCount('close')).to.equal(0)
+      expect(channel.listenerCount('error')).to.equal(0)
+    })
+
+    it('rejects all publishers waiting on the shared drain gate when the channel closes', async () => {
+      const { EventEmitter } = require('events')
+      const channel = new EventEmitter()
+      channel.publish = sinon.stub().returns(false)
+      amqp.channel = channel
+
+      const publishes = [
+        amqp.publish('first'),
+        amqp.publish('second'),
+        amqp.publish('third'),
+      ]
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(channel.publish.callCount).to.equal(1)
+      expect(channel.listenerCount('drain')).to.equal(1)
+      expect(channel.listenerCount('close')).to.equal(1)
+      expect(channel.listenerCount('error')).to.equal(1)
+
+      channel.emit('close')
+      const results = await Promise.allSettled(publishes)
+
+      expect(results.every(result => result.status === 'rejected')).to.equal(true)
+      expect(channel.publish.callCount).to.equal(1)
+      expect(channel.listenerCount('drain')).to.equal(0)
+      expect(channel.listenerCount('close')).to.equal(0)
+      expect(channel.listenerCount('error')).to.equal(0)
+    })
+
     it('publishes mandatory messages without publisher confirms', async () => {
       const publishStub = sinon.stub().returns(true)
       amqp.channel = {
@@ -1502,6 +1565,50 @@ describe('Amqp Class', () => {
       ).to.be.true
       expect(closeChannelStub.calledOnce).to.be.true
       expect(releaseConnectionStub.calledOnce).to.be.true
+    })
+
+    it('reopens resources to remove durable bindings after reconnect already closed them', async () => {
+      const unbindQueueStub = sinon.stub().resolves()
+      const cleanupChannel = {
+        unbindQueue: unbindQueueStub,
+      }
+      const connectStub = sinon.stub(amqp, 'connect').resolves({} as any)
+      const initializeStub = sinon.stub(amqp, 'initialize').callsFake(async () => {
+        amqp.channel = cleanupChannel
+        return cleanupChannel as any
+      })
+      const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+      const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+      amqp.q = { queue: 'orders' }
+      amqp.config.exchange = {
+        ...amqp.config.exchange,
+        autoCreate: true,
+        name: 'orders-exchange',
+        routingKey: 'orders.v1',
+      }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'orders',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await amqp.close()
+      await amqp.close({ removeBindings: true })
+
+      expect(connectStub.calledOnce).to.be.true
+      expect(initializeStub.calledOnce).to.be.true
+      expect(
+        unbindQueueStub.calledOnceWith(
+          'orders',
+          'orders-exchange',
+          'orders.v1',
+        ),
+      ).to.be.true
+      expect(closeChannelStub.calledTwice).to.be.true
+      expect(releaseConnectionStub.calledTwice).to.be.true
     })
   })
 
@@ -2181,7 +2288,61 @@ describe('Amqp Class', () => {
         await clock.tickAsync(1001);
 
         expect(sendStub.calledOnce).to.be.true;
-        expect(sendStub.firstCall.args[0].payload.message).to.match(/Correlation ids do not match/);
+        expect(sendStub.firstCall.args[0].payload.message).to.match(/Observed 1 unmatched RPC response/);
+        expect(sendStub.firstCall.args[0].payload.message).to.not.include('wrong-id');
+        expect(deleteQueueStub.calledOnce).to.be.true;
+    });
+
+    it('bounds unmatched RPC response diagnostics across concurrent requests', async () => {
+        const sendStub = sinon.stub();
+        const deleteQueueStub = sinon.stub().resolves();
+        const assertQueueStub = sinon.stub().resolves('shared-rpc-queue');
+        let consumeCallback;
+        const consumeStub = sinon.stub().callsFake((queue, cb) => {
+            consumeCallback = cb;
+            return Promise.resolve({ consumerTag: 'shared-consumer' });
+        });
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub() };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            publish: sinon.stub(),
+        };
+        amqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+
+        await Promise.all([
+            amqp.publish('request-one', {
+                correlationId: 'correlation-one',
+                replyTo: 'shared-rpc-queue',
+            }),
+            amqp.publish('request-two', {
+                correlationId: 'correlation-two',
+                replyTo: 'shared-rpc-queue',
+            }),
+        ]);
+
+        const peerControlledPrefix = `peer-controlled-${'x'.repeat(1024)}`;
+        for (let index = 0; index < 150; index += 1) {
+            consumeCallback({
+                properties: {
+                    correlationId: `${peerControlledPrefix}-${index}`,
+                },
+                content: Buffer.from('{"late":true}'),
+            });
+        }
+
+        await clock.tickAsync(1001);
+
+        expect(sendStub.callCount).to.equal(2);
+        for (const call of sendStub.getCalls()) {
+            const message = call.args[0].payload.message;
+            expect(message).to.match(/Observed 100\+ unmatched RPC responses/);
+            expect(message).to.not.include('peer-controlled');
+            expect(message.length).to.be.lessThan(250);
+        }
         expect(deleteQueueStub.calledOnce).to.be.true;
     });
 

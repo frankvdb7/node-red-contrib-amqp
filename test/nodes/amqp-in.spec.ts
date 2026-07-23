@@ -665,6 +665,30 @@ describe('amqp-in Node', () => {
     expect(removeBrokerNodeStateStub.calledOnce).to.be.true
   })
 
+  it('removes durable bindings when the node configuration changes', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub(), consume: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
+
+    await helper.load(
+      [amqpIn, amqpBroker],
+      amqpInFlowFixture,
+      credentialsFixture,
+    )
+    helper._events.emit('flows:stopping', {
+      type: 'nodes',
+      diff: { changed: ['n1'], removed: [] },
+    })
+
+    const node = helper.getNode('n1')
+    await node.close(false)
+
+    expect(closeStub.calledOnceWith({ removeBindings: true })).to.be.true
+  })
+
   it('does not schedule reconnect when node closes while reconnect is closing resources', async function () {
     const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
     try {
@@ -726,6 +750,51 @@ describe('amqp-in Node', () => {
     await clock.tickAsync(2001)
     expect(connectStub.callCount).to.equal(2)
     clock.restore()
+  })
+
+  it('does not queue duplicate initialization after the reconnect timer fires', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+      const channelMock = { on: sinon.stub(), off: sinon.stub() }
+      const connectStub = sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+      const initializeStub = sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+      const consumeStub = sinon.stub(Amqp.prototype, 'consume').resolves()
+      sinon
+        .stub(Amqp.prototype, 'markConnected')
+        .onFirstCall()
+        .throws(new Error('hold initial initialization open'))
+
+      let releaseInitialCleanup: () => void = () => undefined
+      const initialCleanup = new Promise<void>(resolve => {
+        releaseInitialCleanup = resolve
+      })
+      const closeStub = sinon.stub(Amqp.prototype, 'close')
+      closeStub.onFirstCall().returns(initialCleanup)
+      closeStub.resolves()
+
+      await helper.load(
+        [amqpIn, amqpBroker],
+        amqpInFlowFixture,
+        credentialsFixture,
+      )
+
+      const onConnClose = connectionMock.on.withArgs('close').getCall(0).args[1]
+      await onConnClose()
+      await clock.tickAsync(2001)
+
+      await onConnClose()
+      await clock.tickAsync(4001)
+
+      releaseInitialCleanup()
+      await clock.tickAsync(0)
+
+      expect(connectStub.callCount).to.equal(2)
+      expect(initializeStub.callCount).to.equal(2)
+      expect(consumeStub.callCount).to.equal(2)
+    } finally {
+      clock.restore()
+    }
   })
 
   it('handles channel close', async function () {

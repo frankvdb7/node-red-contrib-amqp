@@ -1283,6 +1283,49 @@ describe('amqp-out Node', () => {
     clock.restore()
   })
 
+  it('does not queue duplicate initialization after the reconnect timer fires', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+      const channelMock = { on: sinon.stub(), off: sinon.stub() }
+      const connectStub = sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+      const initializeStub = sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+      sinon
+        .stub(Amqp.prototype, 'markConnected')
+        .onFirstCall()
+        .throws(new Error('hold initial initialization open'))
+
+      let releaseInitialCleanup: () => void = () => undefined
+      const initialCleanup = new Promise<void>(resolve => {
+        releaseInitialCleanup = resolve
+      })
+      const closeStub = sinon.stub(Amqp.prototype, 'close')
+      closeStub.onFirstCall().returns(initialCleanup)
+      closeStub.resolves()
+
+      await helper.load(
+        [amqpOut, amqpBroker],
+        amqpOutFlowFixture,
+        credentialsFixture,
+      )
+
+      const onConnClose = connectionMock.on.withArgs('close').getCall(0).args[1]
+      await onConnClose()
+      await clock.tickAsync(2001)
+
+      await onConnClose()
+      await clock.tickAsync(4001)
+
+      releaseInitialCleanup()
+      await clock.tickAsync(0)
+
+      expect(connectStub.callCount).to.equal(2)
+      expect(initializeStub.callCount).to.equal(2)
+    } finally {
+      clock.restore()
+    }
+  })
+
   it('retries initialization on unclassified connect errors when reconnectOnError is true', async function () {
     const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
     try {

@@ -4,6 +4,7 @@ import { NODE_STATUS } from '../constants'
 import { AmqpInNodeDefaults, AmqpOutNodeDefaults, ErrorType, NodeType, ErrorLocationEnum } from '../types'
 import Amqp from '../Amqp'
 import ReconnectBackoff from '../reconnect-backoff'
+import trackTerminalClose from './flow-close-tracker'
 
 module.exports = function (RED: NodeRedApp): void {
   const isErrorLike = (
@@ -48,6 +49,7 @@ module.exports = function (RED: NodeRedApp): void {
     const configAmqp: AmqpInNodeDefaults & AmqpOutNodeDefaults = config;
 
     const amqp = new Amqp(RED, this, configAmqp)
+    const terminalClose = trackTerminalClose(RED, this.id)
 
     const reconnectOnError = configAmqp.reconnectOnError;
 
@@ -74,13 +76,15 @@ module.exports = function (RED: NodeRedApp): void {
     this.on('close', async (removedOrDone: boolean | ((err?: Error) => void), doneMaybe?: (err?: Error) => void): Promise<void> => {
       const removed = typeof removedOrDone === 'boolean' ? removedOrDone : false
       const done = typeof removedOrDone === 'function' ? removedOrDone : doneMaybe
+      const removeBindings = terminalClose.shouldRemoveBindings(removed)
+      terminalClose.dispose()
       isShuttingDown = true
       initializationVersion += 1
       clearTimeout(reconnectTimeout)
       removeEventListeners()
       let closeError: unknown
       try {
-        await amqp.close(removed ? { removeBindings: true } : undefined)
+        await amqp.close(removeBindings ? { removeBindings: true } : undefined)
       } catch (e) {
         closeError = e
       } finally {
@@ -147,13 +151,13 @@ module.exports = function (RED: NodeRedApp): void {
           const reconnectDelayMs = reconnectBackoff.nextDelayMs()
           nodeIns.log(`Reconnect scheduled in ${reconnectDelayMs}ms`)
           reconnectTimeout = setTimeout(() => {
-            reconnectScheduled = false
             if (isShuttingDown) {
+              reconnectScheduled = false
               nodeIns.log('Reconnect timer fired but node is shutting down')
               return
             }
             nodeIns.log('Reconnect timer fired: re-initializing AMQP node')
-            void queueInitialization(nodeIns)
+            void queueInitialization(nodeIns, true)
           }, reconnectDelayMs)
         } catch (error) {
           reconnectScheduled = false
@@ -297,11 +301,17 @@ module.exports = function (RED: NodeRedApp): void {
       }
     }
 
-    function queueInitialization(nodeIns: Node): Promise<void> {
+    function queueInitialization(nodeIns: Node, scheduledReconnect = false): Promise<void> {
       const previous = initializationPromise
+      const startInitialization = (): Promise<void> => {
+        if (scheduledReconnect) {
+          reconnectScheduled = false
+        }
+        return initializeNode(nodeIns)
+      }
       const operation = previous
-        ? previous.catch(() => undefined).then(() => initializeNode(nodeIns))
-        : initializeNode(nodeIns)
+        ? previous.catch(() => undefined).then(startInitialization)
+        : startInitialization()
       initializationPromise = operation
       void operation
         .finally(() => {
