@@ -30,6 +30,7 @@ import { NODE_STATUS } from './constants'
 const DELIVERY_TOKEN: unique symbol = Symbol('amqp-delivery-token')
 const RETURN_TOKEN_HEADER = 'x-node-red-contrib-amqp-return-token'
 const MAX_UNMATCHED_RPC_RESPONSES = 100
+const AMQP_CONNECTION_TIMEOUT_MS = 5_000
 
 type TrackedAssembledMessage = AssembledMessage & {
   [DELIVERY_TOKEN]?: string
@@ -46,6 +47,11 @@ interface PendingRpcRequest {
   handleResponse: (message: AssembledMessage) => void
   interrupt: (error: Error, cleanup: boolean) => void
   cancel: () => void
+}
+
+interface RpcRequestLifecycle {
+  cancel: () => Promise<void>
+  startTimeout: () => void
 }
 
 interface RpcConsumerState {
@@ -478,7 +484,7 @@ export default class Amqp {
       outputs: rpcRequested,
     } = config
 
-    let cancelRpcConsumer: (() => Promise<void>) | null = null
+    let rpcRequest: RpcRequestLifecycle | null = null
     let returnToken: string | undefined
 
     try {
@@ -493,7 +499,7 @@ export default class Amqp {
           uuidv4()
         replyTo =
           properties?.replyTo || this.config.amqpProperties?.replyTo || uuidv4()
-        cancelRpcConsumer = await this.handleRemoteProcedureCall(
+        rpcRequest = await this.handleRemoteProcedureCall(
           correlationId,
           replyTo,
         )
@@ -553,6 +559,7 @@ export default class Amqp {
           }
         },
       )
+      rpcRequest?.startTimeout()
       if (confirmation && drain) {
         await Promise.all([confirmation, drain])
       } else if (confirmation) {
@@ -571,8 +578,8 @@ export default class Amqp {
       if (returnToken) {
         this.returnedPublishes.delete(returnToken)
       }
-      if (cancelRpcConsumer) {
-        await cancelRpcConsumer()
+      if (rpcRequest) {
+        await rpcRequest.cancel()
       }
       this.node.error(`Could not publish message: ${e}`)
       throw e
@@ -594,7 +601,7 @@ export default class Amqp {
   private async handleRemoteProcedureCall(
     correlationId: string,
     replyTo: string,
-  ): Promise<() => Promise<void>> {
+  ): Promise<RpcRequestLifecycle> {
     const rpcConfig = this.getRpcConfig(replyTo)
 
     try {
@@ -672,39 +679,45 @@ export default class Amqp {
       interruptRpc = error => pendingRequest.interrupt(error, false)
       this.rpcInterruptHandlers.add(interruptRpc)
 
-      /****************************************
-       * Check if RPC has timed out and handle
-       ****************************************/
-      rpcTimeout = setTimeout(async () => {
-        clearRpcTimeout()
-        if (this.closed) {
+      const startTimeout = (): void => {
+        if (rpcResponseFinalized || rpcTimeout) {
           return
         }
 
-        try {
-          if (finalizeRpcResponse()) {
-            const unmatchedResponseCount =
-              rpcConsumer.unmatchedResponseCount
-            const unmatchedResponseDiagnostic =
-              unmatchedResponseCount > 0
-                ? ` Observed ${unmatchedResponseCount}${rpcConsumer.unmatchedResponseOverflow ? '+' : ''} unmatched RPC response${unmatchedResponseCount === 1 && !rpcConsumer.unmatchedResponseOverflow ? '' : 's'} on the shared reply consumer.`
-                : ''
-            this.node.send({
-              payload: {
-                message: `Timeout while waiting for RPC response.${unmatchedResponseDiagnostic}`,
-                config: rpcConfig,
-              },
-            })
+        /****************************************
+         * Check if RPC has timed out and handle
+         ****************************************/
+        rpcTimeout = setTimeout(async () => {
+          clearRpcTimeout()
+          if (this.closed) {
+            return
           }
-          await cleanupRpcResources()
-        } catch (e) {
-          // TODO: Keep an eye on this
-          // This might close the whole channel
-          this.node.error(`Error trying to cancel RPC consumer: ${e}`)
-        }
-      }, rpcConfig.rpcTimeout || 3000)
-      this.rpcTimeouts.add(rpcTimeout)
-      return cancelRpcConsumer
+
+          try {
+            if (finalizeRpcResponse()) {
+              const unmatchedResponseCount =
+                rpcConsumer.unmatchedResponseCount
+              const unmatchedResponseDiagnostic =
+                unmatchedResponseCount > 0
+                  ? ` Observed ${unmatchedResponseCount}${rpcConsumer.unmatchedResponseOverflow ? '+' : ''} unmatched RPC response${unmatchedResponseCount === 1 && !rpcConsumer.unmatchedResponseOverflow ? '' : 's'} on the shared reply consumer.`
+                  : ''
+              this.node.send({
+                payload: {
+                  message: `Timeout while waiting for RPC response.${unmatchedResponseDiagnostic}`,
+                  config: rpcConfig,
+                },
+              })
+            }
+            await cleanupRpcResources()
+          } catch (e) {
+            // TODO: Keep an eye on this
+            // This might close the whole channel
+            this.node.error(`Error trying to cancel RPC consumer: ${e}`)
+          }
+        }, rpcConfig.rpcTimeout || 3000)
+        this.rpcTimeouts.add(rpcTimeout)
+      }
+      return { cancel: cancelRpcConsumer, startTimeout }
     } catch (e) {
       this.node.error(`Could not consume RPC message: ${e}`)
       throw e
@@ -1043,8 +1056,8 @@ export default class Amqp {
       await this.detachRpcConsumers(interruption)
       this.clearRpcTimeouts()
 
-      await this.unbindQueues(removeBindings)
-      this.bindingsRemoved ||= removeBindings
+      const bindingsRemoved = await this.unbindQueues(removeBindings)
+      this.bindingsRemoved ||= removeBindings && bindingsRemoved
       await this.closeChannel()
       await this.releaseConnection()
     })()
@@ -1079,8 +1092,8 @@ export default class Amqp {
         await this.connect()
         connected = true
         await this.initialize()
-        await this.unbindQueues(true)
-        this.bindingsRemoved = true
+        const bindingsRemoved = await this.unbindQueues(true)
+        this.bindingsRemoved ||= bindingsRemoved
       } finally {
         if (connected) {
           this.closed = true
@@ -1103,9 +1116,10 @@ export default class Amqp {
     }
   }
 
-  private async unbindQueues(removeBindings = false): Promise<void> {
+  private async unbindQueues(removeBindings = false): Promise<boolean> {
     const { name: exchangeName } = this.config.exchange
     const queueName = this.q?.queue
+    let succeeded = true
 
     if (
       exchangeName &&
@@ -1117,11 +1131,13 @@ export default class Amqp {
         try {
           await this.channel.unbindQueue(queueName, exchangeName, routingKey)
         } catch (e) {
+          succeeded = false
           /* istanbul ignore next */
           this.node.error(`Error unbinding queue for routing key ${routingKey}: ${e.message}`)
         }
       }
     }
+    return succeeded
   }
 
   private shouldUnbindQueueOnClose(removeBindings: boolean): boolean {
@@ -1198,7 +1214,10 @@ export default class Amqp {
     brokerUrl: string,
     brokerInfo: string,
   ): Promise<ChannelModel> {
-    const connection = await connect(brokerUrl, { heartbeat: 2 })
+    const connection = await connect(brokerUrl, {
+      heartbeat: 2,
+      timeout: AMQP_CONNECTION_TIMEOUT_MS,
+    })
     this.node.log(`Connected to AMQP broker ${brokerInfo}`)
 
     const entry = { connection, count: 0 }

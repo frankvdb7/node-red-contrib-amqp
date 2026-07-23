@@ -19,6 +19,18 @@ interface TrackerState {
 
 const trackerStates = new WeakMap<object, TrackerState>()
 
+function containsNodeOrSubflowChild(
+  nodeIds: string[] | undefined,
+  nodeId: string,
+): boolean {
+  return Boolean(
+    nodeIds?.some(
+      changedNodeId =>
+        nodeId === changedNodeId || nodeId.startsWith(`${changedNodeId}-`),
+    ),
+  )
+}
+
 export default function trackTerminalClose(
   RED: NodeRedApp,
   nodeId: string,
@@ -32,8 +44,14 @@ export default function trackTerminalClose(
     const onFlowsStopping = (event: FlowStoppingEvent): void => {
       for (const trackedNode of nodes.values()) {
         trackedNode.terminalClose ||= Boolean(
-          event.diff?.changed?.includes(trackedNode.nodeId) ||
-            event.diff?.removed?.includes(trackedNode.nodeId),
+          containsNodeOrSubflowChild(
+            event.diff?.changed,
+            trackedNode.nodeId,
+          ) ||
+            containsNodeOrSubflowChild(
+              event.diff?.removed,
+              trackedNode.nodeId,
+            ),
         )
       }
     }
