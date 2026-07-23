@@ -576,6 +576,171 @@ describe('amqp-out Node', () => {
     )
   })
 
+  it('keeps routing keys isolated across concurrent vhost switches', async function () {
+    const connectionMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const channelMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+    }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'close').resolves()
+
+    let notifyFirstSwitchStarted: () => void = () => undefined
+    const firstSwitchStarted = new Promise<void>(resolve => {
+      notifyFirstSwitchStarted = resolve
+    })
+    let releaseFirstSwitch: () => void = () => undefined
+    const firstSwitchPending = new Promise<void>(resolve => {
+      releaseFirstSwitch = resolve
+    })
+    sinon
+      .stub(Amqp.prototype, 'setVhost')
+      .callsFake(async (vhost: string) => {
+        if (vhost === 'vh-a') {
+          notifyFirstSwitchStarted()
+          await firstSwitchPending
+        }
+      })
+
+    const published: Array<{ payload: unknown; routingKey: string }> = []
+    sinon
+      .stub(Amqp.prototype, 'publish')
+      .callsFake(async function (this: any, payload: unknown) {
+        published.push({
+          payload,
+          routingKey: this.config.exchange.routingKey,
+        })
+      })
+
+    const flow = JSON.parse(JSON.stringify(amqpOutFlowFixture))
+    flow[0].exchangeRoutingKeyType = 'str'
+    await helper.load([amqpOut, amqpBroker], flow, credentialsFixture)
+
+    const amqpOutNode = helper.getNode('n1')
+    amqpOutNode.receive({
+      payload: 'message-a',
+      routingKey: 'route.a',
+      vhost: 'vh-a',
+    })
+    await firstSwitchStarted
+
+    amqpOutNode.receive({
+      payload: 'message-b',
+      routingKey: 'route.b',
+      vhost: 'vh-b',
+    })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    releaseFirstSwitch()
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(published).to.have.length(2)
+    expect(
+      published.find(item => item.payload === 'message-a')?.routingKey,
+    ).to.equal('route.a')
+    expect(
+      published.find(item => item.payload === 'message-b')?.routingKey,
+    ).to.equal('route.b')
+  })
+
+  it('restores the configured routing key after a message override', async function () {
+    const connectionMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const channelMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+    }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'close').resolves()
+
+    const publishedRoutingKeys: string[] = []
+    let notifyPublishedTwice: () => void = () => undefined
+    const publishedTwice = new Promise<void>(resolve => {
+      notifyPublishedTwice = resolve
+    })
+    sinon
+      .stub(Amqp.prototype, 'publish')
+      .callsFake(async function (this: any) {
+        publishedRoutingKeys.push(this.config.exchange.routingKey)
+        if (publishedRoutingKeys.length === 2) {
+          notifyPublishedTwice()
+        }
+      })
+
+    const flow = JSON.parse(JSON.stringify(amqpOutFlowFixture))
+    flow[0].exchangeRoutingKey = 'configured.route'
+    flow[0].exchangeRoutingKeyType = 'str'
+    await helper.load([amqpOut, amqpBroker], flow, credentialsFixture)
+
+    const amqpOutNode = helper.getNode('n1')
+    amqpOutNode.receive({
+      payload: 'overridden',
+      routingKey: 'message.route',
+    })
+    amqpOutNode.receive({ payload: 'configured' })
+    await publishedTwice
+
+    expect(publishedRoutingKeys).to.deep.equal([
+      'message.route',
+      'configured.route',
+    ])
+  })
+
+  it('does not publish an in-flight vhost switch after the node closes', async function () {
+    const connectionMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const channelMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+    }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'close').resolves()
+    sinon.stub(Amqp.prototype, 'getConnection').returns(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'getChannel').returns(channelMock as any)
+
+    let notifySwitchStarted: () => void = () => undefined
+    const switchStarted = new Promise<void>(resolve => {
+      notifySwitchStarted = resolve
+    })
+    let releaseSwitch: () => void = () => undefined
+    const switchPending = new Promise<void>(resolve => {
+      releaseSwitch = resolve
+    })
+    sinon.stub(Amqp.prototype, 'setVhost').callsFake(async () => {
+      notifySwitchStarted()
+      await switchPending
+    })
+    const publishStub = sinon.stub(Amqp.prototype, 'publish').resolves()
+
+    await helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+    )
+
+    const amqpOutNode = helper.getNode('n1')
+    amqpOutNode.receive({ payload: 'must-not-publish', vhost: 'vh2' })
+    await switchStarted
+    await amqpOutNode.close()
+
+    releaseSwitch()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(publishStub.called).to.be.false
+  })
+
   it('removes listeners before switching vhost', function (done) {
     const connectionMock = {
       off: sinon.spy(),
@@ -1124,6 +1289,48 @@ describe('amqp-out Node', () => {
       expect(connectStub.callCount).to.equal(2)
 
       await clock.tickAsync(2000)
+      expect(connectStub.callCount).to.equal(3)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('keeps retrying after broker-close recovery fails with reconnectOnError disabled', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const initialConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub(),
+      }
+      const recoveredConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub(),
+      }
+      const channelMock = { on: sinon.stub(), off: sinon.stub() }
+      const connectStub = sinon.stub(Amqp.prototype, 'connect')
+      connectStub.onFirstCall().resolves(initialConnection as any)
+      connectStub
+        .onSecondCall()
+        .rejects(new Error('broker is still restarting'))
+      connectStub.onThirdCall().resolves(recoveredConnection as any)
+      sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+      sinon.stub(Amqp.prototype, 'close').resolves()
+
+      const flow = JSON.parse(JSON.stringify(amqpOutFlowFixture))
+      flow[0].reconnectOnError = false
+
+      await helper.load([amqpOut, amqpBroker], flow, credentialsFixture)
+      const onConnectionClose = initialConnection.on
+        .withArgs('close')
+        .getCall(0).args[1]
+
+      await onConnectionClose()
+      await clock.tickAsync(2001)
+      expect(connectStub.callCount).to.equal(2)
+
+      await clock.tickAsync(4001)
       expect(connectStub.callCount).to.equal(3)
     } finally {
       clock.restore()

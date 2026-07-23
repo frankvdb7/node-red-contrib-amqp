@@ -489,6 +489,54 @@ describe('amqp-in Node', () => {
     expect(callErrors.some(err => String(err).includes('ERR_INVALID_ARG_TYPE'))).to.be.false
   })
 
+  it('does not create duplicate consumers when reconnect is requested during initialization', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      let resolveInitialConnect: (connection: unknown) => void = () => undefined
+      const initialConnectPending = new Promise(resolve => {
+        resolveInitialConnect = resolve
+      })
+      const initialConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub(),
+      }
+      const retryConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub(),
+      }
+      const channelMock = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+      }
+      const connectStub = sinon.stub(Amqp.prototype, 'connect')
+      connectStub.onFirstCall().returns(initialConnectPending as any)
+      connectStub.onSecondCall().resolves(retryConnection as any)
+      sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+      const consumeStub = sinon.stub(Amqp.prototype, 'consume').resolves()
+      sinon.stub(Amqp.prototype, 'close').resolves()
+
+      await helper.load(
+        [amqpIn, amqpBroker],
+        amqpInFlowFixture,
+        credentialsFixture,
+      )
+
+      const node = helper.getNode('n1')
+      node.receive({ payload: { reconnectCall: true } })
+      await clock.tickAsync(0)
+
+      resolveInitialConnect(initialConnection)
+      await clock.tickAsync(0)
+      await clock.tickAsync(2001)
+
+      expect(consumeStub.callCount).to.equal(1)
+    } finally {
+      clock.restore()
+    }
+  })
+
   it('should handle channel errors', function (done) {
     const flow = [
       { id: 'n1', type: 'amqp-in', name: 'test name', broker: 'b1' },
@@ -914,6 +962,49 @@ describe('amqp-in Node', () => {
       expect(connectStub.callCount).to.equal(2)
 
       await clock.tickAsync(2000)
+      expect(connectStub.callCount).to.equal(3)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('keeps retrying after broker-close recovery fails with reconnectOnError disabled', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const initialConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub(),
+      }
+      const recoveredConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub(),
+      }
+      const channelMock = { on: sinon.stub(), off: sinon.stub() }
+      const connectStub = sinon.stub(Amqp.prototype, 'connect')
+      connectStub.onFirstCall().resolves(initialConnection as any)
+      connectStub
+        .onSecondCall()
+        .rejects(new Error('broker is still restarting'))
+      connectStub.onThirdCall().resolves(recoveredConnection as any)
+      sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+      sinon.stub(Amqp.prototype, 'consume').resolves()
+      sinon.stub(Amqp.prototype, 'close').resolves()
+
+      const flow = JSON.parse(JSON.stringify(amqpInFlowFixture))
+      flow[0].reconnectOnError = false
+
+      await helper.load([amqpIn, amqpBroker], flow, credentialsFixture)
+      const onConnectionClose = initialConnection.on
+        .withArgs('close')
+        .getCall(0).args[1]
+
+      await onConnectionClose()
+      await clock.tickAsync(2001)
+      expect(connectStub.callCount).to.equal(2)
+
+      await clock.tickAsync(4001)
       expect(connectStub.callCount).to.equal(3)
     } finally {
       clock.restore()

@@ -19,9 +19,12 @@ module.exports = function (RED: NodeRedApp): void {
 
   function AmqpIn(config: EditorNodeProperties): void {
     let reconnectTimeout: NodeJS.Timeout
-    let reconnect: (() => Promise<void>) | null = null
+    let reconnect: ((continueUntilConnected?: boolean) => Promise<void>) | null = null
     let reconnectScheduled = false
+    let recoveringFromDisconnect = false
     let isShuttingDown = false
+    let initializationVersion = 0
+    let initializationPromise: Promise<void> | null = null
     let connection: ChannelModel | null = null
     let channel: Channel | null = null
     let onConnClose: (e: unknown) => Promise<void>
@@ -72,6 +75,7 @@ module.exports = function (RED: NodeRedApp): void {
       const removed = typeof removedOrDone === 'boolean' ? removedOrDone : false
       const done = typeof removedOrDone === 'function' ? removedOrDone : doneMaybe
       isShuttingDown = true
+      initializationVersion += 1
       clearTimeout(reconnectTimeout)
       removeEventListeners()
       let closeError: unknown
@@ -113,13 +117,19 @@ module.exports = function (RED: NodeRedApp): void {
     }
 
     async function initializeNode(nodeIns: Node) {
-      reconnect = async () => {
+      const attemptVersion = initializationVersion
+      const initializationIsStale = (): boolean =>
+        isShuttingDown || attemptVersion !== initializationVersion
+
+      reconnect = async (continueUntilConnected = false) => {
+        recoveringFromDisconnect ||= continueUntilConnected
         if (isShuttingDown || reconnectScheduled) {
           if (isShuttingDown) {
             nodeIns.log('Reconnect skipped: node is shutting down')
           }
           return
         }
+        initializationVersion += 1
         reconnectScheduled = true
         clearTimeout(reconnectTimeout)
         try {
@@ -143,7 +153,7 @@ module.exports = function (RED: NodeRedApp): void {
               return
             }
             nodeIns.log('Reconnect timer fired: re-initializing AMQP node')
-            void initializeNode(nodeIns)
+            void queueInitialization(nodeIns)
           }, reconnectDelayMs)
         } catch (error) {
           reconnectScheduled = false
@@ -153,12 +163,20 @@ module.exports = function (RED: NodeRedApp): void {
 
       try {
         connection = await amqp.connect()
+        if (initializationIsStale()) {
+          await amqp.close().catch(() => undefined)
+          return
+        }
 
         // istanbul ignore else
         if (connection) {
           channel = await amqp.initialize()
+          if (initializationIsStale()) {
+            await amqp.close().catch(() => undefined)
+            return
+          }
           await amqp.consume()
-          if (isShuttingDown) {
+          if (initializationIsStale()) {
             await amqp.close().catch(() => undefined)
             return
           }
@@ -166,7 +184,7 @@ module.exports = function (RED: NodeRedApp): void {
           onConnClose = async () => {
             nodeIns.warn('AMQP connection closed event received')
             try {
-              await reconnect()
+              await reconnect(true)
             } catch (reconnectError) {
               nodeIns.error(`Reconnect failed after connection close: ${reconnectError}`, {
                 payload: { error: reconnectError, location: ErrorLocationEnum.ConnectionErrorEvent },
@@ -192,7 +210,7 @@ module.exports = function (RED: NodeRedApp): void {
           onChannelClose = async () => {
             nodeIns.warn('AMQP channel closed event received')
             try {
-              await reconnect()
+              await reconnect(true)
             } catch (reconnectError) {
               nodeIns.error(`Reconnect failed after channel close: ${reconnectError}`, {
                 payload: { error: reconnectError, location: ErrorLocationEnum.ChannelErrorEvent },
@@ -218,7 +236,7 @@ module.exports = function (RED: NodeRedApp): void {
           onConsumerCancelled = async () => {
             nodeIns.warn('AMQP consumer cancelled event received')
             try {
-              await reconnect()
+              await reconnect(true)
             } catch (reconnectError) {
               nodeIns.error(`Reconnect failed after consumer cancellation: ${reconnectError}`, {
                 payload: { error: reconnectError, location: ErrorLocationEnum.ChannelErrorEvent },
@@ -233,18 +251,22 @@ module.exports = function (RED: NodeRedApp): void {
           nodeEmitter.on?.('amqp:consumer-cancelled', onConsumerCancelled)
 
           amqp.markConnected()
+          recoveringFromDisconnect = false
           reconnectBackoff.reset()
         }
       } catch (e: unknown) {
         await amqp.close().catch(() => undefined)
-        if (isShuttingDown) {
+        if (
+          isShuttingDown ||
+          attemptVersion !== initializationVersion
+        ) {
           return
         }
         const err = isErrorLike(e) ? e : {}
         if (isInvalidLoginError(err)) {
           nodeIns.status(NODE_STATUS.Invalid)
           nodeIns.error(`AmqpIn() Could not connect to broker ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectError } })
-          if (reconnectOnError) {
+          if (reconnectOnError || recoveringFromDisconnect) {
             let reconnectFailed = false
             await reconnect().catch(reconnectError => {
               reconnectFailed = true
@@ -261,7 +283,7 @@ module.exports = function (RED: NodeRedApp): void {
           nodeIns.error(`AmqpIn() ${e}`, {
             payload: { error: e, location: ErrorLocationEnum.ConnectError },
           })
-          if (reconnectOnError) {
+          if (reconnectOnError || recoveringFromDisconnect) {
             await reconnect().catch(reconnectError => {
               nodeIns.status(NODE_STATUS.Error)
               nodeIns.error(`Reconnect failed during initialization: ${reconnectError}`, {
@@ -275,8 +297,24 @@ module.exports = function (RED: NodeRedApp): void {
       }
     }
 
+    function queueInitialization(nodeIns: Node): Promise<void> {
+      const previous = initializationPromise
+      const operation = previous
+        ? previous.catch(() => undefined).then(() => initializeNode(nodeIns))
+        : initializeNode(nodeIns)
+      initializationPromise = operation
+      void operation
+        .finally(() => {
+          if (initializationPromise === operation) {
+            initializationPromise = null
+          }
+        })
+        .catch(() => undefined)
+      return operation
+    }
+
     // call
-    initializeNode(this);
+    void queueInitialization(this)
   }
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore

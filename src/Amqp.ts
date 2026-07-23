@@ -8,7 +8,7 @@ import {
   Replies,
   connect,
   ConsumeMessage,
-  MessageProperties,
+  Options,
 } from 'amqplib'
 import {
   AmqpConfig,
@@ -27,6 +27,40 @@ import {
 } from './types'
 import { NODE_STATUS } from './constants'
 
+const DELIVERY_TOKEN: unique symbol = Symbol('amqp-delivery-token')
+const RETURN_TOKEN_HEADER = 'x-node-red-contrib-amqp-return-token'
+
+type TrackedAssembledMessage = AssembledMessage & {
+  [DELIVERY_TOKEN]?: string
+}
+
+interface TrackedDelivery {
+  message: AssembledMessage
+  channel: Channel
+  deliveryTag: number
+}
+
+interface PendingRpcRequest {
+  owner: Amqp
+  handleResponse: (message: AssembledMessage) => void
+  recordUnexpectedCorrelation: (correlationId: unknown) => void
+  interrupt: (error: Error, cleanup: boolean) => void
+  cancel: () => void
+}
+
+interface RpcConsumerState {
+  key: string
+  channel: Channel
+  queueName: string
+  consumerTag: string
+  pending: Map<string, PendingRpcRequest>
+  ready: Promise<void>
+  cleanupPromise: Promise<void> | null
+  cleanedUp: boolean
+  registry: Map<string, RpcConsumerState>
+  users: Set<Amqp>
+}
+
 export default class Amqp {
   private config: AmqpConfig
   private broker: AmqpBrokerNode
@@ -35,12 +69,21 @@ export default class Amqp {
   private q: Replies.AssertQueue
   private vhostOverride?: string
   private static connectionPool: Map<string, { connection: ChannelModel; count: number }> = new Map()
+  private static pendingConnections: Map<string, Promise<ChannelModel>> = new Map()
+  private static rpcConsumerRegistries: WeakMap<
+    object,
+    Map<string, RpcConsumerState>
+  > = new WeakMap()
   private connectionErrorHandler: (e: unknown) => void
   private connectionCloseHandler: () => void
   private channelErrorHandler: (e: unknown) => void
   private channelCloseHandler: () => void
-  private channelReturnHandler: () => void
+  private channelReturnHandler: (message: ConsumeMessage) => void
   private rpcTimeouts: Set<NodeJS.Timeout> = new Set()
+  private rpcInterruptHandlers: Set<(error: Error) => void> = new Set()
+  private rpcConsumers: Map<string, RpcConsumerState> = new Map()
+  private returnedPublishes: Map<string, Error> = new Map()
+  private trackedDeliveries: Map<string, TrackedDelivery> = new Map()
   private closed = false
 
   constructor(
@@ -73,7 +116,7 @@ export default class Amqp {
       },
       amqpProperties: this.parseJsonObject(
         config.amqpProperties,
-      ) as unknown as MessageProperties,
+      ) as unknown as Options.Publish,
       headers: this.parseJsonObject(config.headers),
       outputs: config.outputs,
       rpcTimeout: config.rpcTimeoutMilliseconds,
@@ -113,24 +156,31 @@ export default class Amqp {
     }
 
     if (!entry) {
-      this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
+      let pendingConnection = Amqp.pendingConnections.get(key)
+      if (!pendingConnection) {
+        this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
+        pendingConnection = this.createPooledConnection(
+          key,
+          brokerUrl,
+          brokerInfo,
+        )
+        Amqp.pendingConnections.set(key, pendingConnection)
+      }
+
       try {
-        const connection = await connect(brokerUrl, { heartbeat: 2 })
-        this.node.log(`Connected to AMQP broker ${brokerInfo}`)
-
-        connection.on('close', () => {
-          const current = Amqp.connectionPool.get(key)
-          if (current?.connection === connection) {
-            Amqp.connectionPool.delete(key)
-          }
-        })
-
-        entry = { connection, count: 0 }
-        Amqp.connectionPool.set(key, entry)
+        const connection = await pendingConnection
+        entry = Amqp.connectionPool.get(key)
+        if (!entry || entry.connection !== connection) {
+          throw new Error(`AMQP connection closed while connecting to ${brokerInfo}`)
+        }
       } catch (err) {
         this.setBrokerNodeState('errored', err)
         this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
         throw err
+      } finally {
+        if (Amqp.pendingConnections.get(key) === pendingConnection) {
+          Amqp.pendingConnections.delete(key)
+        }
       }
     }
 
@@ -239,7 +289,7 @@ export default class Amqp {
     }
 
     try {
-      await this.close()
+      await this.close(new Error('AMQP virtual host changed during RPC'))
       this.vhostOverride = newVhost
       await this.connect()
       await this.initialize()
@@ -258,76 +308,142 @@ export default class Amqp {
     return this.channel
   }
 
-  public ack(msg: AssembledMessage): void {
+  public ack(msg: AssembledMessage): boolean {
     const allUpTo = !!msg.manualAck?.allUpTo
+    const delivery = this.resolveDelivery(msg, 'ack')
+    if (!delivery) {
+      return false
+    }
     try {
-      this.node.log(`Acking message with deliveryTag: ${msg?.fields?.deliveryTag}`)
-      this.channel.ack(msg, allUpTo)
+      this.node.log(
+        `Acking message with deliveryTag: ${delivery.message.fields?.deliveryTag}`,
+      )
+      this.channel.ack(delivery.message, allUpTo)
+      this.removeTrackedDeliveries(delivery, allUpTo)
+      return true
     } catch (e) {
       this.node.error(`Could not ack message: ${e}`)
+      return false
     }
   }
 
-  public ackAll(): void {
+  public ackAll(msg?: AssembledMessage): boolean {
+    if (this.isManualAck() && (!msg || !this.resolveDelivery(msg, 'ackAll'))) {
+      return false
+    }
     try {
       this.node.log('Acking all outstanding messages')
       this.channel.ackAll()
+      this.trackedDeliveries.clear()
+      return true
     } catch (e) {
       this.node.error(`Could not ackAll messages: ${e}`)
+      return false
     }
   }
 
-  public nack(msg: AssembledMessage): void {
+  public nack(msg: AssembledMessage): boolean {
     const allUpTo = !!msg.manualAck?.allUpTo
     const requeue = msg.manualAck?.requeue ?? true
+    const delivery = this.resolveDelivery(msg, 'nack')
+    if (!delivery) {
+      return false
+    }
     try {
       this.node.log(
-        `Nacking message with deliveryTag: ${msg?.fields?.deliveryTag}`,
+        `Nacking message with deliveryTag: ${delivery.message.fields?.deliveryTag}`,
       )
-      this.channel.nack(msg, allUpTo, requeue)
+      this.channel.nack(delivery.message, allUpTo, requeue)
+      this.removeTrackedDeliveries(delivery, allUpTo)
+      return true
     } catch (e) {
       this.node.error(`Could not nack message: ${e}`)
+      return false
     }
   }
 
-  public nackAll(msg: AssembledMessage): void {
+  public nackAll(msg: AssembledMessage): boolean {
     const requeue = msg.manualAck?.requeue ?? true
+    if (!this.resolveDelivery(msg, 'nackAll')) {
+      return false
+    }
     try {
       this.node.log('Nacking all outstanding messages')
       this.channel.nackAll(requeue)
+      this.trackedDeliveries.clear()
+      return true
     } catch (e) {
       this.node.error(`Could not nackAll messages: ${e}`)
+      return false
     }
   }
 
-  public reject(msg: AssembledMessage): void {
+  public reject(msg: AssembledMessage): boolean {
     const requeue = msg.manualAck?.requeue ?? true
+    const delivery = this.resolveDelivery(msg, 'reject')
+    if (!delivery) {
+      return false
+    }
     try {
       this.node.log(
-        `Rejecting message with deliveryTag: ${msg?.fields?.deliveryTag}`,
+        `Rejecting message with deliveryTag: ${delivery.message.fields?.deliveryTag}`,
       )
-      this.channel.reject(msg, requeue)
+      this.channel.reject(delivery.message, requeue)
+      this.removeTrackedDeliveries(delivery, false)
+      return true
     } catch (e) {
       this.node.error(`Could not reject message: ${e}`)
+      return false
     }
   }
 
   public async publish(
     msg: unknown,
-    properties?: MessageProperties,
+    properties?: Options.Publish,
   ): Promise<void> {
     const routingKeys = this.parseRoutingKeys()
-    await Promise.all(
+    const results = await Promise.allSettled(
       routingKeys.map(routingKey =>
         this.handlePublish(this.config, msg, properties, routingKey),
       ),
     )
+    const failedRoutingKeys = routingKeys.filter(
+      (_, index) => results[index].status === 'rejected',
+    )
+    if (failedRoutingKeys.length === 0) {
+      return
+    }
+
+    if (routingKeys.length === 1) {
+      throw (results[0] as PromiseRejectedResult).reason
+    }
+
+    const successfulRoutingKeys = routingKeys.filter(
+      (_, index) => results[index].status === 'fulfilled',
+    )
+    const error = new Error(
+      `AMQP publish failed for routing keys: ${failedRoutingKeys.join(', ')}`,
+    ) as Error & {
+      successfulRoutingKeys: string[]
+      failedRoutingKeys: string[]
+      causes: unknown[]
+    }
+    error.name = 'AmqpPartialPublishError'
+    error.successfulRoutingKeys = successfulRoutingKeys
+    error.failedRoutingKeys = failedRoutingKeys
+    error.causes = results
+      .filter(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      )
+      .map(result => result.reason)
+    throw error
   }
 
   private async handlePublish(
     config: AmqpConfig,
     msg: unknown,
-    properties?: MessageProperties,
+    properties?: Options.Publish,
     routingKey?: string,
   ) {
     const {
@@ -336,6 +452,7 @@ export default class Amqp {
     } = config
 
     let cancelRpcConsumer: (() => Promise<void>) | null = null
+    let returnToken: string | undefined
 
     try {
       let correlationId = ''
@@ -361,19 +478,45 @@ export default class Amqp {
         ...this.config.amqpProperties,
         ...properties,
       }
+      const mandatory = options.mandatory
+      if (mandatory) {
+        if (!config.waitForConfirms) {
+          throw new Error(
+            'Mandatory publishing requires publisher confirmations',
+          )
+        }
+        returnToken = uuidv4()
+        options.headers = {
+          ...options.headers,
+          [RETURN_TOKEN_HEADER]: returnToken,
+        }
+      }
       // when the name field is empty, publish just like the sendToQueue method;
       // see https://amqp-node.github.io/amqplib/channel_api.html#channel_publish
-      this.channel.publish(
+      const accepted = this.channel.publish(
         name,
         routingKey,
         this.toPublishBuffer(msg),
         options,
       )
+      if (accepted === false) {
+        await this.waitForChannelDrain(this.channel)
+      }
 
       if (config.waitForConfirms) {
         await (this.channel as ConfirmChannel).waitForConfirms()
       }
+      if (returnToken) {
+        const returnedError = this.returnedPublishes.get(returnToken)
+        this.returnedPublishes.delete(returnToken)
+        if (returnedError) {
+          throw returnedError
+        }
+      }
     } catch (e) {
+      if (returnToken) {
+        this.returnedPublishes.delete(returnToken)
+      }
       if (cancelRpcConsumer) {
         await cancelRpcConsumer()
       }
@@ -399,17 +542,19 @@ export default class Amqp {
     replyTo: string,
   ): Promise<() => Promise<void>> {
     const rpcConfig = this.getRpcConfig(replyTo)
-    let queueName = ''
 
     try {
-      // If we try to delete a queue that's already deleted
-      // bad things will happen.
-      let rpcQueueHasBeenDeleted = false
+      const rpcConsumer = await this.getOrCreateRpcConsumer(replyTo, rpcConfig)
+      if (rpcConsumer.pending.has(correlationId)) {
+        throw new Error(
+          `RPC correlation ID is already in use: ${correlationId}`,
+        )
+      }
+
       let rpcResponseFinalized = false
       let additionalErrorMessaging = ''
       let rpcTimeout: NodeJS.Timeout | null = null
-      let rpcConsumerTag = ''
-      let cleanupPromise: Promise<void> | null = null
+      let interruptRpc: ((error: Error) => void) | null = null
 
       const clearRpcTimeout = (): void => {
         if (rpcTimeout) {
@@ -424,39 +569,20 @@ export default class Amqp {
           return false
         }
         rpcResponseFinalized = true
+        if (interruptRpc) {
+          this.rpcInterruptHandlers.delete(interruptRpc)
+        }
+        if (rpcConsumer.pending.get(correlationId) === pendingRequest) {
+          rpcConsumer.pending.delete(correlationId)
+        }
         clearRpcTimeout()
         return true
       }
 
       const cleanupRpcResources = async (): Promise<void> => {
-        if (rpcQueueHasBeenDeleted || !queueName) {
-          return
+        if (rpcConsumer.pending.size === 0) {
+          await this.cleanupRpcConsumer(rpcConsumer)
         }
-
-        if (!cleanupPromise) {
-          cleanupPromise = (async () => {
-            try {
-              await this.channel.deleteQueue(queueName)
-              rpcQueueHasBeenDeleted = true
-            } catch (deleteError) {
-              this.node.error(`Error trying to cancel RPC consumer: ${deleteError}`)
-
-              const canCancelConsumer = typeof this.channel.cancel === 'function'
-              if (canCancelConsumer && rpcConsumerTag) {
-                try {
-                  await this.channel.cancel(rpcConsumerTag)
-                  rpcQueueHasBeenDeleted = true
-                } catch (cancelError) {
-                  this.node.error(`Error trying to cancel RPC consumer: ${cancelError}`)
-                }
-              }
-            } finally {
-              cleanupPromise = null
-            }
-          })()
-        }
-
-        await cleanupPromise
       }
 
       const cancelRpcConsumer = async (): Promise<void> => {
@@ -464,29 +590,37 @@ export default class Amqp {
         await cleanupRpcResources()
       }
 
-      /************************************
-       * assert queue and set up consumer
-       ************************************/
-      queueName = await this.assertQueue(rpcConfig)
-
-      const consumeResponse = await this.channel.consume(
-        queueName,
-        amqpMessage => {
-          if (amqpMessage) {
-            const msg = this.assembleMessage(amqpMessage)
-            if (msg.properties.correlationId === correlationId) {
-              if (finalizeRpcResponse()) {
-                this.node.send(msg as any)
-                void cleanupRpcResources()
-              }
-            } else {
-              additionalErrorMessaging += ` Correlation ids do not match. Expecting: ${correlationId}, received: ${msg.properties.correlationId}`
+      const pendingRequest: PendingRpcRequest = {
+        owner: this,
+        handleResponse: msg => {
+          if (finalizeRpcResponse()) {
+            this.node.send(msg as any)
+            void cleanupRpcResources()
+          }
+        },
+        recordUnexpectedCorrelation: receivedCorrelationId => {
+          additionalErrorMessaging += ` Correlation ids do not match. Expecting: ${correlationId}, received: ${receivedCorrelationId}`
+        },
+        interrupt: (error, cleanup) => {
+          if (finalizeRpcResponse()) {
+            this.node.send({
+              payload: {
+                message: `RPC interrupted: ${error.message}`,
+                config: rpcConfig,
+              },
+            })
+            if (cleanup) {
+              void cleanupRpcResources()
             }
           }
         },
-        { noAck: rpcConfig.noAck },
-      )
-      rpcConsumerTag = consumeResponse?.consumerTag || ''
+        cancel: () => {
+          finalizeRpcResponse()
+        },
+      }
+      rpcConsumer.pending.set(correlationId, pendingRequest)
+      interruptRpc = error => pendingRequest.interrupt(error, false)
+      this.rpcInterruptHandlers.add(interruptRpc)
 
       /****************************************
        * Check if RPC has timed out and handle
@@ -516,22 +650,213 @@ export default class Amqp {
       this.rpcTimeouts.add(rpcTimeout)
       return cancelRpcConsumer
     } catch (e) {
-      // If setup failed after queue assertion, try to clean up the temporary RPC queue.
-      if (queueName) {
-        await this.channel.deleteQueue(queueName).catch(deleteError => {
-          this.node.error(`Error trying to cancel RPC consumer: ${deleteError}`)
-        })
-      }
       this.node.error(`Could not consume RPC message: ${e}`)
       throw e
     }
   }
 
-  public async close(): Promise<void> {
+  private async getOrCreateRpcConsumer(
+    replyTo: string,
+    rpcConfig: AmqpConfig,
+  ): Promise<RpcConsumerState> {
+    const registry = this.getRpcConsumerRegistry()
+    const existing = registry.get(replyTo)
+    if (existing && !existing.cleanedUp) {
+      existing.users.add(this)
+      this.rpcConsumers.set(replyTo, existing)
+      await existing.ready
+      return existing
+    }
+
+    const state: RpcConsumerState = {
+      key: replyTo,
+      channel: this.channel,
+      queueName: '',
+      consumerTag: '',
+      pending: new Map(),
+      ready: Promise.resolve(),
+      cleanupPromise: null,
+      cleanedUp: false,
+      registry,
+      users: new Set([this]),
+    }
+
+    registry.set(replyTo, state)
+    this.rpcConsumers.set(replyTo, state)
+    state.ready = (async () => {
+      try {
+        state.queueName = await this.assertQueue(rpcConfig)
+        const consumeResponse = await state.channel.consume(
+          state.queueName,
+          amqpMessage => {
+            if (!amqpMessage) {
+              const error = new Error('AMQP RPC consumer was cancelled')
+              for (const request of [...state.pending.values()]) {
+                request.interrupt(error, true)
+              }
+              return
+            }
+
+            const msg = this.assembleMessage(amqpMessage)
+            const receivedCorrelationId = msg.properties.correlationId
+            const request =
+              typeof receivedCorrelationId === 'string'
+                ? state.pending.get(receivedCorrelationId)
+                : undefined
+            if (request) {
+              request.handleResponse(msg)
+              return
+            }
+
+            for (const pendingRequest of state.pending.values()) {
+              pendingRequest.recordUnexpectedCorrelation(receivedCorrelationId)
+            }
+          },
+          { noAck: rpcConfig.noAck },
+        )
+        state.consumerTag = consumeResponse?.consumerTag || ''
+      } catch (error) {
+        await this.cleanupRpcConsumer(state)
+        throw error
+      }
+    })()
+
+    await state.ready
+    return state
+  }
+
+  private getRpcConsumerRegistry(): Map<string, RpcConsumerState> {
+    const scope = (this.connection || this.channel) as unknown as object
+    let registry = Amqp.rpcConsumerRegistries.get(scope)
+    if (!registry) {
+      registry = new Map()
+      Amqp.rpcConsumerRegistries.set(scope, registry)
+    }
+    return registry
+  }
+
+  private async cleanupRpcConsumer(state: RpcConsumerState): Promise<void> {
+    if (state.cleanupPromise) {
+      await state.cleanupPromise
+      return
+    }
+    if (state.cleanedUp) {
+      return
+    }
+
+    state.cleanedUp = true
+    if (state.registry.get(state.key) === state) {
+      state.registry.delete(state.key)
+    }
+    for (const user of state.users) {
+      if (user.rpcConsumers.get(state.key) === state) {
+        user.rpcConsumers.delete(state.key)
+      }
+    }
+    state.users.clear()
+
+    state.cleanupPromise = (async () => {
+      if (!state.queueName) {
+        return
+      }
+
+      try {
+        await state.channel.deleteQueue(state.queueName)
+      } catch (deleteError) {
+        this.node.error(`Error trying to cancel RPC consumer: ${deleteError}`)
+
+        const canCancelConsumer = typeof state.channel.cancel === 'function'
+        if (canCancelConsumer && state.consumerTag) {
+          try {
+            await state.channel.cancel(state.consumerTag)
+          } catch (cancelError) {
+            this.node.error(`Error trying to cancel RPC consumer: ${cancelError}`)
+          }
+        }
+      }
+    })()
+
+    await state.cleanupPromise
+  }
+
+  private async detachRpcConsumers(interruption?: Error): Promise<void> {
+    const states = [...new Set(this.rpcConsumers.values())]
+    for (const state of states) {
+      for (const request of [...state.pending.values()]) {
+        if (request.owner === this) {
+          request.cancel()
+        }
+      }
+
+      state.users.delete(this)
+      if (this.rpcConsumers.get(state.key) === state) {
+        this.rpcConsumers.delete(state.key)
+      }
+
+      if (state.channel === this.channel) {
+        const error =
+          interruption ?? new Error('Shared AMQP RPC consumer was closed')
+        for (const request of [...state.pending.values()]) {
+          request.interrupt(error, false)
+        }
+        state.pending.clear()
+        state.cleanedUp = true
+        if (state.registry.get(state.key) === state) {
+          state.registry.delete(state.key)
+        }
+        for (const user of state.users) {
+          if (user.rpcConsumers.get(state.key) === state) {
+            user.rpcConsumers.delete(state.key)
+          }
+        }
+        state.users.clear()
+      } else if (state.pending.size === 0) {
+        await this.cleanupRpcConsumer(state)
+      }
+    }
+  }
+
+  private waitForChannelDrain(channel: Channel): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const cleanup = (): void => {
+        channel.off('drain', onDrain)
+        channel.off('close', onClose)
+        channel.off('error', onError)
+      }
+      const onDrain = (): void => {
+        cleanup()
+        resolve()
+      }
+      const onClose = (): void => {
+        cleanup()
+        reject(new Error('AMQP channel closed while waiting for write buffer'))
+      }
+      const onError = (error: unknown): void => {
+        cleanup()
+        reject(
+          error instanceof Error
+            ? error
+            : new Error(`AMQP channel error: ${String(error)}`),
+        )
+      }
+
+      channel.once('drain', onDrain)
+      channel.once('close', onClose)
+      channel.once('error', onError)
+    })
+  }
+
+  public async close(interruption?: Error): Promise<void> {
     if (this.closed) {
       return
     }
     this.closed = true
+    if (interruption) {
+      for (const interruptRpc of [...this.rpcInterruptHandlers]) {
+        interruptRpc(interruption)
+      }
+    }
+    await this.detachRpcConsumers(interruption)
     this.clearRpcTimeouts()
 
     await this.unbindQueues()
@@ -573,6 +898,9 @@ export default class Amqp {
   }
 
   private async closeChannel(): Promise<void> {
+    this.trackedDeliveries.clear()
+    this.returnedPublishes.clear()
+    this.rpcInterruptHandlers.clear()
     if (this.channel) {
       this.channel.off?.('error', this.channelErrorHandler)
       this.channel.off?.('close', this.channelCloseHandler)
@@ -600,7 +928,7 @@ export default class Amqp {
     }
 
     const entry = Amqp.connectionPool.get(key)
-    if (entry) {
+    if (entry?.connection === this.connection) {
       entry.count -= 1
       if (entry.count <= 0) {
         Amqp.connectionPool.delete(key)
@@ -614,9 +942,30 @@ export default class Amqp {
     }
   }
 
+  private async createPooledConnection(
+    key: string,
+    brokerUrl: string,
+    brokerInfo: string,
+  ): Promise<ChannelModel> {
+    const connection = await connect(brokerUrl, { heartbeat: 2 })
+    this.node.log(`Connected to AMQP broker ${brokerInfo}`)
+
+    const entry = { connection, count: 0 }
+    Amqp.connectionPool.set(key, entry)
+    connection.on('close', () => {
+      const current = Amqp.connectionPool.get(key)
+      if (current?.connection === connection) {
+        Amqp.connectionPool.delete(key)
+      }
+    })
+
+    return connection
+  }
+
   private async createChannel(): Promise<Channel> {
     const { prefetch, waitForConfirms } = this.config
 
+    this.trackedDeliveries.clear()
     this.channel = await (waitForConfirms
       ? this.connection.createConfirmChannel()
       : this.connection.createChannel())
@@ -635,9 +984,21 @@ export default class Amqp {
       this.node.log('AMQP Channel closed')
     }
 
-    this.channelReturnHandler = (): void => {
+    this.channelReturnHandler = (message): void => {
       /* istanbul ignore next */
-      this.node.warn('AMQP Message returned')
+      const returnToken = message.properties.headers?.[RETURN_TOKEN_HEADER]
+      const { replyCode, replyText, exchange, routingKey } = message.fields as
+        typeof message.fields & {
+          replyCode: number
+          replyText: string
+        }
+      const returnedError = new Error(
+        `AMQP Message returned (${replyCode} ${replyText}) from ${exchange} with routing key ${routingKey}`,
+      )
+      if (typeof returnToken === 'string') {
+        this.returnedPublishes.set(returnToken, returnedError)
+      }
+      this.node.warn(returnedError.message)
     }
 
     this.channel.on('error', this.channelErrorHandler)
@@ -756,12 +1117,71 @@ export default class Amqp {
 
   private assembleMessage(amqpMessage: ConsumeMessage): AssembledMessage {
     const payload = this.parseJson(amqpMessage.content.toString(), true)
-    ;(amqpMessage as AssembledMessage).payload = payload
-    return amqpMessage as AssembledMessage
+    const msg = amqpMessage as TrackedAssembledMessage
+    msg.payload = payload
+    if (this.isManualAck()) {
+      const token = uuidv4()
+      msg[DELIVERY_TOKEN] = token
+      this.trackedDeliveries.set(token, {
+        message: msg,
+        channel: this.channel,
+        deliveryTag: msg.fields.deliveryTag,
+      })
+    }
+    return msg
   }
 
   private isManualAck(): boolean {
     return this.node.type === NodeType.AmqpInManualAck
+  }
+
+  private resolveDelivery(
+    msg: AssembledMessage,
+    operation: string,
+  ): (TrackedDelivery & { token?: string }) | null {
+    if (!this.isManualAck()) {
+      return {
+        message: msg,
+        channel: this.channel,
+        deliveryTag: msg.fields?.deliveryTag ?? 0,
+      }
+    }
+
+    const token = (msg as TrackedAssembledMessage)[DELIVERY_TOKEN]
+    const delivery = token ? this.trackedDeliveries.get(token) : undefined
+    if (!delivery || delivery.channel !== this.channel) {
+      this.node.error(
+        `Could not ${operation} message: delivery does not belong to the active AMQP channel`,
+      )
+      return null
+    }
+
+    return { ...delivery, token }
+  }
+
+  private removeTrackedDeliveries(
+    delivery: TrackedDelivery & { token?: string },
+    allUpTo: boolean,
+  ): void {
+    if (!this.isManualAck()) {
+      return
+    }
+
+    if (!allUpTo) {
+      if (delivery.token) {
+        this.trackedDeliveries.delete(delivery.token)
+      }
+      return
+    }
+
+    for (const [token, trackedDelivery] of this.trackedDeliveries) {
+      if (
+        trackedDelivery.channel === delivery.channel &&
+        trackedDelivery.deliveryTag <= delivery.deliveryTag
+      ) {
+        this.trackedDeliveries.delete(token)
+      }
+    }
   }
 
   private parseJson(jsonInput: unknown, logError = false): JsonValue {

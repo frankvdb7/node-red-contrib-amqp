@@ -74,11 +74,11 @@ describe('amqp-in-manual-ack Node', () => {
     let ackStub, ackAllStub, nackStub, nackAllStub, rejectStub;
 
     beforeEach(() => {
-      ackStub = sinon.stub(Amqp.prototype, 'ack');
-      ackAllStub = sinon.stub(Amqp.prototype, 'ackAll');
-      nackStub = sinon.stub(Amqp.prototype, 'nack');
-      nackAllStub = sinon.stub(Amqp.prototype, 'nackAll');
-      rejectStub = sinon.stub(Amqp.prototype, 'reject');
+      ackStub = sinon.stub(Amqp.prototype, 'ack').returns(true);
+      ackAllStub = sinon.stub(Amqp.prototype, 'ackAll').returns(true);
+      nackStub = sinon.stub(Amqp.prototype, 'nack').returns(true);
+      nackAllStub = sinon.stub(Amqp.prototype, 'nackAll').returns(true);
+      rejectStub = sinon.stub(Amqp.prototype, 'reject').returns(true);
     });
 
     it('should ack a message by default', done => {
@@ -134,6 +134,41 @@ describe('amqp-in-manual-ack Node', () => {
         done();
       });
     });
+
+    it('calls done with an error when acknowledgement fails', async function () {
+      ackStub.returns(false)
+      sinon
+        .stub(Amqp.prototype, 'connect')
+        .resolves({ on: sinon.stub(), off: sinon.stub() } as any)
+      sinon
+        .stub(Amqp.prototype, 'initialize')
+        .resolves({ on: sinon.stub(), off: sinon.stub() } as any)
+      sinon.stub(Amqp.prototype, 'consume').resolves()
+
+      await helper.load(
+        [amqpInManualAck, amqpBroker],
+        amqpInManualAckFlowFixture,
+        credentialsFixture,
+      )
+
+      const n1 = helper.getNode('n1')
+      const callErrors: unknown[] = []
+      n1.on('call:error', call => {
+        callErrors.push(call.args[0])
+      })
+
+      n1.receive({
+        payload: 'test',
+        manualAck: { ackMode: ManualAckType.Ack },
+      })
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      expect(ackStub.calledOnce).to.be.true
+      const doneError = callErrors.find(
+        argument => argument instanceof Error,
+      ) as Error | undefined
+      expect(doneError).to.not.equal(undefined)
+    })
   });
 
   it('tries to connect but the broker is down', function (done) {
@@ -416,6 +451,39 @@ describe('amqp-in-manual-ack Node', () => {
       expect(nackStub.notCalled).to.be.true
       done()
     })
+  })
+
+  it('acknowledges an AMQP delivery whose business payload contains reconnectCall', async function () {
+    const ackStub = sinon.stub(Amqp.prototype, 'ack').returns(true)
+    const connectionMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'consume').resolves()
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
+
+    await helper.load(
+      [amqpInManualAck, amqpBroker],
+      amqpInManualAckFlowFixture,
+      credentialsFixture,
+    )
+
+    const node = helper.getNode('n1')
+    node.receive({
+      payload: { reconnectCall: true, orderId: 'order-42' },
+      fields: { deliveryTag: 42 },
+      properties: {},
+      content: Buffer.from('{"reconnectCall":true,"orderId":"order-42"}'),
+      manualAck: { ackMode: ManualAckType.Ack },
+    })
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(ackStub.calledOnce).to.be.true
+    expect(closeStub.called).to.be.false
   })
 
   it('removes channel close listener on node close', async function () {
@@ -1024,6 +1092,49 @@ describe('amqp-in-manual-ack Node', () => {
       expect(connectStub.callCount).to.equal(2)
 
       await clock.tickAsync(2000)
+      expect(connectStub.callCount).to.equal(3)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('keeps retrying after broker-close recovery fails with reconnectOnError disabled', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const initialConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub(),
+      }
+      const recoveredConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub(),
+      }
+      const channelMock = { on: sinon.stub(), off: sinon.stub() }
+      const connectStub = sinon.stub(Amqp.prototype, 'connect')
+      connectStub.onFirstCall().resolves(initialConnection as any)
+      connectStub
+        .onSecondCall()
+        .rejects(new Error('broker is still restarting'))
+      connectStub.onThirdCall().resolves(recoveredConnection as any)
+      sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+      sinon.stub(Amqp.prototype, 'consume').resolves()
+      sinon.stub(Amqp.prototype, 'close').resolves()
+
+      const flow = JSON.parse(JSON.stringify(amqpInManualAckFlowFixture))
+      flow[0].reconnectOnError = false
+
+      await helper.load([amqpInManualAck, amqpBroker], flow, credentialsFixture)
+      const onConnectionClose = initialConnection.on
+        .withArgs('close')
+        .getCall(0).args[1]
+
+      await onConnectionClose()
+      await clock.tickAsync(2001)
+      expect(connectStub.callCount).to.equal(2)
+
+      await clock.tickAsync(4001)
       expect(connectStub.callCount).to.equal(3)
     } finally {
       clock.restore()

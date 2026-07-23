@@ -5,13 +5,14 @@ const { expect } = require('chai')
 const { NODE_STATUS } = require('../src/constants')
 const sinon = require('sinon')
 const amqplib = require('amqplib')
+const { util: redUtil } = require('@node-red/util')
 const Amqp = require('../src/Amqp').default
 const {
   nodeConfigFixture,
   nodeFixture,
   brokerConfigFixture,
 } = require('./doubles')
-const { ExchangeType, DefaultExchangeName } = require('../src/types')
+const { ExchangeType, DefaultExchangeName, NodeType } = require('../src/types')
 import type { GenericJsonObject, BrokerConfig } from '../src/types'
 
 let RED: any
@@ -334,6 +335,238 @@ describe('Amqp Class', () => {
 
     await amqp2.close()
     expect(connectionStub.close.calledOnce).to.be.true
+  })
+
+  it('shares one connection when instances connect concurrently for the same vhost', async () => {
+    let releaseConnect: () => void = () => undefined
+    const connectPending = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+    const connectionStub = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+      connection: { stream: { destroyed: false } },
+    }
+    const connectStub = sinon.stub(amqplib, 'connect').callsFake(async () => {
+      await connectPending
+      return connectionStub as any
+    })
+    const broker = { ...brokerConfigFixture, vhost: 'vh1' }
+    RED.nodes.getNode.returns(broker)
+
+    const amqp1: any = new Amqp(
+      RED,
+      { ...nodeFixture, id: 'n1' },
+      nodeConfigFixture,
+    )
+    const amqp2: any = new Amqp(
+      RED,
+      { ...nodeFixture, id: 'n2' },
+      nodeConfigFixture,
+    )
+
+    const firstConnection = amqp1.connect()
+    const secondConnection = amqp2.connect()
+    await Promise.resolve()
+    releaseConnect()
+
+    const connections = await Promise.all([firstConnection, secondConnection])
+    const poolEntry = (Amqp as any).connectionPool.get('b1:vh1')
+
+    expect(connectStub.calledOnce).to.be.true
+    expect(connections).to.deep.equal([connectionStub, connectionStub])
+    expect(poolEntry.connection).to.equal(connectionStub)
+    expect(poolEntry.count).to.equal(2)
+
+    await amqp1.close()
+    expect(connectionStub.close.called).to.be.false
+
+    await amqp2.close()
+    expect(connectionStub.close.calledOnce).to.be.true
+  })
+
+  it('shares one connection but uses separate channels for manual-ack input and output instances', async () => {
+    const manualAckChannel = {
+      prefetch: sinon.stub(),
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+    const outputChannel = {
+      prefetch: sinon.stub(),
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+    const createChannelStub = sinon.stub()
+    createChannelStub.onFirstCall().resolves(manualAckChannel)
+    createChannelStub.onSecondCall().resolves(outputChannel)
+    const connectionStub = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+      createChannel: createChannelStub,
+      connection: { stream: { destroyed: false } },
+    }
+    const connectStub = sinon
+      .stub(amqplib, 'connect')
+      .resolves(connectionStub as any)
+    const manualAckAmqp: any = new Amqp(
+      RED,
+      {
+        ...nodeFixture,
+        id: 'manual-in',
+        type: NodeType.AmqpInManualAck,
+      },
+      nodeConfigFixture,
+    )
+    const outputAmqp: any = new Amqp(
+      RED,
+      {
+        ...nodeFixture,
+        id: 'out',
+        type: NodeType.AmqpOut,
+      },
+      nodeConfigFixture,
+    )
+
+    await Promise.all([manualAckAmqp.connect(), outputAmqp.connect()])
+    const channels = await Promise.all([
+      manualAckAmqp.initialize(),
+      outputAmqp.initialize(),
+    ])
+
+    expect(connectStub.calledOnce).to.be.true
+    expect(channels).to.deep.equal([manualAckChannel, outputChannel])
+    expect(createChannelStub.calledTwice).to.be.true
+
+    await manualAckAmqp.close()
+    expect(manualAckChannel.close.calledOnce).to.be.true
+    expect(outputChannel.close.called).to.be.false
+    expect(connectionStub.close.called).to.be.false
+
+    await outputAmqp.close()
+    expect(outputChannel.close.calledOnce).to.be.true
+    expect(connectionStub.close.calledOnce).to.be.true
+  })
+
+  it('acknowledges the original delivery after Node-RED clones the message', () => {
+    const node = {
+      ...nodeFixture,
+      id: 'manual-in',
+      type: NodeType.AmqpInManualAck,
+      error: sinon.stub(),
+    }
+    const manualAckAmqp: any = new Amqp(RED, node, nodeConfigFixture)
+    const channel = { ack: sinon.stub() }
+    manualAckAmqp.channel = channel
+    const delivery = manualAckAmqp.assembleMessage({
+      content: Buffer.from('payload'),
+      fields: { deliveryTag: 42 },
+      properties: {},
+    })
+    const clonedDelivery = redUtil.cloneMessage(delivery)
+
+    manualAckAmqp.ack(clonedDelivery)
+
+    expect(clonedDelivery).to.not.equal(delivery)
+    expect(channel.ack.calledOnceWith(delivery, false)).to.be.true
+  })
+
+  it('does not settle a pre-restart delivery on the replacement channel', () => {
+    const node = {
+      ...nodeFixture,
+      id: 'manual-in',
+      type: NodeType.AmqpInManualAck,
+      error: sinon.stub(),
+    }
+    const manualAckAmqp: any = new Amqp(RED, node, nodeConfigFixture)
+    const originalChannel = {
+      ack: sinon.stub(),
+      ackAll: sinon.stub(),
+      nack: sinon.stub(),
+      nackAll: sinon.stub(),
+      reject: sinon.stub(),
+    }
+    const replacementChannel = {
+      ack: sinon.stub(),
+      ackAll: sinon.stub(),
+      nack: sinon.stub(),
+      nackAll: sinon.stub(),
+      reject: sinon.stub(),
+    }
+    manualAckAmqp.channel = originalChannel
+    const delivery = manualAckAmqp.assembleMessage({
+      content: Buffer.from('payload'),
+      fields: { deliveryTag: 42 },
+      properties: {},
+    })
+
+    manualAckAmqp.channel = replacementChannel
+    manualAckAmqp.ack(delivery)
+    manualAckAmqp.ackAll(delivery)
+    manualAckAmqp.nack(delivery)
+    manualAckAmqp.nackAll(delivery)
+    manualAckAmqp.reject(delivery)
+
+    expect(originalChannel.ack.called).to.be.false
+    expect(originalChannel.ackAll.called).to.be.false
+    expect(originalChannel.nack.called).to.be.false
+    expect(originalChannel.nackAll.called).to.be.false
+    expect(originalChannel.reject.called).to.be.false
+    expect(replacementChannel.ack.called).to.be.false
+    expect(replacementChannel.ackAll.called).to.be.false
+    expect(replacementChannel.nack.called).to.be.false
+    expect(replacementChannel.nackAll.called).to.be.false
+    expect(replacementChannel.reject.called).to.be.false
+  })
+
+  it('does not acknowledge the same manual delivery twice', () => {
+    const node = {
+      ...nodeFixture,
+      id: 'manual-in',
+      type: NodeType.AmqpInManualAck,
+      error: sinon.stub(),
+    }
+    const manualAckAmqp: any = new Amqp(RED, node, nodeConfigFixture)
+    const channel = { ack: sinon.stub() }
+    manualAckAmqp.channel = channel
+    const delivery = manualAckAmqp.assembleMessage({
+      content: Buffer.from('payload'),
+      fields: { deliveryTag: 42 },
+      properties: {},
+    })
+
+    manualAckAmqp.ack(delivery)
+    manualAckAmqp.ack(delivery)
+
+    expect(channel.ack.calledOnce).to.be.true
+    expect(node.error.calledWithMatch('active AMQP channel')).to.be.true
+  })
+
+  it('reports a failed manual acknowledgement when the channel rejects it', () => {
+    const node = {
+      ...nodeFixture,
+      id: 'manual-in',
+      type: NodeType.AmqpInManualAck,
+      error: sinon.stub(),
+    }
+    const manualAckAmqp: any = new Amqp(RED, node, nodeConfigFixture)
+    const channel = {
+      ack: sinon.stub().throws(new Error('channel is closed')),
+    }
+    manualAckAmqp.channel = channel
+    const delivery = manualAckAmqp.assembleMessage({
+      content: Buffer.from('payload'),
+      fields: { deliveryTag: 42 },
+      properties: {},
+    })
+
+    const acknowledged = manualAckAmqp.ack(delivery)
+
+    expect(acknowledged).to.equal(false)
+    expect(node.error.calledWithMatch('channel is closed')).to.be.true
   })
 
   it('does not reuse a dead pooled connection', async () => {
@@ -812,6 +1045,127 @@ describe('Amqp Class', () => {
       expect(waitForConfirmsStub.calledOnce).to.equal(true)
     })
 
+    it('waits for channel drain when publish applies backpressure', async () => {
+      const { EventEmitter } = require('events')
+      const channel = new EventEmitter()
+      channel.publish = sinon.stub().returns(false)
+      amqp.channel = channel
+
+      let completed = false
+      const publishPromise = amqp.publish('a message').then(() => {
+        completed = true
+      })
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(completed).to.equal(false)
+
+      channel.emit('drain')
+      await publishPromise
+      expect(completed).to.equal(true)
+    })
+
+    it('rejects a confirmed publish when the broker returns a mandatory message', async () => {
+      const events: Record<string, (message?: unknown) => void> = {}
+      let releaseConfirm: () => void = () => undefined
+      const confirmPending = new Promise<void>(resolve => {
+        releaseConfirm = resolve
+      })
+      const channel = {
+        on: sinon.stub().callsFake(
+          (event: string, callback: (message?: unknown) => void) => {
+            events[event] = callback
+          },
+        ),
+        prefetch: sinon.stub().resolves(),
+        publish: sinon.stub().returns(true),
+        waitForConfirms: sinon.stub().returns(confirmPending),
+      }
+      amqp.connection = {
+        createConfirmChannel: sinon.stub().resolves(channel),
+      }
+      amqp.config.waitForConfirms = true
+      await amqp.initialize()
+
+      const publishResult = amqp
+        .publish('a message', {
+          mandatory: true,
+          messageId: 'returned-message',
+        })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        )
+      await Promise.resolve()
+
+      const publishedOptions = channel.publish.firstCall.args[3]
+      events.return({
+        fields: {
+          replyCode: 312,
+          replyText: 'NO_ROUTE',
+          exchange: 'events',
+          routingKey: 'missing.route',
+        },
+        properties: publishedOptions,
+        content: Buffer.from('a message'),
+      })
+      releaseConfirm()
+
+      const publishError = await publishResult
+      expect(publishError).to.be.instanceOf(Error)
+    })
+
+    it('reports successful and failed routing keys after partial mandatory delivery', async () => {
+      const events: Record<string, (message?: unknown) => void> = {}
+      const channel = {
+        on: sinon.stub().callsFake(
+          (event: string, callback: (message?: unknown) => void) => {
+            events[event] = callback
+          },
+        ),
+        prefetch: sinon.stub().resolves(),
+        publish: sinon.stub().callsFake(
+          (
+            exchange: string,
+            routingKey: string,
+            content: Buffer,
+            options: unknown,
+          ) => {
+            if (routingKey === 'route.missing') {
+              events.return({
+                fields: {
+                  replyCode: 312,
+                  replyText: 'NO_ROUTE',
+                  exchange,
+                  routingKey,
+                },
+                properties: options,
+                content,
+              })
+            }
+            return true
+          },
+        ),
+        waitForConfirms: sinon.stub().resolves(),
+      }
+      amqp.connection = {
+        createConfirmChannel: sinon.stub().resolves(channel),
+      }
+      amqp.config.exchange.routingKey = 'route.ok,route.missing'
+      amqp.config.waitForConfirms = true
+      await amqp.initialize()
+
+      const publishError = await amqp
+        .publish('a message', { mandatory: true })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        )
+
+      expect(publishError).to.be.instanceOf(Error)
+      expect(publishError.successfulRoutingKeys).to.deep.equal(['route.ok'])
+      expect(publishError.failedRoutingKeys).to.deep.equal(['route.missing'])
+    })
+
     it('tries to publish an invalid message', async () => {
       const publishStub = sinon.stub().throws()
       const errorStub = sinon.stub()
@@ -1207,7 +1561,15 @@ describe('Amqp Class', () => {
     await amqp.createChannel()
 
     events['close']()
-    events['return']()
+    events['return']({
+      fields: {
+        replyCode: 312,
+        replyText: 'NO_ROUTE',
+        exchange: 'events',
+        routingKey: 'missing.route',
+      },
+      properties: { headers: {} },
+    })
     events['error']('oops')
 
     expect(logStub.calledWithMatch('AMQP Channel closed')).to.be.true
@@ -1586,6 +1948,141 @@ describe('Amqp Class', () => {
         expect(deleteQueueStub.calledOnce).to.be.true;
     });
 
+    it('does not lose concurrent RPC responses that share a reply queue', async () => {
+        const sendStub = sinon.stub();
+        const deleteQueueStub = sinon.stub().resolves();
+        const assertQueueStub = sinon.stub().resolves('shared-reply-queue');
+        const consumeCallbacks: Array<(message: unknown) => void> = [];
+        const consumeStub = sinon.stub().callsFake((queue, callback) => {
+            consumeCallbacks.push(callback);
+            return Promise.resolve({ consumerTag: `consumer-${consumeCallbacks.length}` });
+        });
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub() };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            publish: sinon.stub(),
+        };
+        amqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+
+        await Promise.all([
+            amqp.publish('request-one', {
+                correlationId: 'correlation-one',
+                replyTo: 'shared-reply-queue',
+            }),
+            amqp.publish('request-two', {
+                correlationId: 'correlation-two',
+                replyTo: 'shared-reply-queue',
+            }),
+        ]);
+
+        expect(consumeStub.calledOnce).to.equal(true);
+
+        const sharedConsumer = consumeCallbacks[0];
+        sharedConsumer({
+            fields: { deliveryTag: 1 },
+            properties: { correlationId: 'correlation-two' },
+            content: Buffer.from('{"response":2}'),
+        });
+        sharedConsumer({
+            fields: { deliveryTag: 2 },
+            properties: { correlationId: 'correlation-one' },
+            content: Buffer.from('{"response":1}'),
+        });
+        await Promise.resolve();
+
+        expect(sendStub.callCount).to.equal(2);
+        expect(sendStub.getCalls().map(call => call.args[0].payload)).to.deep.equal([
+            { response: 2 },
+            { response: 1 },
+        ]);
+    });
+
+    it('does not lose RPC responses when separate instances share a reply queue', async () => {
+        const firstSendStub = sinon.stub();
+        const secondSendStub = sinon.stub();
+        const firstCallbacks: Array<(message: unknown) => void> = [];
+        const secondCallbacks: Array<(message: unknown) => void> = [];
+        const firstDeleteQueueStub = sinon.stub().resolves();
+        const secondDeleteQueueStub = sinon.stub().resolves();
+        const sharedConnection = {};
+
+        const secondAmqp: any = new Amqp(
+            RED,
+            { ...nodeFixture, id: 'rpc-node-two', send: secondSendStub, error: sinon.stub() },
+            nodeConfigFixture,
+        );
+        amqp.node = {
+            ...nodeFixture,
+            id: 'rpc-node-one',
+            send: firstSendStub,
+            error: sinon.stub(),
+        };
+        amqp.connection = sharedConnection;
+        secondAmqp.connection = sharedConnection;
+        amqp.channel = {
+            assertQueue: sinon.stub().resolves('shared-reply-queue'),
+            consume: sinon.stub().callsFake((queue, callback) => {
+                firstCallbacks.push(callback);
+                return Promise.resolve({ consumerTag: 'consumer-one' });
+            }),
+            deleteQueue: firstDeleteQueueStub,
+            publish: sinon.stub(),
+        };
+        secondAmqp.channel = {
+            assertQueue: sinon.stub().resolves('shared-reply-queue'),
+            consume: sinon.stub().callsFake((queue, callback) => {
+                secondCallbacks.push(callback);
+                return Promise.resolve({ consumerTag: 'consumer-two' });
+            }),
+            deleteQueue: secondDeleteQueueStub,
+            publish: sinon.stub(),
+        };
+        amqp.config.outputs = 1;
+        secondAmqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+        secondAmqp.config.rpcTimeout = 1000;
+
+        await Promise.all([
+            amqp.publish('request-one', {
+                correlationId: 'correlation-one',
+                replyTo: 'shared-reply-queue',
+            }),
+            secondAmqp.publish('request-two', {
+                correlationId: 'correlation-two',
+                replyTo: 'shared-reply-queue',
+            }),
+        ]);
+
+        const brokerSelectedConsumer = firstCallbacks[0];
+        brokerSelectedConsumer({
+            fields: { deliveryTag: 1 },
+            properties: { correlationId: 'correlation-one' },
+            content: Buffer.from('{"response":1}'),
+        });
+        await Promise.resolve();
+
+        expect(firstDeleteQueueStub.called).to.equal(false);
+        expect(secondDeleteQueueStub.called).to.equal(false);
+
+        brokerSelectedConsumer({
+            fields: { deliveryTag: 2 },
+            properties: { correlationId: 'correlation-two' },
+            content: Buffer.from('{"response":2}'),
+        });
+        await Promise.resolve();
+
+        expect(firstSendStub.calledOnce).to.equal(true);
+        expect(secondSendStub.calledOnce).to.equal(true);
+        expect(secondSendStub.firstCall.args[0].payload).to.deep.equal({
+            response: 2,
+        });
+        expect(secondCallbacks).to.have.length(0);
+    });
+
     it('handles error when deleting queue on timeout', async () => {
         const sendStub = sinon.stub();
         const deleteQueueStub = sinon.stub().rejects(new Error('delete failed'));
@@ -1727,6 +2224,39 @@ describe('Amqp Class', () => {
 
         expect(sendStub.called).to.be.false;
         expect(deleteQueueStub.called).to.be.false;
+    });
+
+    it('reports an in-flight RPC as failed when reconnect closes its channel', async () => {
+        const sendStub = sinon.stub();
+        const poolConnection = {
+            close: sinon.stub().resolves(),
+            off: sinon.stub(),
+        };
+
+        sinon.stub(amqp, 'assertQueue').resolves('rpc-queue');
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub(), status: sinon.stub() };
+        amqp.channel = {
+            consume: sinon.stub().resolves({ consumerTag: 'rpc-consumer' }),
+            deleteQueue: sinon.stub().resolves(),
+            publish: sinon.stub(),
+            off: sinon.stub(),
+            close: sinon.stub().resolves(),
+        };
+        amqp.connection = poolConnection;
+        amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1' };
+        (Amqp as any).connectionPool.set('b1:vh1', { connection: poolConnection, count: 1 });
+
+        amqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+
+        await amqp.publish('a message');
+        await amqp.close(new Error('AMQP connection lost during RPC'));
+
+        expect(sendStub.calledOnce).to.be.true;
+        expect(sendStub.firstCall.args[0].payload.message).to.match(
+            /connection lost|interrupted/i,
+        );
     });
 
     it('handles error during RPC setup', async () => {
