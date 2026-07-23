@@ -650,7 +650,7 @@ describe('amqp-in Node', () => {
     sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
     sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
     sinon.stub(Amqp.prototype, 'consume').resolves()
-    sinon.stub(Amqp.prototype, 'close').resolves()
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
     const removeBrokerNodeStateStub = sinon.stub(Amqp.prototype, 'removeBrokerNodeState')
 
     await helper.load(
@@ -661,6 +661,7 @@ describe('amqp-in Node', () => {
     const amqpInNode = helper.getNode('n1')
     await amqpInNode.close(true)
 
+    expect(closeStub.calledOnceWith({ removeBindings: true })).to.be.true
     expect(removeBrokerNodeStateStub.calledOnce).to.be.true
   })
 

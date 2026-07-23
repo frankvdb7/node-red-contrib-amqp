@@ -133,7 +133,7 @@ module.exports = function (RED: NodeRedApp): void {
       removeEventListeners()
       let closeError: unknown
       try {
-        await amqp.close()
+        await amqp.close(removed ? { removeBindings: true } : undefined)
       } catch (e) {
         closeError = e
       } finally {

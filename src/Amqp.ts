@@ -61,6 +61,11 @@ interface RpcConsumerState {
   users: Set<Amqp>
 }
 
+interface AmqpCloseOptions {
+  interruption?: Error
+  removeBindings?: boolean
+}
+
 export default class Amqp {
   private config: AmqpConfig
   private broker: AmqpBrokerNode
@@ -85,6 +90,7 @@ export default class Amqp {
   private returnedPublishes: Map<string, Error> = new Map()
   private trackedDeliveries: Map<string, TrackedDelivery> = new Map()
   private closed = false
+  private lifecycleVersion = 0
 
   constructor(
     private readonly RED: NodeRedApp,
@@ -400,8 +406,9 @@ export default class Amqp {
   public async publish(
     msg: unknown,
     properties?: Options.Publish,
+    routingKey?: string,
   ): Promise<void> {
-    const routingKeys = this.parseRoutingKeys()
+    const routingKeys = this.parseRoutingKeys(routingKey)
     const results = await Promise.allSettled(
       routingKeys.map(routingKey =>
         this.handlePublish(this.config, msg, properties, routingKey),
@@ -479,12 +486,7 @@ export default class Amqp {
         ...properties,
       }
       const mandatory = options.mandatory
-      if (mandatory) {
-        if (!config.waitForConfirms) {
-          throw new Error(
-            'Mandatory publishing requires publisher confirmations',
-          )
-        }
+      if (mandatory && config.waitForConfirms) {
         returnToken = uuidv4()
         options.headers = {
           ...options.headers,
@@ -493,18 +495,36 @@ export default class Amqp {
       }
       // when the name field is empty, publish just like the sendToQueue method;
       // see https://amqp-node.github.io/amqplib/channel_api.html#channel_publish
-      const accepted = this.channel.publish(
-        name,
-        routingKey,
-        this.toPublishBuffer(msg),
-        options,
-      )
-      if (accepted === false) {
-        await this.waitForChannelDrain(this.channel)
-      }
-
+      const content = this.toPublishBuffer(msg)
+      let accepted: boolean
+      let confirmation: Promise<void> | null = null
       if (config.waitForConfirms) {
-        await (this.channel as ConfirmChannel).waitForConfirms()
+        confirmation = new Promise<void>((resolve, reject) => {
+          accepted = (this.channel as ConfirmChannel).publish(
+            name,
+            routingKey,
+            content,
+            options,
+            error => {
+              if (error) {
+                reject(error)
+                return
+              }
+              resolve()
+            },
+          )
+        })
+      } else {
+        accepted = this.channel.publish(name, routingKey, content, options)
+      }
+      const drain =
+        accepted === false ? this.waitForChannelDrain(this.channel) : null
+      if (confirmation && drain) {
+        await Promise.all([confirmation, drain])
+      } else if (confirmation) {
+        await confirmation
+      } else if (drain) {
+        await drain
       }
       if (returnToken) {
         const returnedError = this.returnedPublishes.get(returnToken)
@@ -858,11 +878,16 @@ export default class Amqp {
     })
   }
 
-  public async close(interruption?: Error): Promise<void> {
+  public async close(options?: Error | AmqpCloseOptions): Promise<void> {
     if (this.closed) {
       return
     }
+    const interruption =
+      options instanceof Error ? options : options?.interruption
+    const removeBindings =
+      !(options instanceof Error) && options?.removeBindings === true
     this.closed = true
+    this.lifecycleVersion += 1
     if (interruption) {
       for (const interruptRpc of [...this.rpcInterruptHandlers]) {
         interruptRpc(interruption)
@@ -871,16 +896,20 @@ export default class Amqp {
     await this.detachRpcConsumers(interruption)
     this.clearRpcTimeouts()
 
-    await this.unbindQueues()
+    await this.unbindQueues(removeBindings)
     await this.closeChannel()
     await this.releaseConnection()
   }
 
-  private async unbindQueues(): Promise<void> {
+  private async unbindQueues(removeBindings = false): Promise<void> {
     const { name: exchangeName } = this.config.exchange
     const queueName = this.q?.queue
 
-    if (exchangeName && queueName && this.shouldUnbindQueueOnClose()) {
+    if (
+      exchangeName &&
+      queueName &&
+      this.shouldUnbindQueueOnClose(removeBindings)
+    ) {
       const routingKeys = this.parseRoutingKeys()
       for (const routingKey of routingKeys) {
         try {
@@ -893,12 +922,15 @@ export default class Amqp {
     }
   }
 
-  private shouldUnbindQueueOnClose(): boolean {
+  private shouldUnbindQueueOnClose(removeBindings: boolean): boolean {
     const { name, exclusive, autoDelete } = this.config.queue
 
     // Keep bindings for long-lived queues so reconnects don't temporarily
     // remove routes and drop unroutable messages in-flight.
-    return this.shouldAutoCreateExchangeBindings() && (!name || exclusive || autoDelete)
+    return (
+      this.shouldAutoCreateExchangeBindings() &&
+      (removeBindings || !name || exclusive || autoDelete)
+    )
   }
 
   private shouldAutoCreateExchangeBindings(configParams?: AmqpConfig): boolean {
@@ -976,12 +1008,23 @@ export default class Amqp {
 
   private async createChannel(): Promise<Channel> {
     const { prefetch, waitForConfirms } = this.config
+    const lifecycleVersion = this.lifecycleVersion
 
     this.trackedDeliveries.clear()
-    this.channel = await (waitForConfirms
+    const channel = await (waitForConfirms
       ? this.connection.createConfirmChannel()
       : this.connection.createChannel())
-    this.channel.prefetch(Number(prefetch))
+    if (this.closed || lifecycleVersion !== this.lifecycleVersion) {
+      try {
+        await channel.close()
+      } catch (error) {
+        this.node.error(`Error closing stale AMQP channel: ${error}`)
+      }
+      throw new Error('AMQP channel creation completed after resources were closed')
+    }
+
+    this.channel = channel
+    channel.prefetch(Number(prefetch))
 
     this.channelErrorHandler = (e): void => {
       /* istanbul ignore next */
@@ -1013,11 +1056,11 @@ export default class Amqp {
       this.node.warn(returnedError.message)
     }
 
-    this.channel.on('error', this.channelErrorHandler)
-    this.channel.on('close', this.channelCloseHandler)
-    this.channel.on('return', this.channelReturnHandler)
+    channel.on('error', this.channelErrorHandler)
+    channel.on('close', this.channelCloseHandler)
+    channel.on('return', this.channelReturnHandler)
 
-    return this.channel;
+    return channel;
   }
 
   private async assertExchange(): Promise<void> {

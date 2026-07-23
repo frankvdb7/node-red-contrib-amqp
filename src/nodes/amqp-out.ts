@@ -37,7 +37,8 @@ module.exports = function (RED: NodeRedApp): void {
     let isShuttingDown = false
     let initializationVersion = 0
     let initializationPromise: Promise<void> | null = null
-    let inputSequence: Promise<void> = Promise.resolve()
+    let vhostSequence: Promise<void> = Promise.resolve()
+    const activePublishes = new Set<Promise<void>>()
     let connection: ChannelModel | null = null
     let channel: Channel | null = null
     let onConnClose: (e: unknown) => Promise<void>
@@ -197,6 +198,7 @@ module.exports = function (RED: NodeRedApp): void {
         exchangeRoutingKeyType,
         amqpProperties,
       } = config
+      let resolvedRoutingKey = exchangeRoutingKey
 
       // message properties override config properties
       let properties: Options.Publish
@@ -214,7 +216,7 @@ module.exports = function (RED: NodeRedApp): void {
         case 'flow':
         case 'global':
           try {
-            amqp.setRoutingKey(
+            resolvedRoutingKey = String(
               RED.util.evaluateNodeProperty(
                 exchangeRoutingKey,
                 exchangeRoutingKeyType,
@@ -251,7 +253,7 @@ module.exports = function (RED: NodeRedApp): void {
               )
             }
 
-            amqp.setRoutingKey(String(result))
+            resolvedRoutingKey = String(result)
           } catch (err) {
             this.error(`Failed to evaluate JSONata expression: ${err}`)
             done && done(toError(err))
@@ -261,8 +263,7 @@ module.exports = function (RED: NodeRedApp): void {
         }
         case 'str':
         default:
-          // A message routing key is an override for this message only.
-          amqp.setRoutingKey(routingKey ?? exchangeRoutingKey)
+          resolvedRoutingKey = routingKey ?? exchangeRoutingKey
           break
       }
 
@@ -296,7 +297,7 @@ module.exports = function (RED: NodeRedApp): void {
       }
 
       try {
-        await amqp.publish(payload, properties)
+        await amqp.publish(payload, properties, resolvedRoutingKey)
       } catch (e) {
         done && done(toError(e))
         return
@@ -310,10 +311,27 @@ module.exports = function (RED: NodeRedApp): void {
       send: unknown,
       done?: (err?: Error) => void,
     ): void => {
-      const operation = inputSequence.then(() => processInput(msg, send, done))
-      inputSequence = operation.catch(error => {
-        done && done(toError(error))
-      })
+      if (msg.vhost) {
+        const precedingPublishes = [...activePublishes]
+        const operation = vhostSequence.then(async () => {
+          await Promise.allSettled(precedingPublishes)
+          await processInput(msg, send, done)
+        })
+        vhostSequence = operation.catch(error => {
+          done && done(toError(error))
+        })
+        return
+      }
+
+      const operation = vhostSequence.then(() => processInput(msg, send, done))
+      activePublishes.add(operation)
+      void operation
+        .finally(() => {
+          activePublishes.delete(operation)
+        })
+        .catch(error => {
+          done && done(toError(error))
+        })
     }
 
     this.on('input', inputListener)
@@ -327,7 +345,7 @@ module.exports = function (RED: NodeRedApp): void {
       removeEventListeners()
       let closeError: unknown
       try {
-        await amqp.close()
+        await amqp.close(removed ? { removeBindings: true } : undefined)
       } catch (e) {
         closeError = e
       } finally {

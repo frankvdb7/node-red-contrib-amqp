@@ -164,8 +164,7 @@ describe('amqp-out Node', () => {
   });
 
   it('should handle dynamic routing key from `flow` context', async function () {
-    const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
-    sinon.stub(Amqp.prototype, 'publish');
+    const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
     sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
@@ -184,14 +183,17 @@ describe('amqp-out Node', () => {
     flowContext.set('myFlowVar', 'flow_routing_key');
     await amqpOutNode.receive({ payload: 'foo' });
 
-    expect(setRoutingKeyStub.calledWith('flow_routing_key')).to.be.true;
+    expect(publishStub.calledWith(
+      'foo',
+      sinon.match.any,
+      'flow_routing_key',
+    )).to.be.true;
   });
 
   it('should handle dynamic routing key from `global` context', function (done) {
-    const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
 
-    const flowFixture = [...amqpOutFlowFixture];
+    const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
     flowFixture[0].exchangeRoutingKeyType = 'global';
     flowFixture[0].exchangeRoutingKey = 'myGlobalVar';
 
@@ -201,16 +203,17 @@ describe('amqp-out Node', () => {
       amqpOutNode.receive({ payload: 'foo' });
 
       setTimeout(() => {
-        expect(setRoutingKeyStub.calledWith('global_routing_key')).to.be.true;
+        expect(publishStub.calledWith(
+          'foo',
+          sinon.match.any,
+          'global_routing_key',
+        )).to.be.true;
         done();
       }, 50);
     });
   });
 
   it('calls done with error when routing key evaluation path throws', async function () {
-    const setRoutingKeyStub = sinon
-      .stub(Amqp.prototype, 'setRoutingKey')
-      .throws(new Error('routing key evaluation failed'));
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
     const channelMock = { on: sinon.stub(), off: sinon.stub() };
@@ -222,6 +225,9 @@ describe('amqp-out Node', () => {
     flowFixture[0].exchangeRoutingKey = 'routingKey';
 
     await helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture);
+    sinon
+      .stub(helper._RED.util, 'evaluateNodeProperty')
+      .throws(new Error('routing key evaluation failed'));
     const amqpOutNode = helper.getNode('n1');
     const callErrors: unknown[] = [];
     amqpOutNode.on('call:error', call => {
@@ -234,14 +240,13 @@ describe('amqp-out Node', () => {
     const doneError = callErrors.find(arg => arg instanceof Error) as Error | undefined;
     expect(doneError).to.not.equal(undefined);
     expect(doneError?.message).to.match(/routing key evaluation failed/i);
-    expect(setRoutingKeyStub.calledOnce).to.be.true;
     expect(publishStub.notCalled).to.be.true;
   });
 
   it('passes object payload to publish without pre-serializing', function (done) {
     const payload = { data: 'test' }
     const publishStub = sinon.stub(Amqp.prototype, 'publish')
-    const flowFixture = [...amqpOutFlowFixture]
+    const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture))
 
     helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, function () {
       const amqpOutNode = helper.getNode('n1')
@@ -257,7 +262,7 @@ describe('amqp-out Node', () => {
   it('passes string payload to publish without JSON stringifying', function (done) {
     const payload = 'hello'
     const publishStub = sinon.stub(Amqp.prototype, 'publish')
-    const flowFixture = [...amqpOutFlowFixture]
+    const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture))
 
     helper.load([amqpOut, amqpBroker], flowFixture, credentialsFixture, function () {
       const amqpOutNode = helper.getNode('n1')
@@ -268,6 +273,91 @@ describe('amqp-out Node', () => {
         done()
       }, 50)
     })
+  })
+
+  it('publishes ordinary messages concurrently', async function () {
+    const connectionMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const channelMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+    }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+
+    let releaseFirstPublish: () => void = () => undefined
+    const firstPublishPending = new Promise<void>(resolve => {
+      releaseFirstPublish = resolve
+    })
+    const publishStub = sinon
+      .stub(Amqp.prototype, 'publish')
+      .callsFake((payload: unknown) =>
+        payload === 'first' ? firstPublishPending : Promise.resolve(),
+      )
+
+    await helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+    )
+    const node = helper.getNode('n1')
+
+    node.receive({ payload: 'first' })
+    node.receive({ payload: 'second' })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const callsBeforeFirstConfirm = publishStub.callCount
+
+    releaseFirstPublish()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(callsBeforeFirstConfirm).to.equal(2)
+  })
+
+  it('publishes concurrent routing-key overrides as immutable arguments', async function () {
+    const connectionMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const channelMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+    }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+
+    let releaseFirstPublish: () => void = () => undefined
+    const firstPublishPending = new Promise<void>(resolve => {
+      releaseFirstPublish = resolve
+    })
+    const publishStub = sinon
+      .stub(Amqp.prototype, 'publish')
+      .callsFake((payload: unknown) =>
+        payload === 'first' ? firstPublishPending : Promise.resolve(),
+      )
+
+    const flow = JSON.parse(JSON.stringify(amqpOutFlowFixture))
+    flow[0].exchangeRoutingKey = 'configured.route'
+    flow[0].exchangeRoutingKeyType = 'str'
+    await helper.load([amqpOut, amqpBroker], flow, credentialsFixture)
+    const node = helper.getNode('n1')
+
+    node.receive({ payload: 'first', routingKey: 'route.first' })
+    node.receive({ payload: 'second', routingKey: 'route.second' })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const callsBeforeFirstConfirm = publishStub.callCount
+
+    releaseFirstPublish()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(callsBeforeFirstConfirm).to.equal(2)
+    expect(publishStub.getCalls().map(call => call.args[2])).to.deep.equal([
+      'route.first',
+      'route.second',
+    ])
   })
 
   it('handles error when switching vhost', async function () {
@@ -479,7 +569,7 @@ describe('amqp-out Node', () => {
       .resolves(Amqp.prototype.connection as any)
     sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
 
-    const flowFixture = [...amqpOutFlowFixture]
+    const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture))
     // @ts-ignore
     flowFixture[0].exchangeRoutingKeyType = 'msg'
 
@@ -520,7 +610,7 @@ describe('amqp-out Node', () => {
       .resolves(Amqp.prototype.connection as any)
     sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
 
-    const flowFixture = [...amqpOutFlowFixture]
+    const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture))
     // @ts-ignore
     flowFixture[0].exchangeRoutingKeyType = 'jsonata'
 
@@ -610,10 +700,15 @@ describe('amqp-out Node', () => {
     const published: Array<{ payload: unknown; routingKey: string }> = []
     sinon
       .stub(Amqp.prototype, 'publish')
-      .callsFake(async function (this: any, payload: unknown) {
+      .callsFake(async function (
+        this: any,
+        payload: unknown,
+        properties: unknown,
+        routingKey: string,
+      ) {
         published.push({
           payload,
-          routingKey: this.config.exchange.routingKey,
+          routingKey,
         })
       })
 
@@ -647,7 +742,7 @@ describe('amqp-out Node', () => {
     ).to.equal('route.b')
   })
 
-  it('restores the configured routing key after a message override', async function () {
+  it('keeps the configured routing key unchanged after a message override', async function () {
     const connectionMock = {
       on: sinon.stub(),
       off: sinon.stub(),
@@ -662,14 +757,21 @@ describe('amqp-out Node', () => {
     sinon.stub(Amqp.prototype, 'close').resolves()
 
     const publishedRoutingKeys: string[] = []
+    const configuredRoutingKeys: string[] = []
     let notifyPublishedTwice: () => void = () => undefined
     const publishedTwice = new Promise<void>(resolve => {
       notifyPublishedTwice = resolve
     })
     sinon
       .stub(Amqp.prototype, 'publish')
-      .callsFake(async function (this: any) {
-        publishedRoutingKeys.push(this.config.exchange.routingKey)
+      .callsFake(async function (
+        this: any,
+        payload: unknown,
+        properties: unknown,
+        routingKey: string,
+      ) {
+        publishedRoutingKeys.push(routingKey)
+        configuredRoutingKeys.push(this.config.exchange.routingKey)
         if (publishedRoutingKeys.length === 2) {
           notifyPublishedTwice()
         }
@@ -690,6 +792,10 @@ describe('amqp-out Node', () => {
 
     expect(publishedRoutingKeys).to.deep.equal([
       'message.route',
+      'configured.route',
+    ])
+    expect(configuredRoutingKeys).to.deep.equal([
+      'configured.route',
       'configured.route',
     ])
   })

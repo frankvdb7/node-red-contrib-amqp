@@ -993,6 +993,23 @@ describe('Amqp Class', () => {
       expect(publishStub.calledOnce).to.equal(true)
     })
 
+    it('uses a per-call routing key without mutating configured routing', async () => {
+      const publishStub = sinon.stub().returns(true)
+      amqp.channel = { publish: publishStub }
+      amqp.config.exchange.routingKey = 'configured.route'
+
+      await Promise.all([
+        amqp.publish('first', undefined, 'route.first'),
+        amqp.publish('second', undefined, 'route.second'),
+      ])
+
+      expect(publishStub.getCalls().map(call => call.args[1])).to.deep.equal([
+        'route.first',
+        'route.second',
+      ])
+      expect(amqp.config.exchange.routingKey).to.equal('configured.route')
+    })
+
     it('publishes a message (direct w/RPC)', async () => {
       // @ts-ignore
       amqp = new Amqp(RED, nodeFixture, {
@@ -1030,19 +1047,37 @@ describe('Amqp Class', () => {
       // expect(publishStub.calledOnce).to.equal(true)
     })
 
-    it('waits for confirms when enabled', async () => {
-      const publishStub = sinon.stub()
-      const waitForConfirmsStub = sinon.stub().resolves()
+    it('waits for the individual publish confirmation when enabled', async () => {
+      let confirmPublish: (error: Error | null) => void = () => undefined
+      const publishStub = sinon.stub().callsFake(
+        (
+          exchange: string,
+          routingKey: string,
+          content: Buffer,
+          options: unknown,
+          confirm: (error: Error | null) => void,
+        ) => {
+          confirmPublish = confirm
+          return true
+        },
+      )
       amqp.channel = {
         publish: publishStub,
-        waitForConfirms: waitForConfirmsStub,
       }
       amqp.config.waitForConfirms = true
 
-      await amqp.publish('a message')
+      let completed = false
+      const publish = amqp.publish('a message').then(() => {
+        completed = true
+      })
+      await Promise.resolve()
+
+      expect(completed).to.equal(false)
+      confirmPublish(null)
+      await publish
 
       expect(publishStub.calledOnce).to.equal(true)
-      expect(waitForConfirmsStub.calledOnce).to.equal(true)
+      expect(publishStub.firstCall.args[4]).to.be.a('function')
     })
 
     it('waits for channel drain when publish applies backpressure', async () => {
@@ -1064,12 +1099,22 @@ describe('Amqp Class', () => {
       expect(completed).to.equal(true)
     })
 
-    it('rejects a confirmed publish when the broker returns a mandatory message', async () => {
+    it('publishes mandatory messages without publisher confirms', async () => {
+      const publishStub = sinon.stub().returns(true)
+      amqp.channel = {
+        publish: publishStub,
+      }
+      amqp.config.waitForConfirms = false
+
+      await amqp.publish('a message', { mandatory: true })
+
+      expect(publishStub.calledOnce).to.equal(true)
+      expect(publishStub.firstCall.args[3].mandatory).to.equal(true)
+    })
+
+    it('reports unconfirmed mandatory returns through the channel warning', async () => {
       const events: Record<string, (message?: unknown) => void> = {}
-      let releaseConfirm: () => void = () => undefined
-      const confirmPending = new Promise<void>(resolve => {
-        releaseConfirm = resolve
-      })
+      const warnStub = sinon.stub()
       const channel = {
         on: sinon.stub().callsFake(
           (event: string, callback: (message?: unknown) => void) => {
@@ -1077,8 +1122,67 @@ describe('Amqp Class', () => {
           },
         ),
         prefetch: sinon.stub().resolves(),
-        publish: sinon.stub().returns(true),
-        waitForConfirms: sinon.stub().returns(confirmPending),
+        publish: sinon.stub().callsFake(
+          (
+            exchange: string,
+            routingKey: string,
+            content: Buffer,
+            options: unknown,
+          ) => {
+            events.return({
+              fields: {
+                replyCode: 312,
+                replyText: 'NO_ROUTE',
+                exchange,
+                routingKey,
+              },
+              properties: options,
+              content,
+            })
+            return true
+          },
+        ),
+      }
+      amqp.node = {
+        ...nodeFixture,
+        warn: warnStub,
+      }
+      amqp.connection = {
+        createChannel: sinon.stub().resolves(channel),
+      }
+      amqp.config.waitForConfirms = false
+      await amqp.initialize()
+
+      await amqp.publish('a message', { mandatory: true })
+
+      expect(channel.publish.calledOnce).to.equal(true)
+      expect(warnStub.calledOnceWithMatch('AMQP Message returned')).to.equal(
+        true,
+      )
+    })
+
+    it('rejects a confirmed publish when the broker returns a mandatory message', async () => {
+      const events: Record<string, (message?: unknown) => void> = {}
+      let confirmPublish: (error: Error | null) => void = () => undefined
+      const channel = {
+        on: sinon.stub().callsFake(
+          (event: string, callback: (message?: unknown) => void) => {
+            events[event] = callback
+          },
+        ),
+        prefetch: sinon.stub().resolves(),
+        publish: sinon.stub().callsFake(
+          (
+            exchange: string,
+            routingKey: string,
+            content: Buffer,
+            options: unknown,
+            confirm: (error: Error | null) => void,
+          ) => {
+            confirmPublish = confirm
+            return true
+          },
+        ),
       }
       amqp.connection = {
         createConfirmChannel: sinon.stub().resolves(channel),
@@ -1108,7 +1212,7 @@ describe('Amqp Class', () => {
         properties: publishedOptions,
         content: Buffer.from('a message'),
       })
-      releaseConfirm()
+      confirmPublish(null)
 
       const publishError = await publishResult
       expect(publishError).to.be.instanceOf(Error)
@@ -1129,6 +1233,7 @@ describe('Amqp Class', () => {
             routingKey: string,
             content: Buffer,
             options: unknown,
+            confirm: (error: Error | null) => void,
           ) => {
             if (routingKey === 'route.missing') {
               events.return({
@@ -1142,10 +1247,10 @@ describe('Amqp Class', () => {
                 content,
               })
             }
+            queueMicrotask(() => confirm(null))
             return true
           },
         ),
-        waitForConfirms: sinon.stub().resolves(),
       }
       amqp.connection = {
         createConfirmChannel: sinon.stub().resolves(channel),
@@ -1164,6 +1269,45 @@ describe('Amqp Class', () => {
       expect(publishError).to.be.instanceOf(Error)
       expect(publishError.successfulRoutingKeys).to.deep.equal(['route.ok'])
       expect(publishError.failedRoutingKeys).to.deep.equal(['route.missing'])
+    })
+
+    it('attributes publisher confirms to their individual routing keys', async () => {
+      const channel = {
+        publish: sinon.stub().callsFake(
+          (
+            exchange: string,
+            routingKey: string,
+            content: Buffer,
+            options: unknown,
+            confirm?: (error: Error | null) => void,
+          ) => {
+            queueMicrotask(() => {
+              confirm?.(
+                routingKey === 'route.failed'
+                  ? new Error('broker nacked route.failed')
+                  : null,
+              )
+            })
+            return true
+          },
+        ),
+        waitForConfirms: sinon
+          .stub()
+          .rejects(new Error('an earlier publish was nacked')),
+      }
+      amqp.channel = channel
+      amqp.config.exchange.routingKey = 'route.failed,route.ok'
+      amqp.config.waitForConfirms = true
+
+      const publishError = await amqp.publish('a message').then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+
+      expect(publishError).to.be.instanceOf(Error)
+      expect(publishError.successfulRoutingKeys).to.deep.equal(['route.ok'])
+      expect(publishError.failedRoutingKeys).to.deep.equal(['route.failed'])
+      expect(channel.waitForConfirms.called).to.equal(false)
     })
 
     it('tries to publish an invalid message', async () => {
@@ -1322,6 +1466,40 @@ describe('Amqp Class', () => {
       await amqp.close()
 
       expect(unbindQueueStub.called).to.be.false
+      expect(closeChannelStub.calledOnce).to.be.true
+      expect(releaseConnectionStub.calledOnce).to.be.true
+    })
+
+    it('unbinds the configured route from a durable named queue on terminal close', async () => {
+      const unbindQueueStub = sinon.stub().resolves()
+      const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+      const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'orders' }
+      amqp.config.exchange = {
+        ...amqp.config.exchange,
+        autoCreate: true,
+        name: 'orders-exchange',
+        routingKey: 'orders.v1',
+      }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'orders',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await amqp.close({ removeBindings: true })
+
+      expect(
+        unbindQueueStub.calledOnceWith(
+          'orders',
+          'orders-exchange',
+          'orders.v1',
+        ),
+      ).to.be.true
       expect(closeChannelStub.calledOnce).to.be.true
       expect(releaseConnectionStub.calledOnce).to.be.true
     })
@@ -1539,6 +1717,65 @@ describe('Amqp Class', () => {
     expect(amqp.channel).to.eq(result)
     expect(result.prefetch.calledOnce).to.equal(true)
   })
+
+  for (const [channelType, waitForConfirms] of [
+    ['regular', false],
+    ['confirm', true],
+  ] as const) {
+    it(`closes a stale ${channelType} channel that finishes creation after reconnect`, async () => {
+      let resolveChannel: (channel: unknown) => void = () => undefined
+      const pendingChannel = new Promise(resolve => {
+        resolveChannel = resolve
+      })
+      const lateChannel = {
+        close: sinon.stub().resolves(),
+        off: sinon.stub(),
+        on: sinon.stub(),
+        prefetch: sinon.stub(),
+      }
+      const sharedConnection = {
+        close: sinon.stub().resolves(),
+        createChannel: sinon.stub(),
+        createConfirmChannel: sinon.stub(),
+        off: sinon.stub(),
+        on: sinon.stub(),
+      }
+      const createChannelStub = waitForConfirms
+        ? sharedConnection.createConfirmChannel
+        : sharedConnection.createChannel
+      createChannelStub.returns(pendingChannel)
+
+      amqp.broker = brokerConfigFixture
+      amqp.config.waitForConfirms = waitForConfirms
+      amqp.connection = sharedConnection
+      amqp.channel = undefined
+      const poolKey = `${amqp.config.broker}:${brokerConfigFixture.vhost}`
+      ;(Amqp as any).connectionPool.set(poolKey, {
+        connection: sharedConnection,
+        count: 2,
+      })
+
+      const initialization = amqp.initialize()
+      expect(createChannelStub.calledOnce).to.equal(true)
+
+      await amqp.close()
+      await amqp.connect()
+      resolveChannel(lateChannel)
+      const initializationResult = await initialization.then(
+        () => 'fulfilled',
+        () => 'rejected',
+      )
+
+      // This mirrors stale-initialization cleanup after reconnect started.
+      await amqp.close()
+
+      expect(initializationResult).to.equal('rejected')
+      expect(lateChannel.close.calledOnce).to.equal(true)
+      expect(lateChannel.prefetch.called).to.equal(false)
+      expect(lateChannel.on.called).to.equal(false)
+      expect(sharedConnection.close.called).to.equal(false)
+    })
+  }
 
   it('createChannel() logs events', async () => {
     const events: { [key: string]: Function } = {}
