@@ -270,13 +270,15 @@ module.exports = function (RED: NodeRedApp): void {
 
       if (vhost) {
         try {
-          clearTimeout(reconnectTimeout)
-          reconnectScheduled = false
-
-          initializationVersion += 1
-          initializationAbortController?.abort(
-            new Error('AMQP initialization cancelled for virtual host switch'),
-          )
+          const vhostChanged = amqp.getVhost() !== vhost
+          if (vhostChanged) {
+            clearTimeout(reconnectTimeout)
+            reconnectScheduled = false
+            initializationVersion += 1
+            initializationAbortController?.abort(
+              new Error('AMQP initialization cancelled for virtual host switch'),
+            )
+          }
           const pendingInitialization = initializationPromise
           if (pendingInitialization) {
             await pendingInitialization.catch(() => undefined)
@@ -286,19 +288,21 @@ module.exports = function (RED: NodeRedApp): void {
             return
           }
 
-          removeEventListeners()
-          await amqp.setVhost(vhost)
+          if (vhostChanged) {
+            removeEventListeners()
+            await amqp.setVhost(vhost)
 
-          if (isShuttingDown && (await stopIfShuttingDown())) {
-            return
+            if (isShuttingDown && (await stopIfShuttingDown())) {
+              return
+            }
+
+            connection = amqp.getConnection()
+            channel = amqp.getChannel()
+            setupEventListeners(me)
+            amqp.markConnected()
+            recoveringFromDisconnect = false
+            reconnectBackoff.reset()
           }
-
-          connection = amqp.getConnection()
-          channel = amqp.getChannel()
-          setupEventListeners(me)
-          amqp.markConnected()
-          recoveringFromDisconnect = false
-          reconnectBackoff.reset()
         } catch (e) {
           await handleError(e, me)
           done && done(toError(e))

@@ -392,9 +392,22 @@ export default class Amqp {
     this.config.exchange.routingKey = newRoutingKey
   }
 
+  public getVhost(): string | undefined {
+    let broker = this.broker as unknown as BrokerConfig | undefined
+    if (!broker) {
+      // Node-RED's public types omit the runtime getNode method.
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore
+      broker = this.RED.nodes.getNode(this.config.broker) as
+        | BrokerConfig
+        | undefined
+    }
+    return this.vhostOverride ?? broker?.vhost
+  }
+
   public async setVhost(newVhost: string): Promise<void> {
     const broker = this.broker as unknown as BrokerConfig
-    const currentVhost = this.vhostOverride ?? broker?.vhost
+    const currentVhost = this.getVhost()
 
     if (!broker || currentVhost === newVhost) {
       return

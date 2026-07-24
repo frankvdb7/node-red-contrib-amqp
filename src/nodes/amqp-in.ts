@@ -26,6 +26,7 @@ module.exports = function (RED: NodeRedApp): void {
     let isShuttingDown = false
     let initializationVersion = 0
     let initializationPromise: Promise<void> | null = null
+    let initializationAbortController: AbortController | null = null
     let connection: ChannelModel | null = null
     let channel: Channel | null = null
     let onConnClose: (e: unknown) => Promise<void>
@@ -80,6 +81,9 @@ module.exports = function (RED: NodeRedApp): void {
       terminalClose.dispose()
       isShuttingDown = true
       initializationVersion += 1
+      initializationAbortController?.abort(
+        new Error('AMQP initialization cancelled during shutdown'),
+      )
       clearTimeout(reconnectTimeout)
       removeEventListeners()
       let closeError: unknown
@@ -122,6 +126,8 @@ module.exports = function (RED: NodeRedApp): void {
 
     async function initializeNode(nodeIns: Node) {
       const attemptVersion = initializationVersion
+      const abortController = new AbortController()
+      initializationAbortController = abortController
       const initializationIsStale = (): boolean =>
         isShuttingDown || attemptVersion !== initializationVersion
 
@@ -166,7 +172,7 @@ module.exports = function (RED: NodeRedApp): void {
       }
 
       try {
-        connection = await amqp.connect()
+        connection = await amqp.connect({ signal: abortController.signal })
         if (initializationIsStale()) {
           await amqp.close().catch(() => undefined)
           return
@@ -174,7 +180,9 @@ module.exports = function (RED: NodeRedApp): void {
 
         // istanbul ignore else
         if (connection) {
-          channel = await amqp.initialize()
+          channel = await amqp.initialize({
+            signal: abortController.signal,
+          })
           if (initializationIsStale()) {
             await amqp.close().catch(() => undefined)
             return
@@ -298,14 +306,22 @@ module.exports = function (RED: NodeRedApp): void {
             nodeIns.status(NODE_STATUS.Error)
           }
         }
+      } finally {
+        if (initializationAbortController === abortController) {
+          initializationAbortController = null
+        }
       }
     }
 
     function queueInitialization(nodeIns: Node, scheduledReconnect = false): Promise<void> {
       const previous = initializationPromise
+      const queuedVersion = initializationVersion
       const startInitialization = (): Promise<void> => {
         if (scheduledReconnect) {
           reconnectScheduled = false
+        }
+        if (isShuttingDown || queuedVersion !== initializationVersion) {
+          return Promise.resolve()
         }
         return initializeNode(nodeIns)
       }

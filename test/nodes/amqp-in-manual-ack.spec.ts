@@ -901,6 +901,41 @@ describe('amqp-in-manual-ack Node', () => {
     }
   })
 
+  it('does not start a queued reconnect initialization after shutdown', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      let releaseInitialConnect: (connection: unknown) => void = () => undefined
+      const initialConnect = new Promise(resolve => {
+        releaseInitialConnect = resolve
+      })
+      const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+      const connectStub = sinon.stub(Amqp.prototype, 'connect')
+      connectStub.onFirstCall().returns(initialConnect as any)
+      connectStub.onSecondCall().resolves(connectionMock as any)
+      sinon.stub(Amqp.prototype, 'initialize').resolves({ on: sinon.stub(), off: sinon.stub() } as any)
+      sinon.stub(Amqp.prototype, 'consume').resolves()
+      sinon.stub(Amqp.prototype, 'close').resolves()
+
+      await helper.load(
+        [amqpInManualAck, amqpBroker],
+        amqpInManualAckFlowFixture,
+        credentialsFixture,
+      )
+      const n1 = helper.getNode('n1')
+
+      await n1.receive({ payload: { reconnectCall: true } })
+      await clock.tickAsync(2_001)
+      await n1.close()
+
+      releaseInitialConnect(connectionMock)
+      await clock.tickAsync(0)
+
+      expect(connectStub.calledOnce).to.be.true
+    } finally {
+      clock.restore()
+    }
+  })
+
   it('coalesces repeated reconnect control messages into a single reconnect cycle', async function () {
     const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
     sinon.stub(Amqp.prototype, 'connect').resolves({ on: sinon.stub(), off: sinon.stub() } as any)
