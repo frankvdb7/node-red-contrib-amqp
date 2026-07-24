@@ -30,7 +30,7 @@ import { NODE_STATUS } from './constants'
 const DELIVERY_TOKEN: unique symbol = Symbol('amqp-delivery-token')
 const RETURN_TOKEN_HEADER = 'x-node-red-contrib-amqp-return-token'
 const MAX_UNMATCHED_RPC_RESPONSES = 100
-const AMQP_CONNECTION_TIMEOUT_MS = 5_000
+const BINDING_CLEANUP_TIMEOUT_MS = 5_000
 const BINDING_CLEANUP_MAX_ATTEMPTS = 3
 
 type TrackedAssembledMessage = AssembledMessage & {
@@ -79,6 +79,12 @@ interface AmqpConnectOptions {
   timeout?: number
 }
 
+interface PendingConnection {
+  promise: Promise<ChannelModel>
+  activeWaiters: number
+  accepted: boolean
+}
+
 interface ChannelDrainGate {
   channel: Channel
   promise: Promise<void>
@@ -97,8 +103,13 @@ export default class Amqp {
   private channel: Channel
   private q: Replies.AssertQueue
   private vhostOverride?: string
+  private connectionPoolKey?: string
   private static connectionPool: Map<string, { connection: ChannelModel; count: number }> = new Map()
-  private static pendingConnections: Map<string, Promise<ChannelModel>> = new Map()
+  private static pendingConnections: Map<string, PendingConnection> = new Map()
+  private static endpointGenerations: Map<
+    string,
+    { brokerUrl: string; generation: number }
+  > = new Map()
   private static rpcConsumerRegistries: WeakMap<
     object,
     Map<string, RpcConsumerState>
@@ -185,7 +196,8 @@ export default class Amqp {
     const { host, port, vhost } = brokerConfig
 
     const brokerInfo = `${host}:${port}${vhost ? `/${vhost}` : ''}`
-    const key = `${broker}:${vhost}`
+    const logicalKey = `${broker}:${vhost}`
+    const key = this.getEndpointGenerationKey(logicalKey, brokerUrl)
 
     let entry = Amqp.connectionPool.get(key)
     if (entry && !this.isConnectionOpen(entry.connection)) {
@@ -197,14 +209,28 @@ export default class Amqp {
       let pendingConnection = Amqp.pendingConnections.get(key)
       if (!pendingConnection) {
         this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
-        pendingConnection = this.createPooledConnection(
-          key,
-          brokerUrl,
-          brokerInfo,
-        )
+        pendingConnection = {
+          promise: this.createPooledConnection(brokerUrl, brokerInfo),
+          activeWaiters: 0,
+          accepted: false,
+        }
         Amqp.pendingConnections.set(key, pendingConnection)
-        void pendingConnection.then(
-          () => {
+        void pendingConnection.promise.then(
+          async connection => {
+            if (
+              !pendingConnection.accepted &&
+              pendingConnection.activeWaiters === 0
+            ) {
+              if (Amqp.pendingConnections.get(key) === pendingConnection) {
+                Amqp.pendingConnections.delete(key)
+              }
+              try {
+                await connection.close()
+              } catch (error) {
+                this.node.error(`Error closing unowned AMQP connection: ${error}`)
+              }
+              return
+            }
             if (Amqp.pendingConnections.get(key) === pendingConnection) {
               Amqp.pendingConnections.delete(key)
             }
@@ -217,25 +243,39 @@ export default class Amqp {
         )
       }
 
+      pendingConnection.activeWaiters += 1
       try {
         const connection = await this.awaitConnection(
-          pendingConnection,
+          pendingConnection.promise,
           brokerInfo,
           options.timeout,
         )
         entry = Amqp.connectionPool.get(key)
-        if (!entry || entry.connection !== connection) {
+        if (!entry) {
+          pendingConnection.accepted = true
+          entry = { connection, count: 0 }
+          Amqp.connectionPool.set(key, entry)
+          connection.on('close', () => {
+            const current = Amqp.connectionPool.get(key)
+            if (current?.connection === connection) {
+              Amqp.connectionPool.delete(key)
+            }
+          })
+        } else if (entry.connection !== connection) {
           throw new Error(`AMQP connection closed while connecting to ${brokerInfo}`)
         }
       } catch (err) {
         this.setBrokerNodeState('errored', err)
         this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
         throw err
+      } finally {
+        pendingConnection.activeWaiters -= 1
       }
     }
 
     entry.count += 1
     this.connection = entry.connection
+    this.connectionPoolKey = key
 
     this.connectionErrorHandler = (e): void => {
       /* istanbul ignore next */
@@ -1197,10 +1237,15 @@ export default class Amqp {
 
     const cleanupOperation = (async (): Promise<void> => {
       let lastError: unknown
+      const deadline = Date.now() + BINDING_CLEANUP_TIMEOUT_MS
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const remainingTime = deadline - Date.now()
+        if (remainingTime <= 0) {
+          break
+        }
         let connected = false
         try {
-          await this.connect({ timeout: AMQP_CONNECTION_TIMEOUT_MS })
+          await this.connect({ timeout: remainingTime })
           connected = true
           await this.createChannel()
           if (await this.unbindQueues(true)) {
@@ -1220,6 +1265,9 @@ export default class Amqp {
               await this.releaseConnection()
             }
           }
+        }
+        if (Date.now() >= deadline) {
+          break
         }
       }
       const cleanupError = new Error(
@@ -1325,7 +1373,7 @@ export default class Amqp {
     const brokerId = this.config.broker
     const broker = this.broker as unknown as BrokerConfig
     const vhost = this.vhostOverride ?? broker?.vhost
-    const key = `${brokerId}:${vhost}`
+    const key = this.connectionPoolKey ?? `${brokerId}:${vhost}`
 
     this.setBrokerNodeState('disconnected')
     this.node.status(NODE_STATUS.Disconnected)
@@ -1348,26 +1396,34 @@ export default class Amqp {
         }
       }
     }
+    this.connectionPoolKey = undefined
   }
 
   private async createPooledConnection(
-    key: string,
     brokerUrl: string,
     brokerInfo: string,
   ): Promise<ChannelModel> {
     const connection = await connect(brokerUrl, { heartbeat: 2 })
     this.node.log(`Connected to AMQP broker ${brokerInfo}`)
-
-    const entry = { connection, count: 0 }
-    Amqp.connectionPool.set(key, entry)
-    connection.on('close', () => {
-      const current = Amqp.connectionPool.get(key)
-      if (current?.connection === connection) {
-        Amqp.connectionPool.delete(key)
-      }
-    })
-
     return connection
+  }
+
+  private getEndpointGenerationKey(
+    logicalKey: string,
+    brokerUrl: string,
+  ): string {
+    const current = Amqp.endpointGenerations.get(logicalKey)
+    if (!current) {
+      Amqp.endpointGenerations.set(logicalKey, { brokerUrl, generation: 0 })
+      return logicalKey
+    }
+    if (current.brokerUrl !== brokerUrl) {
+      current.brokerUrl = brokerUrl
+      current.generation += 1
+    }
+    return current.generation === 0
+      ? logicalKey
+      : `${logicalKey}#${current.generation}`
   }
 
   private async awaitConnection(

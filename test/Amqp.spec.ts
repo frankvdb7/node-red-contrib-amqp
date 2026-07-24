@@ -27,6 +27,8 @@ describe('Amqp Class', () => {
     }
 
     ;(Amqp as any).connectionPool.clear()
+    ;(Amqp as any).pendingConnections.clear()
+    ;(Amqp as any).endpointGenerations.clear()
 
     // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, nodeConfigFixture)
@@ -490,6 +492,103 @@ describe('Amqp Class', () => {
     } finally {
       clock.restore()
     }
+  })
+
+  it('closes a connection that resolves after its last waiter timed out', async () => {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      let resolveConnect: (connection: unknown) => void = () => undefined
+      const lateConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().resolves(),
+        connection: { stream: { destroyed: false } },
+      }
+      sinon.stub(amqplib, 'connect').returns(
+        new Promise(resolve => {
+          resolveConnect = resolve
+        }),
+      )
+
+      const result = amqp.connect({ timeout: 5_000 }).then(
+        () => 'connected',
+        (error: Error) => error.message,
+      )
+      await clock.tickAsync(5_001)
+
+      expect(await result).to.match(/timed out/i)
+      resolveConnect(lateConnection)
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(lateConnection.close.calledOnce).to.be.true
+      expect((Amqp as any).connectionPool.size).to.equal(0)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('does not share a pending connection across broker endpoint generations', async () => {
+    let resolveOld: (connection: unknown) => void = () => undefined
+    let resolveNew: (connection: unknown) => void = () => undefined
+    const oldConnection = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+      connection: { stream: { destroyed: false } },
+    }
+    const newConnection = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+      connection: { stream: { destroyed: false } },
+    }
+    const connectStub = sinon.stub(amqplib, 'connect')
+    connectStub.onFirstCall().returns(
+      new Promise(resolve => {
+        resolveOld = resolve
+      }),
+    )
+    connectStub.onSecondCall().returns(
+      new Promise(resolve => {
+        resolveNew = resolve
+      }),
+    )
+    const broker = { ...brokerConfigFixture, vhost: 'vh1' }
+    RED.nodes.getNode.returns(broker)
+    const oldAmqp: any = new Amqp(
+      RED,
+      { ...nodeFixture, id: 'old' },
+      nodeConfigFixture,
+    )
+    const newAmqp: any = new Amqp(
+      RED,
+      { ...nodeFixture, id: 'new' },
+      nodeConfigFixture,
+    )
+
+    const oldAttempt = oldAmqp.connect()
+    broker.host = 'replacement-host'
+    broker.credentials = {
+      ...broker.credentials,
+      password: 'replacement-password',
+    }
+    const newAttempt = newAmqp.connect()
+
+    expect(connectStub.calledTwice).to.be.true
+    expect(connectStub.firstCall.args[0]).to.not.equal(
+      connectStub.secondCall.args[0],
+    )
+
+    resolveOld(oldConnection)
+    resolveNew(newConnection)
+    expect(await oldAttempt).to.equal(oldConnection)
+    expect(await newAttempt).to.equal(newConnection)
+
+    await oldAmqp.close()
+    await newAmqp.close()
+    expect(oldConnection.close.calledOnce).to.be.true
+    expect(newConnection.close.calledOnce).to.be.true
   })
 
   it('shares one connection but uses separate channels for manual-ack input and output instances', async () => {
@@ -1951,7 +2050,7 @@ describe('Amqp Class', () => {
       expect(releaseConnectionStub.calledThrice).to.be.true
     })
 
-    it('bounds a cleanup-only reconnect when the broker does not respond', async () => {
+    it('uses one overall cleanup budget when the broker does not respond', async () => {
       const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
       try {
         const connectStub = sinon
@@ -2000,11 +2099,11 @@ describe('Amqp Class', () => {
         expect(cleanupSettled).to.be.false
         expect(connectStub.firstCall.args[1]).to.deep.equal({ heartbeat: 2 })
 
-        await clock.tickAsync(10_002)
-        await cleanup
+        await clock.tickAsync(2)
 
         expect(cleanupSettled).to.be.true
         expect(connectStub.calledOnce).to.be.true
+        await cleanup
       } finally {
         clock.restore()
       }
