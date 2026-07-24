@@ -1506,7 +1506,7 @@ export default class Amqp {
     }
 
     const entry = Amqp.connectionPool.get(key)
-    if (entry?.connection === this.connection) {
+    if (entry && this.connection && entry.connection === this.connection) {
       entry.count -= 1
       if (entry.count <= 0) {
         Amqp.connectionPool.delete(key)

@@ -666,6 +666,64 @@ describe('amqp-out Node', () => {
     )
   })
 
+  it('waits for and invalidates startup initialization before switching vhost', async function () {
+    let releaseInitialConnect: (connection: unknown) => void = () => undefined
+    const initialConnect = new Promise(resolve => {
+      releaseInitialConnect = resolve
+    })
+    const oldConnection = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const newConnection = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const newChannel = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    sinon.stub(Amqp.prototype, 'connect').returns(initialConnect as any)
+    const initializeStub = sinon.stub(Amqp.prototype, 'initialize').resolves(newChannel as any)
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
+    const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
+    sinon.stub(Amqp.prototype, 'getConnection').returns(newConnection as any)
+    sinon.stub(Amqp.prototype, 'getChannel').returns(newChannel as any)
+    sinon.stub(Amqp.prototype, 'markConnected')
+    let notifyPublished: () => void = () => undefined
+    const published = new Promise<void>(resolve => {
+      notifyPublished = resolve
+    })
+    sinon.stub(Amqp.prototype, 'publish').callsFake(async () => {
+      notifyPublished()
+    })
+
+    await helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+    )
+    const amqpOutNode = helper.getNode('n1')
+
+    amqpOutNode.receive({ payload: 'switched', vhost: 'new-vhost' })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(setVhostStub.called).to.be.false
+
+    releaseInitialConnect(oldConnection)
+    await published
+
+    expect(closeStub.calledOnce).to.be.true
+    expect(initializeStub.called).to.be.false
+    expect(setVhostStub.calledOnceWith('new-vhost')).to.be.true
+    expect(oldConnection.on.called).to.be.false
+    expect(newConnection.on.called).to.be.true
+  })
+
   it('keeps routing keys isolated across concurrent vhost switches', async function () {
     const connectionMock = {
       on: sinon.stub(),

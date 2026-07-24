@@ -912,6 +912,12 @@ describe('Amqp Class', () => {
     expect((Amqp as any).connectionPool.size).to.equal(0)
   })
 
+  it('closes safely before owning a connection', async () => {
+    await amqp.close()
+
+    expect((Amqp as any).connectionPool.size).to.equal(0)
+  })
+
   it('initialize()', async () => {
     const createChannelStub = sinon.stub()
     const assertExchangeStub = sinon.stub()
@@ -2841,6 +2847,27 @@ describe('Amqp Class', () => {
   })
 
   describe('setVhost()', () => {
+    it('switches vhost safely while the initial connection is still pending', async () => {
+      const replacementConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().resolves(),
+        connection: { stream: { destroyed: false } },
+      }
+      const connectStub = sinon.stub(amqplib, 'connect')
+      connectStub.onFirstCall().returns(new Promise(() => undefined))
+      connectStub.onSecondCall().resolves(replacementConnection)
+      const initializeStub = sinon.stub(amqp, 'initialize').resolves({} as any)
+
+      void amqp.connect()
+      await Promise.resolve()
+      await amqp.setVhost('replacement-vhost')
+
+      expect(connectStub.calledTwice).to.be.true
+      expect(initializeStub.calledOnce).to.be.true
+      expect(amqp.getConnection()).to.equal(replacementConnection)
+    })
+
     it('reconnects when vhost changes', async () => {
       amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
       const closeStub = sinon.stub(amqp, 'close').resolves()

@@ -272,6 +272,16 @@ module.exports = function (RED: NodeRedApp): void {
           clearTimeout(reconnectTimeout)
           reconnectScheduled = false
 
+          initializationVersion += 1
+          const pendingInitialization = initializationPromise
+          if (pendingInitialization) {
+            await pendingInitialization.catch(() => undefined)
+          }
+
+          if (isShuttingDown && (await stopIfShuttingDown())) {
+            return
+          }
+
           removeEventListeners()
           await amqp.setVhost(vhost)
 
