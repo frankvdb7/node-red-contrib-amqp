@@ -528,6 +528,42 @@ describe('Amqp Class', () => {
     }
   })
 
+  it('allows a fresh connection attempt after the final waiter times out', async () => {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const replacementConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().resolves(),
+        connection: { stream: { destroyed: false } },
+      }
+      const connectStub = sinon.stub(amqplib, 'connect')
+      connectStub.onFirstCall().returns(new Promise(() => undefined))
+      connectStub.onSecondCall().resolves(replacementConnection)
+
+      const timedOutResult = amqp.connect({ timeout: 10 }).then(
+        () => 'connected',
+        (error: Error) => error.message,
+      )
+      await clock.tickAsync(11)
+
+      expect(await timedOutResult).to.match(/timed out/i)
+      expect((Amqp as any).pendingConnections.size).to.equal(0)
+
+      const replacementAmqp: any = new Amqp(
+        RED,
+        { ...nodeFixture, id: 'replacement' },
+        nodeConfigFixture,
+      )
+      expect(await replacementAmqp.connect()).to.equal(replacementConnection)
+      expect(connectStub.calledTwice).to.be.true
+
+      await replacementAmqp.close()
+    } finally {
+      clock.restore()
+    }
+  })
+
   it('does not share a pending connection across broker endpoint generations', async () => {
     let resolveOld: (connection: unknown) => void = () => undefined
     let resolveNew: (connection: unknown) => void = () => undefined
@@ -2104,6 +2140,144 @@ describe('Amqp Class', () => {
         expect(cleanupSettled).to.be.true
         expect(connectStub.calledOnce).to.be.true
         await cleanup
+      } finally {
+        clock.restore()
+      }
+    })
+
+    it('applies the cleanup budget to the initial active-channel unbind', async () => {
+      const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+      try {
+        const unbindQueueStub = sinon.stub().returns(new Promise(() => undefined))
+        const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+        const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+        amqp.channel = { unbindQueue: unbindQueueStub }
+        amqp.q = { queue: 'orders' }
+        amqp.config.exchange = {
+          ...amqp.config.exchange,
+          autoCreate: true,
+          name: 'orders-exchange',
+          routingKey: 'orders.v1',
+        }
+
+        let closeSettled = false
+        const close = amqp.close({ removeBindings: true }).then(
+          () => {
+            closeSettled = true
+          },
+          () => {
+            closeSettled = true
+          },
+        )
+        await clock.tickAsync(4_999)
+        expect(closeSettled).to.be.false
+
+        await clock.tickAsync(2)
+        expect(closeSettled).to.be.true
+        expect(closeChannelStub.calledOnce).to.be.true
+        expect(releaseConnectionStub.calledOnce).to.be.true
+        await close
+      } finally {
+        clock.restore()
+      }
+    })
+
+    it('applies the cleanup budget to reopened channel creation', async () => {
+      const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+      try {
+        sinon.stub(amqp, 'connect').resolves({} as any)
+        sinon.stub(amqp, 'createChannel' as any).returns(new Promise(() => undefined))
+        const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+        const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+        amqp.q = { queue: 'orders' }
+        amqp.config.exchange = {
+          ...amqp.config.exchange,
+          autoCreate: true,
+          name: 'orders-exchange',
+          routingKey: 'orders.v1',
+        }
+
+        await amqp.close()
+        let cleanupSettled = false
+        const cleanup = amqp.close({ removeBindings: true }).then(
+          () => {
+            cleanupSettled = true
+          },
+          () => {
+            cleanupSettled = true
+          },
+        )
+        await clock.tickAsync(5_001)
+
+        expect(cleanupSettled).to.be.true
+        expect(closeChannelStub.calledTwice).to.be.true
+        expect(releaseConnectionStub.calledTwice).to.be.true
+        await cleanup
+      } finally {
+        clock.restore()
+      }
+    })
+
+    it('applies the cleanup budget to channel close and still attempts release', async () => {
+      const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+      try {
+        amqp.channel = { unbindQueue: sinon.stub().resolves() }
+        amqp.q = { queue: 'orders' }
+        amqp.config.exchange = {
+          ...amqp.config.exchange,
+          autoCreate: true,
+          name: 'orders-exchange',
+          routingKey: 'orders.v1',
+        }
+        sinon.stub(amqp, 'closeChannel' as any).returns(new Promise(() => undefined))
+        const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+        let closeSettled = false
+        const close = amqp.close({ removeBindings: true }).then(
+          () => {
+            closeSettled = true
+          },
+          () => {
+            closeSettled = true
+          },
+        )
+        await clock.tickAsync(5_001)
+
+        expect(closeSettled).to.be.true
+        expect(releaseConnectionStub.calledOnce).to.be.true
+        await close
+      } finally {
+        clock.restore()
+      }
+    })
+
+    it('applies the cleanup budget to connection release', async () => {
+      const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+      try {
+        amqp.channel = { unbindQueue: sinon.stub().resolves() }
+        amqp.q = { queue: 'orders' }
+        amqp.config.exchange = {
+          ...amqp.config.exchange,
+          autoCreate: true,
+          name: 'orders-exchange',
+          routingKey: 'orders.v1',
+        }
+        sinon.stub(amqp, 'closeChannel' as any).resolves()
+        sinon.stub(amqp, 'releaseConnection' as any).returns(new Promise(() => undefined))
+
+        let closeSettled = false
+        const close = amqp.close({ removeBindings: true }).then(
+          () => {
+            closeSettled = true
+          },
+          () => {
+            closeSettled = true
+          },
+        )
+        await clock.tickAsync(5_001)
+
+        expect(closeSettled).to.be.true
+        await close
       } finally {
         clock.restore()
       }

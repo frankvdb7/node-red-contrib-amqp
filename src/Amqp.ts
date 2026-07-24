@@ -270,6 +270,13 @@ export default class Amqp {
         throw err
       } finally {
         pendingConnection.activeWaiters -= 1
+        if (
+          pendingConnection.activeWaiters === 0 &&
+          !pendingConnection.accepted &&
+          Amqp.pendingConnections.get(key) === pendingConnection
+        ) {
+          Amqp.pendingConnections.delete(key)
+        }
       }
     }
 
@@ -1168,44 +1175,111 @@ export default class Amqp {
       options instanceof Error ? options : options?.interruption
     const removeBindings =
       !(options instanceof Error) && options?.removeBindings === true
+    const cleanupDeadline = removeBindings
+      ? Date.now() + BINDING_CLEANUP_TIMEOUT_MS
+      : undefined
     if (this.bindingCleanupPromise) {
       await this.bindingCleanupPromise
       return
     }
     if (this.closed) {
-      await this.closePromise
+      let priorCloseError: unknown
       if (removeBindings) {
-        await this.removeBindingsAfterClose()
+        try {
+          await this.awaitCleanupOperation(
+            Promise.resolve(this.closePromise),
+            cleanupDeadline as number,
+            'finish existing close',
+          )
+        } catch (error) {
+          priorCloseError = error
+        }
+      } else {
+        await this.closePromise
+      }
+      if (removeBindings) {
+        await this.removeBindingsAfterClose(
+          BINDING_CLEANUP_MAX_ATTEMPTS,
+          cleanupDeadline,
+          priorCloseError,
+        )
       }
       return
     }
     this.closed = true
     this.lifecycleVersion += 1
     const closeOperation = (async (): Promise<void> => {
+      let cleanupError: unknown
       if (interruption) {
         for (const interruptRpc of [...this.rpcInterruptHandlers]) {
           interruptRpc(interruption)
         }
       }
 
-      await this.detachRpcConsumers(interruption)
+      if (removeBindings) {
+        try {
+          await this.awaitCleanupOperation(
+            this.detachRpcConsumers(interruption),
+            cleanupDeadline as number,
+            'detach RPC consumers',
+          )
+        } catch (error) {
+          cleanupError = error
+        }
+      } else {
+        await this.detachRpcConsumers(interruption)
+      }
       this.clearRpcTimeouts()
 
       let bindingsRemoved = false
-      try {
-        bindingsRemoved = await this.unbindQueues(removeBindings)
-        this.bindingsRemoved ||= removeBindings && bindingsRemoved
-      } finally {
+      if (removeBindings) {
         try {
-          await this.closeChannel()
+          bindingsRemoved = await this.awaitCleanupOperation(
+            this.unbindQueues(true),
+            cleanupDeadline as number,
+            'unbind queues',
+          )
+          this.bindingsRemoved ||= bindingsRemoved
+        } catch (error) {
+          cleanupError = error
+        }
+        try {
+          await this.awaitCleanupOperation(
+            this.closeChannel(),
+            cleanupDeadline as number,
+            'close channel',
+          )
+        } catch (error) {
+          cleanupError ??= error
+        }
+        try {
+          await this.awaitCleanupOperation(
+            this.releaseConnection(),
+            cleanupDeadline as number,
+            'release connection',
+          )
+        } catch (error) {
+          cleanupError ??= error
+        }
+      } else {
+        try {
+          bindingsRemoved = await this.unbindQueues(false)
         } finally {
-          await this.releaseConnection()
+          try {
+            await this.closeChannel()
+          } finally {
+            await this.releaseConnection()
+          }
         }
       }
       if (removeBindings && !bindingsRemoved) {
         await this.removeBindingsAfterClose(
           BINDING_CLEANUP_MAX_ATTEMPTS - 1,
+          cleanupDeadline,
+          cleanupError,
         )
+      } else if (cleanupError) {
+        throw cleanupError
       }
     })()
     this.closePromise = closeOperation
@@ -1220,6 +1294,8 @@ export default class Amqp {
 
   private async removeBindingsAfterClose(
     maxAttempts = BINDING_CLEANUP_MAX_ATTEMPTS,
+    deadline = Date.now() + BINDING_CLEANUP_TIMEOUT_MS,
+    initialError?: unknown,
   ): Promise<void> {
     const { name: exchangeName } = this.config.exchange
     if (
@@ -1236,8 +1312,7 @@ export default class Amqp {
     }
 
     const cleanupOperation = (async (): Promise<void> => {
-      let lastError: unknown
-      const deadline = Date.now() + BINDING_CLEANUP_TIMEOUT_MS
+      let lastError: unknown = initialError
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         const remainingTime = deadline - Date.now()
         if (remainingTime <= 0) {
@@ -1247,8 +1322,18 @@ export default class Amqp {
         try {
           await this.connect({ timeout: remainingTime })
           connected = true
-          await this.createChannel()
-          if (await this.unbindQueues(true)) {
+          await this.awaitCleanupOperation(
+            this.createChannel(),
+            deadline,
+            'create cleanup channel',
+          )
+          if (
+            await this.awaitCleanupOperation(
+              this.unbindQueues(true),
+              deadline,
+              'unbind queues',
+            )
+          ) {
             this.bindingsRemoved = true
             return
           }
@@ -1260,9 +1345,17 @@ export default class Amqp {
             this.closed = true
             this.lifecycleVersion += 1
             try {
-              await this.closeChannel()
+              await this.awaitCleanupOperation(
+                this.closeChannel(),
+                deadline,
+                'close cleanup channel',
+              )
             } finally {
-              await this.releaseConnection()
+              await this.awaitCleanupOperation(
+                this.releaseConnection(),
+                deadline,
+                'release cleanup connection',
+              )
             }
           }
         }
@@ -1282,6 +1375,35 @@ export default class Amqp {
     } finally {
       if (this.bindingCleanupPromise === cleanupOperation) {
         this.bindingCleanupPromise = null
+      }
+    }
+  }
+
+  private async awaitCleanupOperation<T>(
+    operation: Promise<T>,
+    deadline: number,
+    operationName: string,
+  ): Promise<T> {
+    const remainingTime = Math.max(0, deadline - Date.now())
+    let timeoutHandle: NodeJS.Timeout | undefined
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<never>((_resolve, reject) => {
+          timeoutHandle = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `AMQP binding cleanup timed out while attempting to ${operationName}`,
+                ),
+              ),
+            remainingTime,
+          )
+        }),
+      ])
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle)
       }
     }
   }
