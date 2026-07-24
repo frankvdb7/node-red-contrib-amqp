@@ -1,5 +1,5 @@
 import { Node } from 'node-red'
-import { ConsumeMessage, MessageProperties } from 'amqplib'
+import { ConsumeMessage, Options } from 'amqplib'
 
 export interface BrokerConfig extends Node {
   host: string
@@ -52,7 +52,7 @@ export interface AmqpConfig {
     queueType: string
     queueArguments?: GenericJsonObject
   }
-  amqpProperties: MessageProperties
+  amqpProperties: Options.Publish
   headers: GenericJsonObject
   outputs?: number
   rpcTimeout?: number
@@ -87,7 +87,7 @@ export interface AmqpOutNodeDefaults {
   exchangeRoutingKey?: string
   exchangeDurable?: boolean
   autoCreateExchangeBindings?: boolean
-  amqpProperties?: MessageProperties | JsonObject | string
+  amqpProperties?: Options.Publish | JsonObject | string
   outputs?: number
   rpcTimeoutMilliseconds?: number
   queueArguments?: JsonObject

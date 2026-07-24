@@ -13,6 +13,7 @@ import {
 } from '../types'
 import Amqp from '../Amqp'
 import ReconnectBackoff from '../reconnect-backoff'
+import trackTerminalClose from './flow-close-tracker'
 
 module.exports = function (RED: NodeRedApp): void {
   const isErrorLike = (
@@ -28,9 +29,13 @@ module.exports = function (RED: NodeRedApp): void {
 
   function AmqpInManualAck(config: EditorNodeProperties): void {
     let reconnectTimeout: NodeJS.Timeout
-    let reconnect: (() => Promise<void>) | null = null
+    let reconnect: ((continueUntilConnected?: boolean) => Promise<void>) | null = null
     let reconnectScheduled = false
+    let recoveringFromDisconnect = false
     let isShuttingDown = false
+    let initializationVersion = 0
+    let initializationPromise: Promise<void> | null = null
+    let initializationAbortController: AbortController | null = null
     let connection: ChannelModel | null = null
     let channel: Channel | null = null
     let onConnClose: (e: unknown) => Promise<void>
@@ -54,6 +59,7 @@ module.exports = function (RED: NodeRedApp): void {
     const configAmqp: AmqpInNodeDefaults & AmqpOutNodeDefaults = config;
 
     const amqp = new Amqp(RED, this, configAmqp)
+    const terminalClose = trackTerminalClose(RED, this)
 
     const reconnectOnError = configAmqp.reconnectOnError;
 
@@ -67,7 +73,13 @@ module.exports = function (RED: NodeRedApp): void {
       done?: (err?: Error) => void,
     ) => {
       // handle manual reconnect control message
-      if (msg.payload && msg.payload.reconnectCall && typeof reconnect === 'function') {
+        const isAmqpDelivery = typeof msg.fields?.deliveryTag === 'number'
+        if (
+            !isAmqpDelivery &&
+            msg.payload &&
+            msg.payload.reconnectCall &&
+            typeof reconnect === 'function'
+        ) {
         try {
           await reconnect()
           done && done()
@@ -78,30 +90,36 @@ module.exports = function (RED: NodeRedApp): void {
       }
 
       const assembledMsg = msg as AssembledMessage
+      let settled: boolean
       // handle manualAck
       if (msg.manualAck) {
         const ackMode = msg.manualAck.ackMode
 
         switch (ackMode) {
           case ManualAckType.AckAll:
-            amqp.ackAll()
+            settled = amqp.ackAll(assembledMsg)
             break
           case ManualAckType.Nack:
-            amqp.nack(assembledMsg)
+            settled = amqp.nack(assembledMsg)
             break
           case ManualAckType.NackAll:
-            amqp.nackAll(assembledMsg)
+            settled = amqp.nackAll(assembledMsg)
             break
           case ManualAckType.Reject:
-            amqp.reject(assembledMsg)
+            settled = amqp.reject(assembledMsg)
             break
           case ManualAckType.Ack:
           default:
-            amqp.ack(assembledMsg)
+            settled = amqp.ack(assembledMsg)
             break
         }
       } else {
-        amqp.ack(assembledMsg)
+        settled = amqp.ack(assembledMsg)
+      }
+
+      if (!settled) {
+        done && done(new Error('Could not settle AMQP message'))
+        return
       }
 
       done && done()
@@ -112,12 +130,18 @@ module.exports = function (RED: NodeRedApp): void {
     this.on('close', async (removedOrDone: boolean | ((err?: Error) => void), doneMaybe?: (err?: Error) => void): Promise<void> => {
       const removed = typeof removedOrDone === 'boolean' ? removedOrDone : false
       const done = typeof removedOrDone === 'function' ? removedOrDone : doneMaybe
+      const removeBindings = terminalClose.shouldRemoveBindings(removed)
+      terminalClose.dispose()
       isShuttingDown = true
+      initializationVersion += 1
+      initializationAbortController?.abort(
+        new Error('AMQP initialization cancelled during shutdown'),
+      )
       clearTimeout(reconnectTimeout)
       removeEventListeners()
       let closeError: unknown
       try {
-        await amqp.close()
+        await amqp.close(removeBindings ? { removeBindings: true } : undefined)
       } catch (e) {
         closeError = e
       } finally {
@@ -153,13 +177,24 @@ module.exports = function (RED: NodeRedApp): void {
     }
 
     async function initializeNode(nodeIns: Node) {
-      reconnect = async () => {
+      const attemptVersion = initializationVersion
+      const abortController = new AbortController()
+      initializationAbortController = abortController
+      const initializationIsStale = (): boolean =>
+        isShuttingDown || attemptVersion !== initializationVersion
+
+      reconnect = async (continueUntilConnected = false) => {
+        recoveringFromDisconnect ||= continueUntilConnected
         if (isShuttingDown || reconnectScheduled) {
           if (isShuttingDown) {
             nodeIns.log('Reconnect skipped: node is shutting down')
           }
           return
         }
+        initializationVersion += 1
+        initializationAbortController?.abort(
+          new Error('AMQP initialization cancelled for reconnect'),
+        )
         reconnectScheduled = true
 
         clearTimeout(reconnectTimeout)
@@ -178,13 +213,13 @@ module.exports = function (RED: NodeRedApp): void {
           const reconnectDelayMs = reconnectBackoff.nextDelayMs()
           nodeIns.log(`Reconnect scheduled in ${reconnectDelayMs}ms`)
           reconnectTimeout = setTimeout(() => {
-            reconnectScheduled = false
             if (isShuttingDown) {
+              reconnectScheduled = false
               nodeIns.log('Reconnect timer fired but node is shutting down')
               return
             }
             nodeIns.log('Reconnect timer fired: re-initializing AMQP node')
-            void initializeNode(nodeIns)
+            void queueInitialization(nodeIns, true)
           }, reconnectDelayMs)
         } catch (error) {
           reconnectScheduled = false
@@ -194,13 +229,23 @@ module.exports = function (RED: NodeRedApp): void {
 
 
       try {
-        connection = await amqp.connect()
+        connection = await amqp.connect({ signal: abortController.signal })
+        if (initializationIsStale()) {
+          await amqp.close().catch(() => undefined)
+          return
+        }
 
         // istanbul ignore else
         if (connection) {
-          channel = await amqp.initialize()
+          channel = await amqp.initialize({
+            signal: abortController.signal,
+          })
+          if (initializationIsStale()) {
+            await amqp.close().catch(() => undefined)
+            return
+          }
           await amqp.consume()
-          if (isShuttingDown) {
+          if (initializationIsStale()) {
             await amqp.close().catch(() => undefined)
             return
           }
@@ -208,7 +253,7 @@ module.exports = function (RED: NodeRedApp): void {
           onConnClose = async () => {
             nodeIns.warn('AMQP connection closed event received')
             try {
-              await reconnect()
+              await reconnect(true)
             } catch (reconnectError) {
               nodeIns.error(`Reconnect failed after connection close: ${reconnectError}`, {
                 payload: { error: reconnectError, location: ErrorLocationEnum.ConnectionErrorEvent },
@@ -232,7 +277,7 @@ module.exports = function (RED: NodeRedApp): void {
           onChannelClose = async () => {
             nodeIns.warn('AMQP channel closed event received')
             try {
-              await reconnect()
+              await reconnect(true)
             } catch (reconnectError) {
               nodeIns.error(`Reconnect failed after channel close: ${reconnectError}`, {
                 payload: { error: reconnectError, location: ErrorLocationEnum.ChannelErrorEvent },
@@ -256,7 +301,7 @@ module.exports = function (RED: NodeRedApp): void {
           onConsumerCancelled = async () => {
             nodeIns.warn('AMQP consumer cancelled event received')
             try {
-              await reconnect()
+              await reconnect(true)
             } catch (reconnectError) {
               nodeIns.error(`Reconnect failed after consumer cancellation: ${reconnectError}`, {
                 payload: { error: reconnectError, location: ErrorLocationEnum.ChannelErrorEvent },
@@ -271,18 +316,22 @@ module.exports = function (RED: NodeRedApp): void {
           nodeEmitter.on?.('amqp:consumer-cancelled', onConsumerCancelled)
 
           amqp.markConnected()
+          recoveringFromDisconnect = false
           reconnectBackoff.reset()
         }
       } catch (e: unknown) {
         await amqp.close().catch(() => undefined)
-        if (isShuttingDown) {
+        if (
+          isShuttingDown ||
+          attemptVersion !== initializationVersion
+        ) {
           return
         }
         const err = isErrorLike(e) ? e : {}
         if (isInvalidLoginError(err)) {
           nodeIns.status(NODE_STATUS.Invalid)
           nodeIns.error(`AmqpInManualAck() Could not connect to broker ${e}`, { payload: { error: e, location: ErrorLocationEnum.ConnectError } })
-          if (reconnectOnError) {
+          if (reconnectOnError || recoveringFromDisconnect) {
             let reconnectFailed = false
             await reconnect().catch(reconnectError => {
               reconnectFailed = true
@@ -299,7 +348,7 @@ module.exports = function (RED: NodeRedApp): void {
           nodeIns.error(`AmqpInManualAck() ${e}`, {
             payload: { error: e, location: ErrorLocationEnum.ConnectError },
           })
-          if (reconnectOnError) {
+          if (reconnectOnError || recoveringFromDisconnect) {
             await reconnect().catch(reconnectError => {
               nodeIns.status(NODE_STATUS.Error)
               nodeIns.error(`Reconnect failed during initialization: ${reconnectError}`, {
@@ -310,11 +359,41 @@ module.exports = function (RED: NodeRedApp): void {
             nodeIns.status(NODE_STATUS.Error)
           }
         }
+      } finally {
+        if (initializationAbortController === abortController) {
+          initializationAbortController = null
+        }
       }
     }
 
+    function queueInitialization(nodeIns: Node, scheduledReconnect = false): Promise<void> {
+      const previous = initializationPromise
+      const queuedVersion = initializationVersion
+      const startInitialization = (): Promise<void> => {
+        if (scheduledReconnect) {
+          reconnectScheduled = false
+        }
+        if (isShuttingDown || queuedVersion !== initializationVersion) {
+          return Promise.resolve()
+        }
+        return initializeNode(nodeIns)
+      }
+      const operation = previous
+        ? previous.catch(() => undefined).then(startInitialization)
+        : startInitialization()
+      initializationPromise = operation
+      void operation
+        .finally(() => {
+          if (initializationPromise === operation) {
+            initializationPromise = null
+          }
+        })
+        .catch(() => undefined)
+      return operation
+    }
+
     // call
-    initializeNode(this);
+    void queueInitialization(this)
   }
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore

@@ -5,13 +5,14 @@ const { expect } = require('chai')
 const { NODE_STATUS } = require('../src/constants')
 const sinon = require('sinon')
 const amqplib = require('amqplib')
+const { util: redUtil } = require('@node-red/util')
 const Amqp = require('../src/Amqp').default
 const {
   nodeConfigFixture,
   nodeFixture,
   brokerConfigFixture,
 } = require('./doubles')
-const { ExchangeType, DefaultExchangeName } = require('../src/types')
+const { ExchangeType, DefaultExchangeName, NodeType } = require('../src/types')
 import type { GenericJsonObject, BrokerConfig } from '../src/types'
 
 let RED: any
@@ -26,6 +27,8 @@ describe('Amqp Class', () => {
     }
 
     ;(Amqp as any).connectionPool.clear()
+    ;(Amqp as any).pendingConnections.clear()
+    ;(Amqp as any).endpointGenerations.clear()
 
     // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, nodeConfigFixture)
@@ -109,6 +112,16 @@ describe('Amqp Class', () => {
     ).to.be.true
     expect(logStub.calledWithMatch(/Connected to AMQP broker/)).to.be.true
     expect(warnStub.called).to.be.false
+  })
+
+  it('does not apply the cleanup timeout to a normal connection', async () => {
+    const result = { on: sinon.stub() }
+    const connectStub = sinon.stub(amqplib, 'connect').resolves(result)
+
+    await amqp.connect()
+
+    expect(connectStub.calledOnce).to.be.true
+    expect(connectStub.firstCall.args[1]).to.deep.equal({ heartbeat: 2 })
   })
 
   it('connect() logs events', async () => {
@@ -336,6 +349,483 @@ describe('Amqp Class', () => {
     expect(connectionStub.close.calledOnce).to.be.true
   })
 
+  it('shares one connection when instances connect concurrently for the same vhost', async () => {
+    let releaseConnect: () => void = () => undefined
+    const connectPending = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+    const connectionStub = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+      connection: { stream: { destroyed: false } },
+    }
+    const connectStub = sinon.stub(amqplib, 'connect').callsFake(async () => {
+      await connectPending
+      return connectionStub as any
+    })
+    const broker = { ...brokerConfigFixture, vhost: 'vh1' }
+    RED.nodes.getNode.returns(broker)
+
+    const amqp1: any = new Amqp(
+      RED,
+      { ...nodeFixture, id: 'n1' },
+      nodeConfigFixture,
+    )
+    const amqp2: any = new Amqp(
+      RED,
+      { ...nodeFixture, id: 'n2' },
+      nodeConfigFixture,
+    )
+
+    const firstConnection = amqp1.connect()
+    const secondConnection = amqp2.connect()
+    await Promise.resolve()
+    releaseConnect()
+
+    const connections = await Promise.all([firstConnection, secondConnection])
+    const poolEntry = (Amqp as any).connectionPool.get('b1:vh1')
+
+    expect(connectStub.calledOnce).to.be.true
+    expect(connections).to.deep.equal([connectionStub, connectionStub])
+    expect(poolEntry.connection).to.equal(connectionStub)
+    expect(poolEntry.count).to.equal(2)
+
+    await amqp1.close()
+    expect(connectionStub.close.called).to.be.false
+
+    await amqp2.close()
+    expect(connectionStub.close.calledOnce).to.be.true
+  })
+
+  it('times out a cleanup caller without changing or removing a pending normal connection', async () => {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      let resolveConnect: (connection: unknown) => void = () => undefined
+      const connectionStub = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().resolves(),
+        connection: { stream: { destroyed: false } },
+      }
+      const connectStub = sinon.stub(amqplib, 'connect').returns(
+        new Promise(resolve => {
+          resolveConnect = resolve
+        }),
+      )
+      const normalAmqp: any = new Amqp(
+        RED,
+        { ...nodeFixture, id: 'normal' },
+        nodeConfigFixture,
+      )
+      const cleanupAmqp: any = new Amqp(
+        RED,
+        { ...nodeFixture, id: 'cleanup' },
+        nodeConfigFixture,
+      )
+
+      const normalConnection = normalAmqp.connect()
+      const cleanupConnection = cleanupAmqp.connect({ timeout: 5_000 })
+      const cleanupResult = cleanupConnection.then(
+        () => 'connected',
+        (error: Error) => error.message,
+      )
+      await clock.tickAsync(5_001)
+
+      expect(await cleanupResult).to.match(/timed out/i)
+      expect(connectStub.calledOnce).to.be.true
+      expect(connectStub.firstCall.args[1]).to.deep.equal({ heartbeat: 2 })
+      expect((Amqp as any).pendingConnections.size).to.equal(1)
+
+      resolveConnect(connectionStub)
+      expect(await normalConnection).to.equal(connectionStub)
+      expect((Amqp as any).pendingConnections.size).to.equal(0)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('does not apply a cleanup caller deadline to a normal caller joining the same pending connection', async () => {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      let resolveConnect: (connection: unknown) => void = () => undefined
+      const connectionStub = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().resolves(),
+        connection: { stream: { destroyed: false } },
+      }
+      const connectStub = sinon.stub(amqplib, 'connect').returns(
+        new Promise(resolve => {
+          resolveConnect = resolve
+        }),
+      )
+      const cleanupAmqp: any = new Amqp(
+        RED,
+        { ...nodeFixture, id: 'cleanup' },
+        nodeConfigFixture,
+      )
+      const normalAmqp: any = new Amqp(
+        RED,
+        { ...nodeFixture, id: 'normal' },
+        nodeConfigFixture,
+      )
+
+      const cleanupResult = cleanupAmqp.connect({ timeout: 5_000 }).then(
+        () => 'connected',
+        (error: Error) => error.message,
+      )
+      const normalConnection = normalAmqp.connect()
+      let normalSettled = false
+      void normalConnection.finally(() => {
+        normalSettled = true
+      })
+      await clock.tickAsync(5_001)
+
+      expect(await cleanupResult).to.match(/timed out/i)
+      expect(normalSettled).to.equal(false)
+      expect(connectStub.calledOnce).to.be.true
+      expect(connectStub.firstCall.args[1]).to.deep.equal({ heartbeat: 2 })
+
+      resolveConnect(connectionStub)
+      expect(await normalConnection).to.equal(connectionStub)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('closes a connection that resolves after its last waiter timed out', async () => {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      let resolveConnect: (connection: unknown) => void = () => undefined
+      const lateConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().resolves(),
+        connection: { stream: { destroyed: false } },
+      }
+      sinon.stub(amqplib, 'connect').returns(
+        new Promise(resolve => {
+          resolveConnect = resolve
+        }),
+      )
+
+      const result = amqp.connect({ timeout: 5_000 }).then(
+        () => 'connected',
+        (error: Error) => error.message,
+      )
+      await clock.tickAsync(5_001)
+
+      expect(await result).to.match(/timed out/i)
+      resolveConnect(lateConnection)
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(lateConnection.close.calledOnce).to.be.true
+      expect((Amqp as any).connectionPool.size).to.equal(0)
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('allows a fresh connection attempt after the final waiter times out', async () => {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const replacementConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().resolves(),
+        connection: { stream: { destroyed: false } },
+      }
+      const connectStub = sinon.stub(amqplib, 'connect')
+      connectStub.onFirstCall().returns(new Promise(() => undefined))
+      connectStub.onSecondCall().resolves(replacementConnection)
+
+      const timedOutResult = amqp.connect({ timeout: 10 }).then(
+        () => 'connected',
+        (error: Error) => error.message,
+      )
+      await clock.tickAsync(11)
+
+      expect(await timedOutResult).to.match(/timed out/i)
+      expect((Amqp as any).pendingConnections.size).to.equal(0)
+
+      const replacementAmqp: any = new Amqp(
+        RED,
+        { ...nodeFixture, id: 'replacement' },
+        nodeConfigFixture,
+      )
+      expect(await replacementAmqp.connect()).to.equal(replacementConnection)
+      expect(connectStub.calledTwice).to.be.true
+
+      await replacementAmqp.close()
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('removes a pending connection waiter when initialization is aborted', async () => {
+    sinon.stub(amqplib, 'connect').returns(new Promise(() => undefined))
+    const abortController = new AbortController()
+
+    const result = amqp
+      .connect({ signal: abortController.signal })
+      .then(
+        () => 'connected',
+        (error: Error) => error.message,
+      )
+    abortController.abort(new Error('initialization superseded'))
+
+    expect(await result).to.equal('initialization superseded')
+    expect((Amqp as any).pendingConnections.size).to.equal(0)
+  })
+
+  it('does not share a pending connection across broker endpoint generations', async () => {
+    let resolveOld: (connection: unknown) => void = () => undefined
+    let resolveNew: (connection: unknown) => void = () => undefined
+    const oldConnection = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+      connection: { stream: { destroyed: false } },
+    }
+    const newConnection = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+      connection: { stream: { destroyed: false } },
+    }
+    const connectStub = sinon.stub(amqplib, 'connect')
+    connectStub.onFirstCall().returns(
+      new Promise(resolve => {
+        resolveOld = resolve
+      }),
+    )
+    connectStub.onSecondCall().returns(
+      new Promise(resolve => {
+        resolveNew = resolve
+      }),
+    )
+    const broker = { ...brokerConfigFixture, vhost: 'vh1' }
+    RED.nodes.getNode.returns(broker)
+    const oldAmqp: any = new Amqp(
+      RED,
+      { ...nodeFixture, id: 'old' },
+      nodeConfigFixture,
+    )
+    const newAmqp: any = new Amqp(
+      RED,
+      { ...nodeFixture, id: 'new' },
+      nodeConfigFixture,
+    )
+
+    const oldAttempt = oldAmqp.connect()
+    broker.host = 'replacement-host'
+    broker.credentials = {
+      ...broker.credentials,
+      password: 'replacement-password',
+    }
+    const newAttempt = newAmqp.connect()
+
+    expect(connectStub.calledTwice).to.be.true
+    expect(connectStub.firstCall.args[0]).to.not.equal(
+      connectStub.secondCall.args[0],
+    )
+
+    resolveOld(oldConnection)
+    resolveNew(newConnection)
+    expect(await oldAttempt).to.equal(oldConnection)
+    expect(await newAttempt).to.equal(newConnection)
+
+    await oldAmqp.close()
+    await newAmqp.close()
+    expect(oldConnection.close.calledOnce).to.be.true
+    expect(newConnection.close.calledOnce).to.be.true
+  })
+
+  it('shares one connection but uses separate channels for manual-ack input and output instances', async () => {
+    const manualAckChannel = {
+      prefetch: sinon.stub(),
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+    const outputChannel = {
+      prefetch: sinon.stub(),
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+    const createChannelStub = sinon.stub()
+    createChannelStub.onFirstCall().resolves(manualAckChannel)
+    createChannelStub.onSecondCall().resolves(outputChannel)
+    const connectionStub = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+      createChannel: createChannelStub,
+      connection: { stream: { destroyed: false } },
+    }
+    const connectStub = sinon
+      .stub(amqplib, 'connect')
+      .resolves(connectionStub as any)
+    const manualAckAmqp: any = new Amqp(
+      RED,
+      {
+        ...nodeFixture,
+        id: 'manual-in',
+        type: NodeType.AmqpInManualAck,
+      },
+      nodeConfigFixture,
+    )
+    const outputAmqp: any = new Amqp(
+      RED,
+      {
+        ...nodeFixture,
+        id: 'out',
+        type: NodeType.AmqpOut,
+      },
+      nodeConfigFixture,
+    )
+
+    await Promise.all([manualAckAmqp.connect(), outputAmqp.connect()])
+    const channels = await Promise.all([
+      manualAckAmqp.initialize(),
+      outputAmqp.initialize(),
+    ])
+
+    expect(connectStub.calledOnce).to.be.true
+    expect(channels).to.deep.equal([manualAckChannel, outputChannel])
+    expect(createChannelStub.calledTwice).to.be.true
+
+    await manualAckAmqp.close()
+    expect(manualAckChannel.close.calledOnce).to.be.true
+    expect(outputChannel.close.called).to.be.false
+    expect(connectionStub.close.called).to.be.false
+
+    await outputAmqp.close()
+    expect(outputChannel.close.calledOnce).to.be.true
+    expect(connectionStub.close.calledOnce).to.be.true
+  })
+
+  it('acknowledges the original delivery after Node-RED clones the message', () => {
+    const node = {
+      ...nodeFixture,
+      id: 'manual-in',
+      type: NodeType.AmqpInManualAck,
+      error: sinon.stub(),
+    }
+    const manualAckAmqp: any = new Amqp(RED, node, nodeConfigFixture)
+    const channel = { ack: sinon.stub() }
+    manualAckAmqp.channel = channel
+    const delivery = manualAckAmqp.assembleMessage({
+      content: Buffer.from('payload'),
+      fields: { deliveryTag: 42 },
+      properties: {},
+    })
+    const clonedDelivery = redUtil.cloneMessage(delivery)
+
+    manualAckAmqp.ack(clonedDelivery)
+
+    expect(clonedDelivery).to.not.equal(delivery)
+    expect(channel.ack.calledOnceWith(delivery, false)).to.be.true
+  })
+
+  it('does not settle a pre-restart delivery on the replacement channel', () => {
+    const node = {
+      ...nodeFixture,
+      id: 'manual-in',
+      type: NodeType.AmqpInManualAck,
+      error: sinon.stub(),
+    }
+    const manualAckAmqp: any = new Amqp(RED, node, nodeConfigFixture)
+    const originalChannel = {
+      ack: sinon.stub(),
+      ackAll: sinon.stub(),
+      nack: sinon.stub(),
+      nackAll: sinon.stub(),
+      reject: sinon.stub(),
+    }
+    const replacementChannel = {
+      ack: sinon.stub(),
+      ackAll: sinon.stub(),
+      nack: sinon.stub(),
+      nackAll: sinon.stub(),
+      reject: sinon.stub(),
+    }
+    manualAckAmqp.channel = originalChannel
+    const delivery = manualAckAmqp.assembleMessage({
+      content: Buffer.from('payload'),
+      fields: { deliveryTag: 42 },
+      properties: {},
+    })
+
+    manualAckAmqp.channel = replacementChannel
+    manualAckAmqp.ack(delivery)
+    manualAckAmqp.ackAll(delivery)
+    manualAckAmqp.nack(delivery)
+    manualAckAmqp.nackAll(delivery)
+    manualAckAmqp.reject(delivery)
+
+    expect(originalChannel.ack.called).to.be.false
+    expect(originalChannel.ackAll.called).to.be.false
+    expect(originalChannel.nack.called).to.be.false
+    expect(originalChannel.nackAll.called).to.be.false
+    expect(originalChannel.reject.called).to.be.false
+    expect(replacementChannel.ack.called).to.be.false
+    expect(replacementChannel.ackAll.called).to.be.false
+    expect(replacementChannel.nack.called).to.be.false
+    expect(replacementChannel.nackAll.called).to.be.false
+    expect(replacementChannel.reject.called).to.be.false
+  })
+
+  it('does not acknowledge the same manual delivery twice', () => {
+    const node = {
+      ...nodeFixture,
+      id: 'manual-in',
+      type: NodeType.AmqpInManualAck,
+      error: sinon.stub(),
+    }
+    const manualAckAmqp: any = new Amqp(RED, node, nodeConfigFixture)
+    const channel = { ack: sinon.stub() }
+    manualAckAmqp.channel = channel
+    const delivery = manualAckAmqp.assembleMessage({
+      content: Buffer.from('payload'),
+      fields: { deliveryTag: 42 },
+      properties: {},
+    })
+
+    manualAckAmqp.ack(delivery)
+    manualAckAmqp.ack(delivery)
+
+    expect(channel.ack.calledOnce).to.be.true
+    expect(node.error.calledWithMatch('active AMQP channel')).to.be.true
+  })
+
+  it('reports a failed manual acknowledgement when the channel rejects it', () => {
+    const node = {
+      ...nodeFixture,
+      id: 'manual-in',
+      type: NodeType.AmqpInManualAck,
+      error: sinon.stub(),
+    }
+    const manualAckAmqp: any = new Amqp(RED, node, nodeConfigFixture)
+    const channel = {
+      ack: sinon.stub().throws(new Error('channel is closed')),
+    }
+    manualAckAmqp.channel = channel
+    const delivery = manualAckAmqp.assembleMessage({
+      content: Buffer.from('payload'),
+      fields: { deliveryTag: 42 },
+      properties: {},
+    })
+
+    const acknowledged = manualAckAmqp.ack(delivery)
+
+    expect(acknowledged).to.equal(false)
+    expect(node.error.calledWithMatch('channel is closed')).to.be.true
+  })
+
   it('does not reuse a dead pooled connection', async () => {
     const staleConnection = {
       on: sinon.stub(),
@@ -438,6 +928,12 @@ describe('Amqp Class', () => {
     expect((Amqp as any).connectionPool.size).to.equal(0)
   })
 
+  it('closes safely before owning a connection', async () => {
+    await amqp.close()
+
+    expect((Amqp as any).connectionPool.size).to.equal(0)
+  })
+
   it('initialize()', async () => {
     const createChannelStub = sinon.stub()
     const assertExchangeStub = sinon.stub()
@@ -448,6 +944,40 @@ describe('Amqp Class', () => {
     await amqp.initialize()
     expect(createChannelStub.calledOnce).to.equal(true)
     expect(assertExchangeStub.calledOnce).to.equal(false)
+  })
+
+  it('closes a channel that resolves after initialization is aborted', async () => {
+    let resolveChannel: (channel: unknown) => void = () => undefined
+    const pendingChannel = new Promise(resolve => {
+      resolveChannel = resolve
+    })
+    const lateChannel = {
+      close: sinon.stub().resolves(),
+      on: sinon.stub(),
+      off: sinon.stub(),
+      prefetch: sinon.stub(),
+    }
+    amqp.connection = {
+      createChannel: sinon.stub().returns(pendingChannel),
+    }
+    const abortController = new AbortController()
+
+    const result = amqp
+      .initialize({ signal: abortController.signal })
+      .then(
+        () => 'initialized',
+        (error: Error) => error.message,
+      )
+    abortController.abort(new Error('initialization superseded'))
+    expect(await result).to.equal('initialization superseded')
+
+    await amqp.close()
+    resolveChannel(lateChannel)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(lateChannel.close.calledOnce).to.be.true
+    expect(lateChannel.on.called).to.be.false
   })
 
   it('initialize() skips exchange assertion when auto-create exchange is disabled', async () => {
@@ -760,6 +1290,23 @@ describe('Amqp Class', () => {
       expect(publishStub.calledOnce).to.equal(true)
     })
 
+    it('uses a per-call routing key without mutating configured routing', async () => {
+      const publishStub = sinon.stub().returns(true)
+      amqp.channel = { publish: publishStub }
+      amqp.config.exchange.routingKey = 'configured.route'
+
+      await Promise.all([
+        amqp.publish('first', undefined, 'route.first'),
+        amqp.publish('second', undefined, 'route.second'),
+      ])
+
+      expect(publishStub.getCalls().map(call => call.args[1])).to.deep.equal([
+        'route.first',
+        'route.second',
+      ])
+      expect(amqp.config.exchange.routingKey).to.equal('configured.route')
+    })
+
     it('publishes a message (direct w/RPC)', async () => {
       // @ts-ignore
       amqp = new Amqp(RED, nodeFixture, {
@@ -797,19 +1344,330 @@ describe('Amqp Class', () => {
       // expect(publishStub.calledOnce).to.equal(true)
     })
 
-    it('waits for confirms when enabled', async () => {
-      const publishStub = sinon.stub()
-      const waitForConfirmsStub = sinon.stub().resolves()
+    it('waits for the individual publish confirmation when enabled', async () => {
+      let confirmPublish: (error: Error | null) => void = () => undefined
+      const publishStub = sinon.stub().callsFake(
+        (
+          exchange: string,
+          routingKey: string,
+          content: Buffer,
+          options: unknown,
+          confirm: (error: Error | null) => void,
+        ) => {
+          confirmPublish = confirm
+          return true
+        },
+      )
       amqp.channel = {
         publish: publishStub,
-        waitForConfirms: waitForConfirmsStub,
       }
       amqp.config.waitForConfirms = true
 
-      await amqp.publish('a message')
+      let completed = false
+      const publish = amqp.publish('a message').then(() => {
+        completed = true
+      })
+      await Promise.resolve()
+
+      expect(completed).to.equal(false)
+      confirmPublish(null)
+      await publish
 
       expect(publishStub.calledOnce).to.equal(true)
-      expect(waitForConfirmsStub.calledOnce).to.equal(true)
+      expect(publishStub.firstCall.args[4]).to.be.a('function')
+    })
+
+    it('waits for channel drain when publish applies backpressure', async () => {
+      const { EventEmitter } = require('events')
+      const channel = new EventEmitter()
+      channel.publish = sinon.stub().returns(false)
+      amqp.channel = channel
+
+      let completed = false
+      const publishPromise = amqp.publish('a message').then(() => {
+        completed = true
+      })
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(completed).to.equal(false)
+
+      channel.emit('drain')
+      await publishPromise
+      expect(completed).to.equal(true)
+    })
+
+    it('gates later publishes through repeated channel drain cycles', async () => {
+      const { EventEmitter } = require('events')
+      const channel = new EventEmitter()
+      channel.publish = sinon.stub().returns(false)
+      amqp.channel = channel
+
+      const publishes = [
+        amqp.publish('first'),
+        amqp.publish('second'),
+        amqp.publish('third'),
+      ]
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(channel.publish.callCount).to.equal(1)
+      expect(channel.listenerCount('drain')).to.equal(1)
+      expect(channel.listenerCount('close')).to.equal(1)
+      expect(channel.listenerCount('error')).to.equal(1)
+
+      channel.emit('drain')
+      await new Promise(resolve => setImmediate(resolve))
+      expect(channel.publish.callCount).to.equal(2)
+      expect(channel.listenerCount('drain')).to.equal(1)
+
+      channel.emit('drain')
+      await new Promise(resolve => setImmediate(resolve))
+      expect(channel.publish.callCount).to.equal(3)
+      expect(channel.listenerCount('drain')).to.equal(1)
+
+      channel.emit('drain')
+      await Promise.all(publishes)
+      expect(channel.listenerCount('drain')).to.equal(0)
+      expect(channel.listenerCount('close')).to.equal(0)
+      expect(channel.listenerCount('error')).to.equal(0)
+    })
+
+    it('rejects all publishers waiting on the shared drain gate when the channel closes', async () => {
+      const { EventEmitter } = require('events')
+      const channel = new EventEmitter()
+      channel.publish = sinon.stub().returns(false)
+      amqp.channel = channel
+
+      const publishes = [
+        amqp.publish('first'),
+        amqp.publish('second'),
+        amqp.publish('third'),
+      ]
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(channel.publish.callCount).to.equal(1)
+      expect(channel.listenerCount('drain')).to.equal(1)
+      expect(channel.listenerCount('close')).to.equal(1)
+      expect(channel.listenerCount('error')).to.equal(1)
+
+      channel.emit('close')
+      const results = await Promise.allSettled(publishes)
+
+      expect(results.every(result => result.status === 'rejected')).to.equal(true)
+      expect(channel.publish.callCount).to.equal(1)
+      expect(channel.listenerCount('drain')).to.equal(0)
+      expect(channel.listenerCount('close')).to.equal(0)
+      expect(channel.listenerCount('error')).to.equal(0)
+    })
+
+    it('publishes mandatory messages without publisher confirms', async () => {
+      const publishStub = sinon.stub().returns(true)
+      amqp.channel = {
+        publish: publishStub,
+      }
+      amqp.config.waitForConfirms = false
+
+      await amqp.publish('a message', { mandatory: true })
+
+      expect(publishStub.calledOnce).to.equal(true)
+      expect(publishStub.firstCall.args[3].mandatory).to.equal(true)
+    })
+
+    it('reports unconfirmed mandatory returns through the channel warning', async () => {
+      const events: Record<string, (message?: unknown) => void> = {}
+      const warnStub = sinon.stub()
+      const channel = {
+        on: sinon.stub().callsFake(
+          (event: string, callback: (message?: unknown) => void) => {
+            events[event] = callback
+          },
+        ),
+        prefetch: sinon.stub().resolves(),
+        publish: sinon.stub().callsFake(
+          (
+            exchange: string,
+            routingKey: string,
+            content: Buffer,
+            options: unknown,
+          ) => {
+            events.return({
+              fields: {
+                replyCode: 312,
+                replyText: 'NO_ROUTE',
+                exchange,
+                routingKey,
+              },
+              properties: options,
+              content,
+            })
+            return true
+          },
+        ),
+      }
+      amqp.node = {
+        ...nodeFixture,
+        warn: warnStub,
+      }
+      amqp.connection = {
+        createChannel: sinon.stub().resolves(channel),
+      }
+      amqp.config.waitForConfirms = false
+      await amqp.initialize()
+
+      await amqp.publish('a message', { mandatory: true })
+
+      expect(channel.publish.calledOnce).to.equal(true)
+      expect(warnStub.calledOnceWithMatch('AMQP Message returned')).to.equal(
+        true,
+      )
+    })
+
+    it('rejects a confirmed publish when the broker returns a mandatory message', async () => {
+      const events: Record<string, (message?: unknown) => void> = {}
+      let confirmPublish: (error: Error | null) => void = () => undefined
+      const channel = {
+        on: sinon.stub().callsFake(
+          (event: string, callback: (message?: unknown) => void) => {
+            events[event] = callback
+          },
+        ),
+        prefetch: sinon.stub().resolves(),
+        publish: sinon.stub().callsFake(
+          (
+            exchange: string,
+            routingKey: string,
+            content: Buffer,
+            options: unknown,
+            confirm: (error: Error | null) => void,
+          ) => {
+            confirmPublish = confirm
+            return true
+          },
+        ),
+      }
+      amqp.connection = {
+        createConfirmChannel: sinon.stub().resolves(channel),
+      }
+      amqp.config.waitForConfirms = true
+      await amqp.initialize()
+
+      const publishResult = amqp
+        .publish('a message', {
+          mandatory: true,
+          messageId: 'returned-message',
+        })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        )
+      await Promise.resolve()
+
+      const publishedOptions = channel.publish.firstCall.args[3]
+      events.return({
+        fields: {
+          replyCode: 312,
+          replyText: 'NO_ROUTE',
+          exchange: 'events',
+          routingKey: 'missing.route',
+        },
+        properties: publishedOptions,
+        content: Buffer.from('a message'),
+      })
+      confirmPublish(null)
+
+      const publishError = await publishResult
+      expect(publishError).to.be.instanceOf(Error)
+    })
+
+    it('reports successful and failed routing keys after partial mandatory delivery', async () => {
+      const events: Record<string, (message?: unknown) => void> = {}
+      const channel = {
+        on: sinon.stub().callsFake(
+          (event: string, callback: (message?: unknown) => void) => {
+            events[event] = callback
+          },
+        ),
+        prefetch: sinon.stub().resolves(),
+        publish: sinon.stub().callsFake(
+          (
+            exchange: string,
+            routingKey: string,
+            content: Buffer,
+            options: unknown,
+            confirm: (error: Error | null) => void,
+          ) => {
+            if (routingKey === 'route.missing') {
+              events.return({
+                fields: {
+                  replyCode: 312,
+                  replyText: 'NO_ROUTE',
+                  exchange,
+                  routingKey,
+                },
+                properties: options,
+                content,
+              })
+            }
+            queueMicrotask(() => confirm(null))
+            return true
+          },
+        ),
+      }
+      amqp.connection = {
+        createConfirmChannel: sinon.stub().resolves(channel),
+      }
+      amqp.config.exchange.routingKey = 'route.ok,route.missing'
+      amqp.config.waitForConfirms = true
+      await amqp.initialize()
+
+      const publishError = await amqp
+        .publish('a message', { mandatory: true })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        )
+
+      expect(publishError).to.be.instanceOf(Error)
+      expect(publishError.successfulRoutingKeys).to.deep.equal(['route.ok'])
+      expect(publishError.failedRoutingKeys).to.deep.equal(['route.missing'])
+    })
+
+    it('attributes publisher confirms to their individual routing keys', async () => {
+      const channel = {
+        publish: sinon.stub().callsFake(
+          (
+            exchange: string,
+            routingKey: string,
+            content: Buffer,
+            options: unknown,
+            confirm?: (error: Error | null) => void,
+          ) => {
+            queueMicrotask(() => {
+              confirm?.(
+                routingKey === 'route.failed'
+                  ? new Error('broker nacked route.failed')
+                  : null,
+              )
+            })
+            return true
+          },
+        ),
+        waitForConfirms: sinon
+          .stub()
+          .rejects(new Error('an earlier publish was nacked')),
+      }
+      amqp.channel = channel
+      amqp.config.exchange.routingKey = 'route.failed,route.ok'
+      amqp.config.waitForConfirms = true
+
+      const publishError = await amqp.publish('a message').then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+
+      expect(publishError).to.be.instanceOf(Error)
+      expect(publishError.successfulRoutingKeys).to.deep.equal(['route.ok'])
+      expect(publishError.failedRoutingKeys).to.deep.equal(['route.failed'])
+      expect(channel.waitForConfirms.called).to.equal(false)
     })
 
     it('tries to publish an invalid message', async () => {
@@ -971,6 +1829,515 @@ describe('Amqp Class', () => {
       expect(closeChannelStub.calledOnce).to.be.true
       expect(releaseConnectionStub.calledOnce).to.be.true
     })
+
+    it('unbinds the configured route from a durable named queue on terminal close', async () => {
+      const unbindQueueStub = sinon.stub().resolves()
+      const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+      const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'orders' }
+      amqp.config.exchange = {
+        ...amqp.config.exchange,
+        autoCreate: true,
+        name: 'orders-exchange',
+        routingKey: 'orders.v1',
+      }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'orders',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await amqp.close({ removeBindings: true })
+
+      expect(
+        unbindQueueStub.calledOnceWith(
+          'orders',
+          'orders-exchange',
+          'orders.v1',
+        ),
+      ).to.be.true
+      expect(closeChannelStub.calledOnce).to.be.true
+      expect(releaseConnectionStub.calledOnce).to.be.true
+    })
+
+    it('retries binding cleanup when the active-channel unbind fails', async () => {
+      const unbindQueueStub = sinon.stub()
+      unbindQueueStub.onFirstCall().rejects(new Error('unbind failed'))
+      unbindQueueStub.onSecondCall().resolves()
+      const cleanupChannel = { unbindQueue: unbindQueueStub }
+      const connectStub = sinon.stub(amqp, 'connect').resolves({} as any)
+      const createChannelStub = sinon.stub(amqp, 'createChannel' as any).callsFake(async () => {
+        amqp.channel = cleanupChannel
+        return cleanupChannel as any
+      })
+      sinon.stub(amqp, 'closeChannel' as any).resolves()
+      sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'orders' }
+      amqp.config.exchange = {
+        ...amqp.config.exchange,
+        autoCreate: true,
+        name: 'orders-exchange',
+        routingKey: 'orders.v1',
+      }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'orders',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await amqp.close({ removeBindings: true })
+
+      expect(unbindQueueStub.calledTwice).to.be.true
+      expect(connectStub.calledOnce).to.be.true
+      expect(createChannelStub.calledOnce).to.be.true
+    })
+
+    it('fails one terminal close after exhausting binding cleanup retries', async () => {
+      const unbindQueueStub = sinon.stub().rejects(new Error('unbind failed'))
+      const cleanupChannel = { unbindQueue: unbindQueueStub }
+      const connectStub = sinon.stub(amqp, 'connect').resolves({} as any)
+      const createChannelStub = sinon.stub(amqp, 'createChannel' as any).callsFake(async () => {
+        amqp.channel = cleanupChannel
+        return cleanupChannel as any
+      })
+      const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+      const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'orders' }
+      amqp.config.exchange = {
+        ...amqp.config.exchange,
+        autoCreate: true,
+        name: 'orders-exchange',
+        routingKey: 'orders.v1',
+      }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'orders',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      let cleanupError
+      try {
+        await amqp.close({ removeBindings: true })
+      } catch (error) {
+        cleanupError = error
+      }
+
+      expect(String(cleanupError)).to.match(
+        /Could not remove AMQP bindings after 3 attempts/,
+      )
+      expect(unbindQueueStub.callCount).to.equal(3)
+      expect(connectStub.callCount).to.equal(2)
+      expect(createChannelStub.callCount).to.equal(2)
+      expect(closeChannelStub.callCount).to.equal(3)
+      expect(releaseConnectionStub.callCount).to.equal(3)
+    })
+
+    it('reopens resources to remove durable bindings after reconnect already closed them', async () => {
+      const unbindQueueStub = sinon.stub().resolves()
+      const cleanupChannel = {
+        unbindQueue: unbindQueueStub,
+      }
+      const connectStub = sinon.stub(amqp, 'connect').resolves({} as any)
+      const createChannelStub = sinon.stub(amqp, 'createChannel' as any).callsFake(async () => {
+        amqp.channel = cleanupChannel
+        return cleanupChannel as any
+      })
+      const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+      const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+      amqp.q = { queue: 'orders' }
+      amqp.config.exchange = {
+        ...amqp.config.exchange,
+        autoCreate: true,
+        name: 'orders-exchange',
+        routingKey: 'orders.v1',
+      }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'orders',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await amqp.close()
+      await amqp.close({ removeBindings: true })
+
+      expect(connectStub.calledOnce).to.be.true
+      expect(createChannelStub.calledOnce).to.be.true
+      expect(
+        unbindQueueStub.calledOnceWith(
+          'orders',
+          'orders-exchange',
+          'orders.v1',
+        ),
+      ).to.be.true
+      expect(closeChannelStub.calledTwice).to.be.true
+      expect(releaseConnectionStub.calledTwice).to.be.true
+    })
+
+    it('does not initialize or assert obsolete topology during reopened binding cleanup', async () => {
+      const cleanupChannel = { unbindQueue: sinon.stub().resolves() }
+      const connectStub = sinon.stub(amqp, 'connect').resolves({} as any)
+      const createChannelStub = sinon
+        .stub(amqp, 'createChannel' as any)
+        .callsFake(async () => {
+          amqp.channel = cleanupChannel
+          return cleanupChannel as any
+        })
+      const initializeStub = sinon
+        .stub(amqp, 'initialize')
+        .callsFake(async () => {
+          amqp.channel = cleanupChannel
+          return cleanupChannel as any
+        })
+      sinon.stub(amqp, 'closeChannel' as any).resolves()
+      sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+      amqp.q = { queue: 'orders' }
+      amqp.config.exchange = {
+        ...amqp.config.exchange,
+        autoCreate: true,
+        name: 'obsolete-exchange',
+        routingKey: 'orders.v1',
+      }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'orders',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await amqp.close()
+      await amqp.close({ removeBindings: true })
+
+      expect(connectStub.calledOnce).to.be.true
+      expect(createChannelStub.calledOnce).to.be.true
+      expect(initializeStub.called).to.be.false
+      expect(cleanupChannel.unbindQueue.calledOnce).to.be.true
+    })
+
+    it('retries binding cleanup when a reopened-channel unbind fails', async () => {
+      const unbindQueueStub = sinon.stub()
+      unbindQueueStub.onFirstCall().rejects(new Error('unbind failed'))
+      unbindQueueStub.onSecondCall().resolves()
+      const cleanupChannel = { unbindQueue: unbindQueueStub }
+      const connectStub = sinon.stub(amqp, 'connect').resolves({} as any)
+      const createChannelStub = sinon.stub(amqp, 'createChannel' as any).callsFake(async () => {
+        amqp.channel = cleanupChannel
+        return cleanupChannel as any
+      })
+      sinon.stub(amqp, 'closeChannel' as any).resolves()
+      sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+      amqp.q = { queue: 'orders' }
+      amqp.config.exchange = {
+        ...amqp.config.exchange,
+        autoCreate: true,
+        name: 'orders-exchange',
+        routingKey: 'orders.v1',
+      }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'orders',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await amqp.close()
+      await amqp.close({ removeBindings: true })
+
+      expect(unbindQueueStub.calledTwice).to.be.true
+      expect(connectStub.calledTwice).to.be.true
+      expect(createChannelStub.calledTwice).to.be.true
+    })
+
+    it('retries binding cleanup when the cleanup connection initially fails', async () => {
+      const unbindQueueStub = sinon.stub().resolves()
+      const cleanupChannel = { unbindQueue: unbindQueueStub }
+      const connectStub = sinon.stub(amqp, 'connect')
+      connectStub.onFirstCall().rejects(new Error('temporary connect failure'))
+      connectStub.onSecondCall().resolves({} as any)
+      const createChannelStub = sinon.stub(amqp, 'createChannel' as any).callsFake(async () => {
+        amqp.channel = cleanupChannel
+        return cleanupChannel as any
+      })
+      const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+      const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+      amqp.q = { queue: 'orders' }
+      amqp.config.exchange = {
+        ...amqp.config.exchange,
+        autoCreate: true,
+        name: 'orders-exchange',
+        routingKey: 'orders.v1',
+      }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'orders',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await amqp.close()
+      await amqp.close({ removeBindings: true })
+
+      expect(connectStub.calledTwice).to.be.true
+      expect(createChannelStub.calledOnce).to.be.true
+      expect(unbindQueueStub.calledOnce).to.be.true
+      expect(closeChannelStub.calledTwice).to.be.true
+      expect(releaseConnectionStub.calledTwice).to.be.true
+    })
+
+    it('retries binding cleanup when cleanup channel creation initially fails', async () => {
+      const unbindQueueStub = sinon.stub().resolves()
+      const cleanupChannel = { unbindQueue: unbindQueueStub }
+      const connectStub = sinon.stub(amqp, 'connect').resolves({} as any)
+      const createChannelStub = sinon.stub(amqp, 'createChannel' as any)
+      createChannelStub.onFirstCall().rejects(new Error('temporary channel failure'))
+      createChannelStub.onSecondCall().callsFake(async () => {
+        amqp.channel = cleanupChannel
+        return cleanupChannel as any
+      })
+      const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+      const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+      amqp.q = { queue: 'orders' }
+      amqp.config.exchange = {
+        ...amqp.config.exchange,
+        autoCreate: true,
+        name: 'orders-exchange',
+        routingKey: 'orders.v1',
+      }
+      amqp.config.queue = {
+        ...amqp.config.queue,
+        name: 'orders',
+        durable: true,
+        exclusive: false,
+        autoDelete: false,
+      }
+
+      await amqp.close()
+      await amqp.close({ removeBindings: true })
+
+      expect(connectStub.calledTwice).to.be.true
+      expect(createChannelStub.calledTwice).to.be.true
+      expect(unbindQueueStub.calledOnce).to.be.true
+      expect(closeChannelStub.calledThrice).to.be.true
+      expect(releaseConnectionStub.calledThrice).to.be.true
+    })
+
+    it('uses one overall cleanup budget when the broker does not respond', async () => {
+      const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+      try {
+        const connectStub = sinon
+          .stub(amqplib, 'connect')
+          .callsFake(
+            (_url: string, socketOptions: { timeout?: number }) =>
+              new Promise((_resolve, reject) => {
+                if (socketOptions.timeout) {
+                  setTimeout(
+                    () => reject(new Error('connect ETIMEDOUT')),
+                    socketOptions.timeout,
+                  )
+                }
+              }),
+          )
+        sinon.stub(amqp, 'closeChannel' as any).resolves()
+        sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+        amqp.q = { queue: 'orders' }
+        amqp.config.exchange = {
+          ...amqp.config.exchange,
+          autoCreate: true,
+          name: 'orders-exchange',
+          routingKey: 'orders.v1',
+        }
+        amqp.config.queue = {
+          ...amqp.config.queue,
+          name: 'orders',
+          durable: true,
+          exclusive: false,
+          autoDelete: false,
+        }
+
+        await amqp.close()
+        let cleanupSettled = false
+        const cleanup = amqp.close({ removeBindings: true }).then(
+          () => {
+            cleanupSettled = true
+          },
+          () => {
+            cleanupSettled = true
+          },
+        )
+        await clock.tickAsync(4_999)
+
+        expect(cleanupSettled).to.be.false
+        expect(connectStub.firstCall.args[1]).to.deep.equal({ heartbeat: 2 })
+
+        await clock.tickAsync(2)
+
+        expect(cleanupSettled).to.be.true
+        expect(connectStub.calledOnce).to.be.true
+        await cleanup
+      } finally {
+        clock.restore()
+      }
+    })
+
+    it('applies the cleanup budget to the initial active-channel unbind', async () => {
+      const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+      try {
+        const unbindQueueStub = sinon.stub().returns(new Promise(() => undefined))
+        const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+        const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+        amqp.channel = { unbindQueue: unbindQueueStub }
+        amqp.q = { queue: 'orders' }
+        amqp.config.exchange = {
+          ...amqp.config.exchange,
+          autoCreate: true,
+          name: 'orders-exchange',
+          routingKey: 'orders.v1',
+        }
+
+        let closeSettled = false
+        const close = amqp.close({ removeBindings: true }).then(
+          () => {
+            closeSettled = true
+          },
+          () => {
+            closeSettled = true
+          },
+        )
+        await clock.tickAsync(4_999)
+        expect(closeSettled).to.be.false
+
+        await clock.tickAsync(2)
+        expect(closeSettled).to.be.true
+        expect(closeChannelStub.calledOnce).to.be.true
+        expect(releaseConnectionStub.calledOnce).to.be.true
+        await close
+      } finally {
+        clock.restore()
+      }
+    })
+
+    it('applies the cleanup budget to reopened channel creation', async () => {
+      const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+      try {
+        sinon.stub(amqp, 'connect').resolves({} as any)
+        sinon.stub(amqp, 'createChannel' as any).returns(new Promise(() => undefined))
+        const closeChannelStub = sinon.stub(amqp, 'closeChannel' as any).resolves()
+        const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+        amqp.q = { queue: 'orders' }
+        amqp.config.exchange = {
+          ...amqp.config.exchange,
+          autoCreate: true,
+          name: 'orders-exchange',
+          routingKey: 'orders.v1',
+        }
+
+        await amqp.close()
+        let cleanupSettled = false
+        const cleanup = amqp.close({ removeBindings: true }).then(
+          () => {
+            cleanupSettled = true
+          },
+          () => {
+            cleanupSettled = true
+          },
+        )
+        await clock.tickAsync(5_001)
+
+        expect(cleanupSettled).to.be.true
+        expect(closeChannelStub.calledTwice).to.be.true
+        expect(releaseConnectionStub.calledTwice).to.be.true
+        await cleanup
+      } finally {
+        clock.restore()
+      }
+    })
+
+    it('applies the cleanup budget to channel close and still attempts release', async () => {
+      const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+      try {
+        amqp.channel = { unbindQueue: sinon.stub().resolves() }
+        amqp.q = { queue: 'orders' }
+        amqp.config.exchange = {
+          ...amqp.config.exchange,
+          autoCreate: true,
+          name: 'orders-exchange',
+          routingKey: 'orders.v1',
+        }
+        sinon.stub(amqp, 'closeChannel' as any).returns(new Promise(() => undefined))
+        const releaseConnectionStub = sinon.stub(amqp, 'releaseConnection' as any).resolves()
+
+        let closeSettled = false
+        const close = amqp.close({ removeBindings: true }).then(
+          () => {
+            closeSettled = true
+          },
+          () => {
+            closeSettled = true
+          },
+        )
+        await clock.tickAsync(5_001)
+
+        expect(closeSettled).to.be.true
+        expect(releaseConnectionStub.calledOnce).to.be.true
+        await close
+      } finally {
+        clock.restore()
+      }
+    })
+
+    it('applies the cleanup budget to connection release', async () => {
+      const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+      try {
+        amqp.channel = { unbindQueue: sinon.stub().resolves() }
+        amqp.q = { queue: 'orders' }
+        amqp.config.exchange = {
+          ...amqp.config.exchange,
+          autoCreate: true,
+          name: 'orders-exchange',
+          routingKey: 'orders.v1',
+        }
+        sinon.stub(amqp, 'closeChannel' as any).resolves()
+        sinon.stub(amqp, 'releaseConnection' as any).returns(new Promise(() => undefined))
+
+        let closeSettled = false
+        const close = amqp.close({ removeBindings: true }).then(
+          () => {
+            closeSettled = true
+          },
+          () => {
+            closeSettled = true
+          },
+        )
+        await clock.tickAsync(5_001)
+
+        expect(closeSettled).to.be.true
+        await close
+      } finally {
+        clock.restore()
+      }
+    })
   })
 
   describe('unbindQueues()', () => {
@@ -1127,6 +2494,25 @@ describe('Amqp Class', () => {
 
       expect(errorStub.calledOnceWithMatch('Error unbinding queue for routing key')).to.be.true
     })
+
+    it('treats a missing queue or exchange as already clean', async () => {
+      const notFoundError = Object.assign(new Error('NOT_FOUND'), {
+        replyCode: 404,
+      })
+      const unbindQueueStub = sinon.stub().rejects(notFoundError)
+      const errorStub = sinon.stub()
+      amqp.channel = { unbindQueue: unbindQueueStub }
+      amqp.q = { queue: 'removed-queue' }
+      amqp.node = { error: errorStub }
+      amqp.config.exchange.autoCreate = true
+      amqp.setRoutingKey('orders.created,orders.updated')
+
+      const succeeded = await (amqp as any).unbindQueues(true)
+
+      expect(succeeded).to.equal(true)
+      expect(unbindQueueStub.calledOnce).to.be.true
+      expect(errorStub.called).to.be.false
+    })
   })
 
   describe('closeChannel()', () => {
@@ -1186,6 +2572,65 @@ describe('Amqp Class', () => {
     expect(result.prefetch.calledOnce).to.equal(true)
   })
 
+  for (const [channelType, waitForConfirms] of [
+    ['regular', false],
+    ['confirm', true],
+  ] as const) {
+    it(`closes a stale ${channelType} channel that finishes creation after reconnect`, async () => {
+      let resolveChannel: (channel: unknown) => void = () => undefined
+      const pendingChannel = new Promise(resolve => {
+        resolveChannel = resolve
+      })
+      const lateChannel = {
+        close: sinon.stub().resolves(),
+        off: sinon.stub(),
+        on: sinon.stub(),
+        prefetch: sinon.stub(),
+      }
+      const sharedConnection = {
+        close: sinon.stub().resolves(),
+        createChannel: sinon.stub(),
+        createConfirmChannel: sinon.stub(),
+        off: sinon.stub(),
+        on: sinon.stub(),
+      }
+      const createChannelStub = waitForConfirms
+        ? sharedConnection.createConfirmChannel
+        : sharedConnection.createChannel
+      createChannelStub.returns(pendingChannel)
+
+      amqp.broker = brokerConfigFixture
+      amqp.config.waitForConfirms = waitForConfirms
+      amqp.connection = sharedConnection
+      amqp.channel = undefined
+      const poolKey = `${amqp.config.broker}:${brokerConfigFixture.vhost}`
+      ;(Amqp as any).connectionPool.set(poolKey, {
+        connection: sharedConnection,
+        count: 2,
+      })
+
+      const initialization = amqp.initialize()
+      expect(createChannelStub.calledOnce).to.equal(true)
+
+      await amqp.close()
+      await amqp.connect()
+      resolveChannel(lateChannel)
+      const initializationResult = await initialization.then(
+        () => 'fulfilled',
+        () => 'rejected',
+      )
+
+      // This mirrors stale-initialization cleanup after reconnect started.
+      await amqp.close()
+
+      expect(initializationResult).to.equal('rejected')
+      expect(lateChannel.close.calledOnce).to.equal(true)
+      expect(lateChannel.prefetch.called).to.equal(false)
+      expect(lateChannel.on.called).to.equal(false)
+      expect(sharedConnection.close.called).to.equal(false)
+    })
+  }
+
   it('createChannel() logs events', async () => {
     const events: { [key: string]: Function } = {}
     const result = {
@@ -1207,7 +2652,15 @@ describe('Amqp Class', () => {
     await amqp.createChannel()
 
     events['close']()
-    events['return']()
+    events['return']({
+      fields: {
+        replyCode: 312,
+        replyText: 'NO_ROUTE',
+        exchange: 'events',
+        routingKey: 'missing.route',
+      },
+      properties: { headers: {} },
+    })
     events['error']('oops')
 
     expect(logStub.calledWithMatch('AMQP Channel closed')).to.be.true
@@ -1444,6 +2897,27 @@ describe('Amqp Class', () => {
   })
 
   describe('setVhost()', () => {
+    it('switches vhost safely while the initial connection is still pending', async () => {
+      const replacementConnection = {
+        on: sinon.stub(),
+        off: sinon.stub(),
+        close: sinon.stub().resolves(),
+        connection: { stream: { destroyed: false } },
+      }
+      const connectStub = sinon.stub(amqplib, 'connect')
+      connectStub.onFirstCall().returns(new Promise(() => undefined))
+      connectStub.onSecondCall().resolves(replacementConnection)
+      const initializeStub = sinon.stub(amqp, 'initialize').resolves({} as any)
+
+      void amqp.connect()
+      await Promise.resolve()
+      await amqp.setVhost('replacement-vhost')
+
+      expect(connectStub.calledTwice).to.be.true
+      expect(initializeStub.calledOnce).to.be.true
+      expect(amqp.getConnection()).to.equal(replacementConnection)
+    })
+
     it('reconnects when vhost changes', async () => {
       amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
       const closeStub = sinon.stub(amqp, 'close').resolves()
@@ -1549,6 +3023,112 @@ describe('Amqp Class', () => {
         expect(deleteQueueStub.calledOnce).to.be.true;
     });
 
+    it('starts the RPC timeout only after a backpressured request is published', async () => {
+        const { EventEmitter } = require('events');
+        const sendStub = sinon.stub();
+        const deleteQueueStub = sinon.stub().resolves();
+        const assertQueueStub = sinon.stub().resolves('rpc-queue');
+        const consumeStub = sinon.stub().resolves({ consumerTag: 'rpc-consumer' });
+        const channel = new EventEmitter();
+        channel.assertQueue = assertQueueStub;
+        channel.consume = consumeStub;
+        channel.deleteQueue = deleteQueueStub;
+        channel.publish = sinon.stub();
+        channel.publish.onFirstCall().returns(false);
+        channel.publish.onSecondCall().returns(true);
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub() };
+        amqp.channel = channel;
+        amqp.config.outputs = 0;
+
+        const saturatedPublish = amqp.publish('fill write buffer');
+        await clock.tickAsync(0);
+        expect(channel.publish.calledOnce).to.be.true;
+
+        amqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+        const rpcPublish = amqp.publish('execute once', {
+            correlationId: 'rpc-after-drain',
+            replyTo: 'rpc-queue',
+        });
+        await clock.tickAsync(0);
+
+        await clock.tickAsync(500);
+        const timedOutBeforePublish = sendStub.called;
+        const deletedBeforePublish = deleteQueueStub.called;
+        const publishCountBeforeDrain = channel.publish.callCount;
+
+        channel.emit('drain');
+        await Promise.all([saturatedPublish, rpcPublish]);
+        expect(channel.publish.callCount).to.equal(2);
+
+        await clock.tickAsync(999);
+        const timedOutBeforeFullPublishedInterval = sendStub.called;
+        await clock.tickAsync(2);
+
+        expect(timedOutBeforePublish).to.be.false;
+        expect(deletedBeforePublish).to.be.false;
+        expect(publishCountBeforeDrain).to.equal(1);
+        expect(timedOutBeforeFullPublishedInterval).to.be.false;
+        expect(sendStub.calledOnce).to.be.true;
+        expect(deleteQueueStub.calledOnce).to.be.true;
+    });
+
+    it('cancels an RPC write that exceeds the backpressure admission deadline', async () => {
+        const { EventEmitter } = require('events');
+        const sendStub = sinon.stub();
+        const deleteQueueStub = sinon.stub().resolves();
+        const channel = new EventEmitter();
+        channel.assertQueue = sinon.stub().resolves('rpc-queue');
+        channel.consume = sinon.stub().resolves({ consumerTag: 'rpc-consumer' });
+        channel.deleteQueue = deleteQueueStub;
+        channel.publish = sinon.stub();
+        channel.publish.onFirstCall().returns(false);
+        channel.publish.onSecondCall().returns(true);
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub() };
+        amqp.channel = channel;
+        amqp.config.outputs = 0;
+
+        const saturatedPublish = amqp.publish('fill write buffer');
+        await clock.tickAsync(0);
+
+        amqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+        let admissionError;
+        let rpcSettled = false;
+        const rpcPublish = amqp.publish('must not execute remotely', {
+            correlationId: 'rpc-admission-timeout',
+            replyTo: 'rpc-queue',
+        }).then(
+            () => {
+                rpcSettled = true;
+            },
+            error => {
+                admissionError = error;
+                rpcSettled = true;
+            },
+        );
+
+        amqp.config.outputs = 0;
+        const laterPublish = amqp.publish('publish after cancelled RPC');
+        await clock.tickAsync(1001);
+
+        expect(rpcSettled).to.be.true;
+        expect(String(admissionError)).to.match(/waiting to publish RPC request/);
+        expect(channel.publish.calledOnce).to.be.true;
+        expect(sendStub.called).to.be.false;
+        expect(deleteQueueStub.calledOnce).to.be.true;
+
+        channel.emit('drain');
+        await Promise.all([saturatedPublish, rpcPublish, laterPublish]);
+
+        expect(channel.publish.callCount).to.equal(2);
+        expect(channel.publish.secondCall.args[2].toString()).to.equal(
+            'publish after cancelled RPC',
+        );
+    });
+
     it('handles RPC timeout with mismatched correlation ID message', async () => {
         const sendStub = sinon.stub();
         const deleteQueueStub = sinon.stub().resolves();
@@ -1582,8 +3162,267 @@ describe('Amqp Class', () => {
         await clock.tickAsync(1001);
 
         expect(sendStub.calledOnce).to.be.true;
-        expect(sendStub.firstCall.args[0].payload.message).to.match(/Correlation ids do not match/);
+        expect(sendStub.firstCall.args[0].payload.message).to.match(/Observed 1 unmatched RPC response/);
+        expect(sendStub.firstCall.args[0].payload.message).to.not.include('wrong-id');
         expect(deleteQueueStub.calledOnce).to.be.true;
+    });
+
+    it('bounds unmatched RPC response diagnostics across concurrent requests', async () => {
+        const sendStub = sinon.stub();
+        const deleteQueueStub = sinon.stub().resolves();
+        const assertQueueStub = sinon.stub().resolves('shared-rpc-queue');
+        let consumeCallback;
+        const consumeStub = sinon.stub().callsFake((queue, cb) => {
+            consumeCallback = cb;
+            return Promise.resolve({ consumerTag: 'shared-consumer' });
+        });
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub() };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            publish: sinon.stub(),
+        };
+        amqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+
+        await Promise.all([
+            amqp.publish('request-one', {
+                correlationId: 'correlation-one',
+                replyTo: 'shared-rpc-queue',
+            }),
+            amqp.publish('request-two', {
+                correlationId: 'correlation-two',
+                replyTo: 'shared-rpc-queue',
+            }),
+        ]);
+
+        const peerControlledPrefix = `peer-controlled-${'x'.repeat(1024)}`;
+        for (let index = 0; index < 150; index += 1) {
+            consumeCallback({
+                properties: {
+                    correlationId: `${peerControlledPrefix}-${index}`,
+                },
+                content: Buffer.from('{"late":true}'),
+            });
+        }
+
+        await clock.tickAsync(1001);
+
+        expect(sendStub.callCount).to.equal(2);
+        for (const call of sendStub.getCalls()) {
+            const message = call.args[0].payload.message;
+            expect(message).to.match(/Observed 100\+ unmatched RPC responses/);
+            expect(message).to.not.include('peer-controlled');
+            expect(message.length).to.be.lessThan(250);
+        }
+        expect(deleteQueueStub.calledOnce).to.be.true;
+    });
+
+    it('does not lose concurrent RPC responses that share a reply queue', async () => {
+        const sendStub = sinon.stub();
+        const deleteQueueStub = sinon.stub().resolves();
+        const assertQueueStub = sinon.stub().resolves('shared-reply-queue');
+        const consumeCallbacks: Array<(message: unknown) => void> = [];
+        const consumeStub = sinon.stub().callsFake((queue, callback) => {
+            consumeCallbacks.push(callback);
+            return Promise.resolve({ consumerTag: `consumer-${consumeCallbacks.length}` });
+        });
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub() };
+        amqp.channel = {
+            assertQueue: assertQueueStub,
+            consume: consumeStub,
+            deleteQueue: deleteQueueStub,
+            publish: sinon.stub(),
+        };
+        amqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+
+        await Promise.all([
+            amqp.publish('request-one', {
+                correlationId: 'correlation-one',
+                replyTo: 'shared-reply-queue',
+            }),
+            amqp.publish('request-two', {
+                correlationId: 'correlation-two',
+                replyTo: 'shared-reply-queue',
+            }),
+        ]);
+
+        expect(consumeStub.calledOnce).to.equal(true);
+
+        const sharedConsumer = consumeCallbacks[0];
+        sharedConsumer({
+            fields: { deliveryTag: 1 },
+            properties: { correlationId: 'correlation-two' },
+            content: Buffer.from('{"response":2}'),
+        });
+        sharedConsumer({
+            fields: { deliveryTag: 2 },
+            properties: { correlationId: 'correlation-one' },
+            content: Buffer.from('{"response":1}'),
+        });
+        await Promise.resolve();
+
+        expect(sendStub.callCount).to.equal(2);
+        expect(sendStub.getCalls().map(call => call.args[0].payload)).to.deep.equal([
+            { response: 2 },
+            { response: 1 },
+        ]);
+    });
+
+    it('does not lose RPC responses when separate instances share a reply queue', async () => {
+        const firstSendStub = sinon.stub();
+        const secondSendStub = sinon.stub();
+        const firstCallbacks: Array<(message: unknown) => void> = [];
+        const secondCallbacks: Array<(message: unknown) => void> = [];
+        const firstDeleteQueueStub = sinon.stub().resolves();
+        const secondDeleteQueueStub = sinon.stub().resolves();
+        const sharedConnection = {};
+
+        const secondAmqp: any = new Amqp(
+            RED,
+            { ...nodeFixture, id: 'rpc-node-two', send: secondSendStub, error: sinon.stub() },
+            nodeConfigFixture,
+        );
+        amqp.node = {
+            ...nodeFixture,
+            id: 'rpc-node-one',
+            send: firstSendStub,
+            error: sinon.stub(),
+        };
+        amqp.connection = sharedConnection;
+        secondAmqp.connection = sharedConnection;
+        amqp.channel = {
+            assertQueue: sinon.stub().resolves('shared-reply-queue'),
+            consume: sinon.stub().callsFake((queue, callback) => {
+                firstCallbacks.push(callback);
+                return Promise.resolve({ consumerTag: 'consumer-one' });
+            }),
+            deleteQueue: firstDeleteQueueStub,
+            publish: sinon.stub(),
+        };
+        secondAmqp.channel = {
+            assertQueue: sinon.stub().resolves('shared-reply-queue'),
+            consume: sinon.stub().callsFake((queue, callback) => {
+                secondCallbacks.push(callback);
+                return Promise.resolve({ consumerTag: 'consumer-two' });
+            }),
+            deleteQueue: secondDeleteQueueStub,
+            publish: sinon.stub(),
+        };
+        amqp.config.outputs = 1;
+        secondAmqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+        secondAmqp.config.rpcTimeout = 1000;
+
+        await Promise.all([
+            amqp.publish('request-one', {
+                correlationId: 'correlation-one',
+                replyTo: 'shared-reply-queue',
+            }),
+            secondAmqp.publish('request-two', {
+                correlationId: 'correlation-two',
+                replyTo: 'shared-reply-queue',
+            }),
+        ]);
+
+        const brokerSelectedConsumer = firstCallbacks[0];
+        brokerSelectedConsumer({
+            fields: { deliveryTag: 1 },
+            properties: { correlationId: 'correlation-one' },
+            content: Buffer.from('{"response":1}'),
+        });
+        await Promise.resolve();
+
+        expect(firstDeleteQueueStub.called).to.equal(false);
+        expect(secondDeleteQueueStub.called).to.equal(false);
+
+        brokerSelectedConsumer({
+            fields: { deliveryTag: 2 },
+            properties: { correlationId: 'correlation-two' },
+            content: Buffer.from('{"response":2}'),
+        });
+        await Promise.resolve();
+
+        expect(firstSendStub.calledOnce).to.equal(true);
+        expect(secondSendStub.calledOnce).to.equal(true);
+        expect(secondSendStub.firstCall.args[0].payload).to.deep.equal({
+            response: 2,
+        });
+        expect(secondCallbacks).to.have.length(0);
+    });
+
+    it('waits for shared RPC consumer cleanup before recreating its reply queue', async () => {
+        let finishDeleteQueue: () => void = () => undefined;
+        const deleteQueuePending = new Promise<void>(resolve => {
+            finishDeleteQueue = resolve;
+        });
+        const firstCallbacks: Array<(message: unknown) => void> = [];
+        const sharedConnection = {};
+        const secondAmqp: any = new Amqp(
+            RED,
+            { ...nodeFixture, id: 'rpc-node-two', send: sinon.stub(), error: sinon.stub() },
+            nodeConfigFixture,
+        );
+
+        amqp.node = {
+            ...nodeFixture,
+            id: 'rpc-node-one',
+            send: sinon.stub(),
+            error: sinon.stub(),
+        };
+        amqp.connection = sharedConnection;
+        secondAmqp.connection = sharedConnection;
+        amqp.channel = {
+            assertQueue: sinon.stub().resolves('shared-reply-queue'),
+            consume: sinon.stub().callsFake((queue, callback) => {
+                firstCallbacks.push(callback);
+                return Promise.resolve({ consumerTag: 'consumer-one' });
+            }),
+            deleteQueue: sinon.stub().returns(deleteQueuePending),
+            publish: sinon.stub(),
+        };
+        const secondConsumeStub = sinon.stub().resolves({
+            consumerTag: 'consumer-two',
+        });
+        amqp.config.outputs = 1;
+        secondAmqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+        secondAmqp.config.rpcTimeout = 1000;
+        secondAmqp.channel = {
+            assertQueue: sinon.stub().resolves('shared-reply-queue'),
+            consume: secondConsumeStub,
+            deleteQueue: sinon.stub().resolves(),
+            publish: sinon.stub(),
+        };
+
+        await amqp.publish('request-one', {
+            correlationId: 'correlation-one',
+            replyTo: 'shared-reply-queue',
+        });
+        firstCallbacks[0]({
+            fields: { deliveryTag: 1 },
+            properties: { correlationId: 'correlation-one' },
+            content: Buffer.from('{"response":1}'),
+        });
+        await Promise.resolve();
+
+        const secondPublish = secondAmqp.publish('request-two', {
+            correlationId: 'correlation-two',
+            replyTo: 'shared-reply-queue',
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(secondConsumeStub.called).to.equal(false);
+
+        finishDeleteQueue();
+        await secondPublish;
+
+        expect(secondConsumeStub.calledOnce).to.equal(true);
     });
 
     it('handles error when deleting queue on timeout', async () => {
@@ -1727,6 +3566,39 @@ describe('Amqp Class', () => {
 
         expect(sendStub.called).to.be.false;
         expect(deleteQueueStub.called).to.be.false;
+    });
+
+    it('reports an in-flight RPC as failed when reconnect closes its channel', async () => {
+        const sendStub = sinon.stub();
+        const poolConnection = {
+            close: sinon.stub().resolves(),
+            off: sinon.stub(),
+        };
+
+        sinon.stub(amqp, 'assertQueue').resolves('rpc-queue');
+
+        amqp.node = { ...nodeFixture, send: sendStub, error: sinon.stub(), status: sinon.stub() };
+        amqp.channel = {
+            consume: sinon.stub().resolves({ consumerTag: 'rpc-consumer' }),
+            deleteQueue: sinon.stub().resolves(),
+            publish: sinon.stub(),
+            off: sinon.stub(),
+            close: sinon.stub().resolves(),
+        };
+        amqp.connection = poolConnection;
+        amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1' };
+        (Amqp as any).connectionPool.set('b1:vh1', { connection: poolConnection, count: 1 });
+
+        amqp.config.outputs = 1;
+        amqp.config.rpcTimeout = 1000;
+
+        await amqp.publish('a message');
+        await amqp.close(new Error('AMQP connection lost during RPC'));
+
+        expect(sendStub.calledOnce).to.be.true;
+        expect(sendStub.firstCall.args[0].payload.message).to.match(
+            /connection lost|interrupted/i,
+        );
     });
 
     it('handles error during RPC setup', async () => {

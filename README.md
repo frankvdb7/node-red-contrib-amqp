@@ -47,7 +47,7 @@ The nodes support runtime control via `msg`:
 - `amqp-in-manual-ack`
   - `msg.manualAck.ackMode`: explicit ack mode (`ack`, `ackAll`, `nack`, `nackAll`, `reject`).
   - `msg.manualAck.requeue`: used by `nack`, `nackAll`, and `reject` (defaults to `true`).
-  - The node keeps the original AMQP message mapped by `deliveryTag`, so manual acknowledgment can operate correctly after flow processing.
+  - The node keeps the original AMQP delivery behind an internal token so acknowledgments can survive normal Node-RED message cloning. Tokens are tied to the channel that delivered the message; acknowledgments from before a reconnect are rejected locally.
 
 ### Examples
 
