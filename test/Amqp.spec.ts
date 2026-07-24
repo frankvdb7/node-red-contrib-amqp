@@ -564,6 +564,22 @@ describe('Amqp Class', () => {
     }
   })
 
+  it('removes a pending connection waiter when initialization is aborted', async () => {
+    sinon.stub(amqplib, 'connect').returns(new Promise(() => undefined))
+    const abortController = new AbortController()
+
+    const result = amqp
+      .connect({ signal: abortController.signal })
+      .then(
+        () => 'connected',
+        (error: Error) => error.message,
+      )
+    abortController.abort(new Error('initialization superseded'))
+
+    expect(await result).to.equal('initialization superseded')
+    expect((Amqp as any).pendingConnections.size).to.equal(0)
+  })
+
   it('does not share a pending connection across broker endpoint generations', async () => {
     let resolveOld: (connection: unknown) => void = () => undefined
     let resolveNew: (connection: unknown) => void = () => undefined
@@ -928,6 +944,40 @@ describe('Amqp Class', () => {
     await amqp.initialize()
     expect(createChannelStub.calledOnce).to.equal(true)
     expect(assertExchangeStub.calledOnce).to.equal(false)
+  })
+
+  it('closes a channel that resolves after initialization is aborted', async () => {
+    let resolveChannel: (channel: unknown) => void = () => undefined
+    const pendingChannel = new Promise(resolve => {
+      resolveChannel = resolve
+    })
+    const lateChannel = {
+      close: sinon.stub().resolves(),
+      on: sinon.stub(),
+      off: sinon.stub(),
+      prefetch: sinon.stub(),
+    }
+    amqp.connection = {
+      createChannel: sinon.stub().returns(pendingChannel),
+    }
+    const abortController = new AbortController()
+
+    const result = amqp
+      .initialize({ signal: abortController.signal })
+      .then(
+        () => 'initialized',
+        (error: Error) => error.message,
+      )
+    abortController.abort(new Error('initialization superseded'))
+    expect(await result).to.equal('initialization superseded')
+
+    await amqp.close()
+    resolveChannel(lateChannel)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(lateChannel.close.calledOnce).to.be.true
+    expect(lateChannel.on.called).to.be.false
   })
 
   it('initialize() skips exchange assertion when auto-create exchange is disabled', async () => {

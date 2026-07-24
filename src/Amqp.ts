@@ -77,6 +77,7 @@ interface AmqpCloseOptions {
 
 interface AmqpConnectOptions {
   timeout?: number
+  signal?: AbortSignal
 }
 
 interface PendingConnection {
@@ -245,10 +246,14 @@ export default class Amqp {
 
       pendingConnection.activeWaiters += 1
       try {
-        const connection = await this.awaitConnection(
-          pendingConnection.promise,
-          brokerInfo,
-          options.timeout,
+        const connection = await this.awaitAbortable(
+          this.awaitConnection(
+            pendingConnection.promise,
+            brokerInfo,
+            options.timeout,
+          ),
+          options.signal,
+          'AMQP connection attempt was cancelled',
         )
         entry = Amqp.connectionPool.get(key)
         if (!entry) {
@@ -326,12 +331,21 @@ export default class Amqp {
     }
   }
 
-  public async initialize(): Promise<Channel> {
-    await this.createChannel()
-    if (this.shouldAutoCreateExchangeBindings()) {
-      await this.assertExchange()
-    }
-    return this.channel;
+  public async initialize(
+    options: Pick<AmqpConnectOptions, 'signal'> = {},
+  ): Promise<Channel> {
+    const initialization = (async (): Promise<Channel> => {
+      await this.createChannel()
+      if (this.shouldAutoCreateExchangeBindings()) {
+        await this.assertExchange()
+      }
+      return this.channel
+    })()
+    return this.awaitAbortable(
+      initialization,
+      options.signal,
+      'AMQP channel initialization was cancelled',
+    )
   }
 
   public async consume(): Promise<void> {
@@ -1576,6 +1590,42 @@ export default class Amqp {
     } finally {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle)
+      }
+    }
+  }
+
+  private async awaitAbortable<T>(
+    operation: Promise<T>,
+    signal: AbortSignal | undefined,
+    fallbackMessage: string,
+  ): Promise<T> {
+    if (!signal) {
+      return operation
+    }
+    if (signal.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new Error(fallbackMessage)
+    }
+
+    let abortHandler: (() => void) | undefined
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<never>((_resolve, reject) => {
+          abortHandler = () => {
+            reject(
+              signal.reason instanceof Error
+                ? signal.reason
+                : new Error(fallbackMessage),
+            )
+          }
+          signal.addEventListener('abort', abortHandler, { once: true })
+        }),
+      ])
+    } finally {
+      if (abortHandler) {
+        signal.removeEventListener('abort', abortHandler)
       }
     }
   }

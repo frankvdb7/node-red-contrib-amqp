@@ -666,11 +666,7 @@ describe('amqp-out Node', () => {
     )
   })
 
-  it('waits for and invalidates startup initialization before switching vhost', async function () {
-    let releaseInitialConnect: (connection: unknown) => void = () => undefined
-    const initialConnect = new Promise(resolve => {
-      releaseInitialConnect = resolve
-    })
+  it('cancels a stalled startup connection before switching vhost', async function () {
     const oldConnection = {
       on: sinon.stub(),
       off: sinon.stub(),
@@ -686,7 +682,18 @@ describe('amqp-out Node', () => {
       off: sinon.stub(),
       close: sinon.stub(),
     }
-    sinon.stub(Amqp.prototype, 'connect').returns(initialConnect as any)
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .callsFake(
+        (options?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener(
+              'abort',
+              () => reject(new Error('startup connection cancelled')),
+              { once: true },
+            )
+          }) as any,
+      )
     const initializeStub = sinon.stub(Amqp.prototype, 'initialize').resolves(newChannel as any)
     const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
     const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
@@ -709,16 +716,82 @@ describe('amqp-out Node', () => {
     const amqpOutNode = helper.getNode('n1')
 
     amqpOutNode.receive({ payload: 'switched', vhost: 'new-vhost' })
-    await Promise.resolve()
-    await Promise.resolve()
+    const result = await Promise.race([
+      published.then(() => 'published'),
+      new Promise(resolve => setTimeout(() => resolve('timed out'), 100)),
+    ])
 
-    expect(setVhostStub.called).to.be.false
-
-    releaseInitialConnect(oldConnection)
-    await published
-
+    expect(result).to.equal('published')
     expect(closeStub.calledOnce).to.be.true
     expect(initializeStub.called).to.be.false
+    expect(setVhostStub.calledOnceWith('new-vhost')).to.be.true
+    expect(oldConnection.on.called).to.be.false
+    expect(newConnection.on.called).to.be.true
+  })
+
+  it('cancels stalled startup channel creation before switching vhost', async function () {
+    const oldConnection = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const newConnection = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const newChannel = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    sinon.stub(Amqp.prototype, 'connect').resolves(oldConnection as any)
+    let notifyInitializationStarted: () => void = () => undefined
+    const initializationStarted = new Promise<void>(resolve => {
+      notifyInitializationStarted = resolve
+    })
+    sinon
+      .stub(Amqp.prototype, 'initialize')
+      .callsFake(
+        (options?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            notifyInitializationStarted()
+            options?.signal?.addEventListener(
+              'abort',
+              () => reject(new Error('startup channel creation cancelled')),
+              { once: true },
+            )
+          }) as any,
+      )
+    const closeStub = sinon.stub(Amqp.prototype, 'close').resolves()
+    const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
+    sinon.stub(Amqp.prototype, 'getConnection').returns(newConnection as any)
+    sinon.stub(Amqp.prototype, 'getChannel').returns(newChannel as any)
+    sinon.stub(Amqp.prototype, 'markConnected')
+    let notifyPublished: () => void = () => undefined
+    const published = new Promise<void>(resolve => {
+      notifyPublished = resolve
+    })
+    sinon.stub(Amqp.prototype, 'publish').callsFake(async () => {
+      notifyPublished()
+    })
+
+    await helper.load(
+      [amqpOut, amqpBroker],
+      amqpOutFlowFixture,
+      credentialsFixture,
+    )
+    await initializationStarted
+    const amqpOutNode = helper.getNode('n1')
+
+    amqpOutNode.receive({ payload: 'switched', vhost: 'new-vhost' })
+    const result = await Promise.race([
+      published.then(() => 'published'),
+      new Promise(resolve => setTimeout(() => resolve('timed out'), 100)),
+    ])
+
+    expect(result).to.equal('published')
+    expect(closeStub.calledOnce).to.be.true
     expect(setVhostStub.calledOnceWith('new-vhost')).to.be.true
     expect(oldConnection.on.called).to.be.false
     expect(newConnection.on.called).to.be.true
@@ -1237,6 +1310,66 @@ describe('amqp-out Node', () => {
       await clock.tickAsync(0)
 
       expect(connectStub.calledOnce).to.be.true
+    } finally {
+      clock.restore()
+    }
+  })
+
+  it('does not schedule reconnect after an in-progress reconnect close is superseded by a vhost switch', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+      const channelMock = { on: sinon.stub(), off: sinon.stub() }
+      const connectStub = sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+      const initializeStub = sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+      let notifyReconnectCloseStarted: () => void = () => undefined
+      const reconnectCloseStarted = new Promise<void>(resolve => {
+        notifyReconnectCloseStarted = resolve
+      })
+      let releaseReconnectClose: () => void = () => undefined
+      const reconnectClosePending = new Promise<void>(resolve => {
+        releaseReconnectClose = resolve
+      })
+      let closeCallCount = 0
+      sinon.stub(Amqp.prototype, 'close').callsFake(async () => {
+        closeCallCount += 1
+        if (closeCallCount === 1) {
+          notifyReconnectCloseStarted()
+          await reconnectClosePending
+        }
+      })
+      const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
+      let notifyPublished: () => void = () => undefined
+      const published = new Promise<void>(resolve => {
+        notifyPublished = resolve
+      })
+      sinon.stub(Amqp.prototype, 'publish').callsFake(async () => {
+        notifyPublished()
+      })
+      sinon.stub(Amqp.prototype, 'getConnection').returns(connectionMock as any)
+      sinon.stub(Amqp.prototype, 'getChannel').returns(channelMock as any)
+
+      await helper.load(
+        [amqpOut, amqpBroker],
+        amqpOutFlowFixture,
+        credentialsFixture,
+      )
+
+      const onConnClose = connectionMock.on.withArgs('close').getCall(0).args[1]
+      const reconnectOperation = onConnClose()
+      await reconnectCloseStarted
+
+      const amqpOutNode = helper.getNode('n1')
+      amqpOutNode.receive({ payload: 'switched', vhost: 'vh2' })
+      await published
+      expect(setVhostStub.calledOnceWith('vh2')).to.be.true
+
+      releaseReconnectClose()
+      await reconnectOperation
+      await clock.tickAsync(2_001)
+
+      expect(connectStub.calledOnce).to.be.true
+      expect(initializeStub.calledOnce).to.be.true
     } finally {
       clock.restore()
     }

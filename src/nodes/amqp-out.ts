@@ -37,6 +37,7 @@ module.exports = function (RED: NodeRedApp): void {
     let isShuttingDown = false
     let initializationVersion = 0
     let initializationPromise: Promise<void> | null = null
+    let initializationAbortController: AbortController | null = null
     let vhostSequence: Promise<void> = Promise.resolve()
     const activePublishes = new Set<Promise<void>>()
     let connection: ChannelModel | null = null
@@ -273,6 +274,9 @@ module.exports = function (RED: NodeRedApp): void {
           reconnectScheduled = false
 
           initializationVersion += 1
+          initializationAbortController?.abort(
+            new Error('AMQP initialization cancelled for virtual host switch'),
+          )
           const pendingInitialization = initializationPromise
           if (pendingInitialization) {
             await pendingInitialization.catch(() => undefined)
@@ -351,6 +355,9 @@ module.exports = function (RED: NodeRedApp): void {
       const done = typeof removedOrDone === 'function' ? removedOrDone : doneMaybe
       isShuttingDown = true
       initializationVersion += 1
+      initializationAbortController?.abort(
+        new Error('AMQP initialization cancelled during shutdown'),
+      )
       clearTimeout(reconnectTimeout)
       removeEventListeners()
       let closeError: unknown
@@ -374,6 +381,8 @@ module.exports = function (RED: NodeRedApp): void {
 
     async function initializeNode(nodeIns: Node) {
       const attemptVersion = initializationVersion
+      const abortController = new AbortController()
+      initializationAbortController = abortController
       const initializationIsStale = (): boolean =>
         isShuttingDown || attemptVersion !== initializationVersion
 
@@ -386,6 +395,7 @@ module.exports = function (RED: NodeRedApp): void {
           return
         }
         initializationVersion += 1
+        const reconnectVersion = initializationVersion
         reconnectScheduled = true
         clearTimeout(reconnectTimeout)
         try {
@@ -394,9 +404,15 @@ module.exports = function (RED: NodeRedApp): void {
           await amqp.close(
             new Error('AMQP connection interrupted; reconnecting'),
           )
-          if (isShuttingDown) {
+          if (
+            isShuttingDown ||
+            reconnectVersion !== initializationVersion ||
+            !reconnectScheduled
+          ) {
             reconnectScheduled = false
-            nodeIns.log('Reconnect aborted: node started shutting down while closing AMQP resources')
+            nodeIns.log(
+              'Reconnect aborted: request was superseded while closing AMQP resources',
+            )
             return
           }
           channel = null
@@ -420,13 +436,15 @@ module.exports = function (RED: NodeRedApp): void {
       }
 
       try {
-        connection = await amqp.connect()
+        connection = await amqp.connect({ signal: abortController.signal })
         if (initializationIsStale()) {
           await amqp.close().catch(() => undefined)
           return
         }
         if (connection) {
-          channel = await amqp.initialize()
+          channel = await amqp.initialize({
+            signal: abortController.signal,
+          })
           if (initializationIsStale()) {
             await amqp.close().catch(() => undefined)
             return
@@ -445,14 +463,22 @@ module.exports = function (RED: NodeRedApp): void {
           return
         }
         await handleError(e, nodeIns)
+      } finally {
+        if (initializationAbortController === abortController) {
+          initializationAbortController = null
+        }
       }
     }
 
     function queueInitialization(nodeIns: Node, scheduledReconnect = false): Promise<void> {
       const previous = initializationPromise
+      const queuedVersion = initializationVersion
       const startInitialization = (): Promise<void> => {
         if (scheduledReconnect) {
           reconnectScheduled = false
+        }
+        if (isShuttingDown || queuedVersion !== initializationVersion) {
+          return Promise.resolve()
         }
         return initializeNode(nodeIns)
       }
