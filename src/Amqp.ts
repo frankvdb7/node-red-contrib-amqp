@@ -201,13 +201,28 @@ export default class Amqp {
           key,
           brokerUrl,
           brokerInfo,
-          options.timeout,
         )
         Amqp.pendingConnections.set(key, pendingConnection)
+        void pendingConnection.then(
+          () => {
+            if (Amqp.pendingConnections.get(key) === pendingConnection) {
+              Amqp.pendingConnections.delete(key)
+            }
+          },
+          () => {
+            if (Amqp.pendingConnections.get(key) === pendingConnection) {
+              Amqp.pendingConnections.delete(key)
+            }
+          },
+        )
       }
 
       try {
-        const connection = await pendingConnection
+        const connection = await this.awaitConnection(
+          pendingConnection,
+          brokerInfo,
+          options.timeout,
+        )
         entry = Amqp.connectionPool.get(key)
         if (!entry || entry.connection !== connection) {
           throw new Error(`AMQP connection closed while connecting to ${brokerInfo}`)
@@ -216,10 +231,6 @@ export default class Amqp {
         this.setBrokerNodeState('errored', err)
         this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
         throw err
-      } finally {
-        if (Amqp.pendingConnections.get(key) === pendingConnection) {
-          Amqp.pendingConnections.delete(key)
-        }
       }
     }
 
@@ -1185,16 +1196,20 @@ export default class Amqp {
     }
 
     const cleanupOperation = (async (): Promise<void> => {
+      let lastError: unknown
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         let connected = false
         try {
           await this.connect({ timeout: AMQP_CONNECTION_TIMEOUT_MS })
           connected = true
-          await this.initialize()
+          await this.createChannel()
           if (await this.unbindQueues(true)) {
             this.bindingsRemoved = true
             return
           }
+          lastError = new Error('One or more AMQP queue bindings could not be removed')
+        } catch (error) {
+          lastError = error
         } finally {
           if (connected) {
             this.closed = true
@@ -1207,9 +1222,11 @@ export default class Amqp {
           }
         }
       }
-      throw new Error(
+      const cleanupError = new Error(
         `Could not remove AMQP bindings after ${BINDING_CLEANUP_MAX_ATTEMPTS} attempts`,
       )
+      ;(cleanupError as Error & { cause?: unknown }).cause = lastError
+      throw cleanupError
     })()
     this.bindingCleanupPromise = cleanupOperation
     try {
@@ -1236,6 +1253,9 @@ export default class Amqp {
         try {
           await this.channel.unbindQueue(queueName, exchangeName, routingKey)
         } catch (e) {
+          if (this.isNotFoundError(e)) {
+            return true
+          }
           succeeded = false
           /* istanbul ignore next */
           this.node.error(`Error unbinding queue for routing key ${routingKey}: ${e.message}`)
@@ -1243,6 +1263,22 @@ export default class Amqp {
       }
     }
     return succeeded
+  }
+
+  private isNotFoundError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false
+    }
+    const amqpError = error as {
+      code?: number
+      replyCode?: number
+      message?: string
+    }
+    return (
+      amqpError.code === 404 ||
+      amqpError.replyCode === 404 ||
+      /(?:404|NOT[_-]FOUND)/i.test(amqpError.message ?? '')
+    )
   }
 
   private shouldUnbindQueueOnClose(removeBindings: boolean): boolean {
@@ -1318,15 +1354,8 @@ export default class Amqp {
     key: string,
     brokerUrl: string,
     brokerInfo: string,
-    timeout?: number,
   ): Promise<ChannelModel> {
-    const socketOptions: { heartbeat: number; timeout?: number } = {
-      heartbeat: 2,
-    }
-    if (timeout !== undefined) {
-      socketOptions.timeout = timeout
-    }
-    const connection = await connect(brokerUrl, socketOptions)
+    const connection = await connect(brokerUrl, { heartbeat: 2 })
     this.node.log(`Connected to AMQP broker ${brokerInfo}`)
 
     const entry = { connection, count: 0 }
@@ -1339,6 +1368,38 @@ export default class Amqp {
     })
 
     return connection
+  }
+
+  private async awaitConnection(
+    pendingConnection: Promise<ChannelModel>,
+    brokerInfo: string,
+    timeout?: number,
+  ): Promise<ChannelModel> {
+    if (timeout === undefined) {
+      return pendingConnection
+    }
+
+    let timeoutHandle: NodeJS.Timeout | undefined
+    try {
+      return await Promise.race([
+        pendingConnection,
+        new Promise<never>((_resolve, reject) => {
+          timeoutHandle = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `AMQP connection to ${brokerInfo} timed out after ${timeout}ms`,
+                ),
+              ),
+            timeout,
+          )
+        }),
+      ])
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle)
+      }
+    }
   }
 
   private async createChannel(): Promise<Channel> {
