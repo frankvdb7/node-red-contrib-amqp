@@ -58,7 +58,7 @@ module.exports = function (RED: NodeRedApp): void {
     const configAmqp: AmqpInNodeDefaults & AmqpOutNodeDefaults = config;
 
     const amqp = new Amqp(RED, this, configAmqp)
-    const terminalClose = trackTerminalClose(RED, this.id)
+    const terminalClose = trackTerminalClose(RED, this)
 
     const reconnectOnError = configAmqp.reconnectOnError;
 

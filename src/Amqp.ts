@@ -31,6 +31,7 @@ const DELIVERY_TOKEN: unique symbol = Symbol('amqp-delivery-token')
 const RETURN_TOKEN_HEADER = 'x-node-red-contrib-amqp-return-token'
 const MAX_UNMATCHED_RPC_RESPONSES = 100
 const AMQP_CONNECTION_TIMEOUT_MS = 5_000
+const BINDING_CLEANUP_MAX_ATTEMPTS = 3
 
 type TrackedAssembledMessage = AssembledMessage & {
   [DELIVERY_TOKEN]?: string
@@ -72,6 +73,10 @@ interface RpcConsumerState {
 interface AmqpCloseOptions {
   interruption?: Error
   removeBindings?: boolean
+}
+
+interface AmqpConnectOptions {
+  timeout?: number
 }
 
 interface ChannelDrainGate {
@@ -154,7 +159,9 @@ export default class Amqp {
     }
   }
 
-  public async connect(): Promise<ChannelModel> {
+  public async connect(
+    options: AmqpConnectOptions = {},
+  ): Promise<ChannelModel> {
     const { broker } = this.config
 
     // wtf happened to the types?
@@ -194,6 +201,7 @@ export default class Amqp {
           key,
           brokerUrl,
           brokerInfo,
+          options.timeout,
         )
         Amqp.pendingConnections.set(key, pendingConnection)
       }
@@ -485,7 +493,15 @@ export default class Amqp {
     } = config
 
     let rpcRequest: RpcRequestLifecycle | null = null
+    let rpcAdmissionController: AbortController | null = null
+    let rpcAdmissionTimeout: NodeJS.Timeout | null = null
     let returnToken: string | undefined
+    const clearRpcAdmissionTimeout = (): void => {
+      if (rpcAdmissionTimeout) {
+        clearTimeout(rpcAdmissionTimeout)
+        rpcAdmissionTimeout = null
+      }
+    }
 
     try {
       let correlationId = ''
@@ -503,6 +519,12 @@ export default class Amqp {
           correlationId,
           replyTo,
         )
+        rpcAdmissionController = new AbortController()
+        rpcAdmissionTimeout = setTimeout(() => {
+          rpcAdmissionController?.abort(
+            new Error('Timeout while waiting to publish RPC request'),
+          )
+        }, config.rpcTimeout || 3000)
       }
 
       const options = {
@@ -558,7 +580,9 @@ export default class Amqp {
                 : null,
           }
         },
+        rpcAdmissionController?.signal,
       )
+      clearRpcAdmissionTimeout()
       rpcRequest?.startTimeout()
       if (confirmation && drain) {
         await Promise.all([confirmation, drain])
@@ -575,6 +599,7 @@ export default class Amqp {
         }
       }
     } catch (e) {
+      clearRpcAdmissionTimeout()
       if (returnToken) {
         this.returnedPublishes.delete(returnToken)
       }
@@ -904,8 +929,11 @@ export default class Amqp {
     }
   }
 
-  private async waitForWritableChannel(): Promise<Channel> {
+  private async waitForWritableChannel(
+    signal?: AbortSignal,
+  ): Promise<Channel> {
     while (true) {
+      this.throwIfWriteAborted(signal)
       const channel = this.channel
       const failure = this.channelWriteFailure
       if (failure?.channel === channel) {
@@ -915,13 +943,15 @@ export default class Amqp {
       if (!gate || gate.channel !== channel) {
         return channel
       }
-      await gate.promise
+      await this.waitForWriteAdmission(gate.promise, signal)
     }
   }
 
   private async writeWithBackpressure<T>(
     write: (channel: Channel) => T,
+    signal?: AbortSignal,
   ): Promise<T> {
+    this.throwIfWriteAborted(signal)
     const initialChannel = this.channel
     const failure = this.channelWriteFailure
     if (failure?.channel === initialChannel) {
@@ -933,9 +963,9 @@ export default class Amqp {
       return write(initialChannel)
     }
 
-    const release = await this.acquireChannelWrite(initialChannel)
+    const release = await this.acquireChannelWrite(initialChannel, signal)
     try {
-      const channel = await this.waitForWritableChannel()
+      const channel = await this.waitForWritableChannel(signal)
       if (this.closed) {
         throw new Error('AMQP channel closed while waiting for write buffer')
       }
@@ -945,7 +975,11 @@ export default class Amqp {
     }
   }
 
-  private async acquireChannelWrite(channel: Channel): Promise<() => void> {
+  private async acquireChannelWrite(
+    channel: Channel,
+    signal?: AbortSignal,
+  ): Promise<() => void> {
+    this.throwIfWriteAborted(signal)
     const previous =
       this.channelWriteQueue?.channel === channel
         ? this.channelWriteQueue.tail
@@ -959,7 +993,17 @@ export default class Amqp {
       tail: previous.then(() => ticket),
     }
     this.channelWriteQueue = queue
-    await previous
+    try {
+      await this.waitForWriteAdmission(previous, signal)
+    } catch (error) {
+      release()
+      void queue.tail.then(() => {
+        if (this.channelWriteQueue === queue) {
+          this.channelWriteQueue = null
+        }
+      })
+      throw error
+    }
 
     return () => {
       release()
@@ -967,6 +1011,46 @@ export default class Amqp {
         this.channelWriteQueue = null
       }
     }
+  }
+
+  private throwIfWriteAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) {
+      return
+    }
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error('AMQP write admission cancelled')
+  }
+
+  private async waitForWriteAdmission<T>(
+    promise: Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    if (!signal) {
+      return promise
+    }
+    this.throwIfWriteAborted(signal)
+
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = (): void => {
+        reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new Error('AMQP write admission cancelled'),
+        )
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      promise.then(
+        value => {
+          signal.removeEventListener('abort', onAbort)
+          resolve(value)
+        },
+        error => {
+          signal.removeEventListener('abort', onAbort)
+          reject(error)
+        },
+      )
+    })
   }
 
   private getChannelDrainGate(channel: Channel): Promise<void> {
@@ -1056,10 +1140,22 @@ export default class Amqp {
       await this.detachRpcConsumers(interruption)
       this.clearRpcTimeouts()
 
-      const bindingsRemoved = await this.unbindQueues(removeBindings)
-      this.bindingsRemoved ||= removeBindings && bindingsRemoved
-      await this.closeChannel()
-      await this.releaseConnection()
+      let bindingsRemoved = false
+      try {
+        bindingsRemoved = await this.unbindQueues(removeBindings)
+        this.bindingsRemoved ||= removeBindings && bindingsRemoved
+      } finally {
+        try {
+          await this.closeChannel()
+        } finally {
+          await this.releaseConnection()
+        }
+      }
+      if (removeBindings && !bindingsRemoved) {
+        await this.removeBindingsAfterClose(
+          BINDING_CLEANUP_MAX_ATTEMPTS - 1,
+        )
+      }
     })()
     this.closePromise = closeOperation
     try {
@@ -1071,7 +1167,9 @@ export default class Amqp {
     }
   }
 
-  private async removeBindingsAfterClose(): Promise<void> {
+  private async removeBindingsAfterClose(
+    maxAttempts = BINDING_CLEANUP_MAX_ATTEMPTS,
+  ): Promise<void> {
     const { name: exchangeName } = this.config.exchange
     if (
       this.bindingsRemoved ||
@@ -1087,24 +1185,31 @@ export default class Amqp {
     }
 
     const cleanupOperation = (async (): Promise<void> => {
-      let connected = false
-      try {
-        await this.connect()
-        connected = true
-        await this.initialize()
-        const bindingsRemoved = await this.unbindQueues(true)
-        this.bindingsRemoved ||= bindingsRemoved
-      } finally {
-        if (connected) {
-          this.closed = true
-          this.lifecycleVersion += 1
-          try {
-            await this.closeChannel()
-          } finally {
-            await this.releaseConnection()
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        let connected = false
+        try {
+          await this.connect({ timeout: AMQP_CONNECTION_TIMEOUT_MS })
+          connected = true
+          await this.initialize()
+          if (await this.unbindQueues(true)) {
+            this.bindingsRemoved = true
+            return
+          }
+        } finally {
+          if (connected) {
+            this.closed = true
+            this.lifecycleVersion += 1
+            try {
+              await this.closeChannel()
+            } finally {
+              await this.releaseConnection()
+            }
           }
         }
       }
+      throw new Error(
+        `Could not remove AMQP bindings after ${BINDING_CLEANUP_MAX_ATTEMPTS} attempts`,
+      )
     })()
     this.bindingCleanupPromise = cleanupOperation
     try {
@@ -1213,11 +1318,15 @@ export default class Amqp {
     key: string,
     brokerUrl: string,
     brokerInfo: string,
+    timeout?: number,
   ): Promise<ChannelModel> {
-    const connection = await connect(brokerUrl, {
+    const socketOptions: { heartbeat: number; timeout?: number } = {
       heartbeat: 2,
-      timeout: AMQP_CONNECTION_TIMEOUT_MS,
-    })
+    }
+    if (timeout !== undefined) {
+      socketOptions.timeout = timeout
+    }
+    const connection = await connect(brokerUrl, socketOptions)
     this.node.log(`Connected to AMQP broker ${brokerInfo}`)
 
     const entry = { connection, count: 0 }

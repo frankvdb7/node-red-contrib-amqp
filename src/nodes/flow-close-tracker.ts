@@ -1,4 +1,4 @@
-import { NodeRedApp } from 'node-red'
+import { Node, NodeRedApp } from 'node-red'
 
 interface FlowStoppingEvent {
   diff?: {
@@ -9,7 +9,18 @@ interface FlowStoppingEvent {
 
 interface TrackedNode {
   nodeId: string
+  subflowOwnerIds: Set<string>
   terminalClose: boolean
+}
+
+interface RuntimeFlow {
+  TYPE?: string
+  id?: string
+  parent?: RuntimeFlow
+}
+
+type RuntimeNode = Node & {
+  _flow?: RuntimeFlow
 }
 
 interface TrackerState {
@@ -19,21 +30,39 @@ interface TrackerState {
 
 const trackerStates = new WeakMap<object, TrackerState>()
 
-function containsNodeOrSubflowChild(
+function containsNodeOrOwnedSubflow(
   nodeIds: string[] | undefined,
-  nodeId: string,
+  trackedNode: TrackedNode,
 ): boolean {
   return Boolean(
     nodeIds?.some(
       changedNodeId =>
-        nodeId === changedNodeId || nodeId.startsWith(`${changedNodeId}-`),
+        trackedNode.nodeId === changedNodeId ||
+        trackedNode.subflowOwnerIds.has(changedNodeId),
     ),
   )
 }
 
+function getSubflowOwnerIds(node: RuntimeNode): Set<string> {
+  const ownerIds = new Set<string>()
+  const visited = new Set<RuntimeFlow>()
+  let flow: RuntimeFlow | undefined = node._flow
+  while (flow && !visited.has(flow)) {
+    visited.add(flow)
+    if (
+      flow.id &&
+      (flow.TYPE === 'subflow' || flow.TYPE?.startsWith('module:'))
+    ) {
+      ownerIds.add(flow.id)
+    }
+    flow = flow.parent
+  }
+  return ownerIds
+}
+
 export default function trackTerminalClose(
   RED: NodeRedApp,
-  nodeId: string,
+  node: RuntimeNode,
 ): {
   dispose: () => void
   shouldRemoveBindings: (removed: boolean) => boolean
@@ -44,13 +73,13 @@ export default function trackTerminalClose(
     const onFlowsStopping = (event: FlowStoppingEvent): void => {
       for (const trackedNode of nodes.values()) {
         trackedNode.terminalClose ||= Boolean(
-          containsNodeOrSubflowChild(
+          containsNodeOrOwnedSubflow(
             event.diff?.changed,
-            trackedNode.nodeId,
+            trackedNode,
           ) ||
-            containsNodeOrSubflowChild(
+            containsNodeOrOwnedSubflow(
               event.diff?.removed,
-              trackedNode.nodeId,
+              trackedNode,
             ),
         )
       }
@@ -60,8 +89,12 @@ export default function trackTerminalClose(
     RED.events.on('flows:stopping', onFlowsStopping)
   }
 
-  const token = Symbol(nodeId)
-  const trackedNode = { nodeId, terminalClose: false }
+  const token = Symbol(node.id)
+  const trackedNode = {
+    nodeId: node.id,
+    subflowOwnerIds: getSubflowOwnerIds(node),
+    terminalClose: false,
+  }
   state.nodes.set(token, trackedNode)
   let disposed = false
 
