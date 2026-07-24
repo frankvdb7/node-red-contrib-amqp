@@ -140,6 +140,9 @@ module.exports = function (RED: NodeRedApp): void {
           return
         }
         initializationVersion += 1
+        initializationAbortController?.abort(
+          new Error('AMQP initialization cancelled for reconnect'),
+        )
         reconnectScheduled = true
         clearTimeout(reconnectTimeout)
         try {
