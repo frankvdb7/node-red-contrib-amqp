@@ -10,7 +10,7 @@ These instructions apply to the entire repository.
 - Use `npm run build` to compile the TypeScript code.
 
 ## Code Style
-- Code style is enforced by ESLint and Prettier.
+- Code style is enforced by Biome.
 - Run `npm run lint` to format code and check for linting errors before committing.
 
 ## Testing

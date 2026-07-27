@@ -1,31 +1,30 @@
-import { NodeRedApp, Node } from 'node-red'
-import { v4 as uuidv4 } from 'uuid'
-import cloneDeep from 'lodash.clonedeep'
 import {
-  ChannelModel,
-  Channel,
-  ConfirmChannel,
-  Replies,
+  type Channel,
+  type ChannelModel,
+  type ConfirmChannel,
+  type ConsumeMessage,
   connect,
-  ConsumeMessage,
-  MessageProperties,
+  type MessageProperties,
+  type Replies,
 } from 'amqplib'
-import {
-  AmqpConfig,
-  BrokerConfig,
-  AmqpBrokerNode,
-  NodeType,
-  AssembledMessage,
-  GenericJsonObject,
-  JsonValue,
-  JsonObject,
-  ExchangeType,
-  AmqpInNodeDefaults,
-  AmqpOutNodeDefaults,
-  BrokerNodeState,
-  BrokerNodeError,
-} from './types'
+import cloneDeep from 'lodash.clonedeep'
+import type { Node, NodeMessage, NodeRedApp } from 'node-red'
+import { v4 as uuidv4 } from 'uuid'
 import { NODE_STATUS } from './constants'
+import {
+  type AmqpBrokerNode,
+  type AmqpConfig,
+  type AmqpInNodeDefaults,
+  type AmqpOutNodeDefaults,
+  type AssembledMessage,
+  type BrokerConfig,
+  type BrokerNodeError,
+  type BrokerNodeState,
+  ExchangeType,
+  type JsonObject,
+  type JsonValue,
+  NodeType,
+} from './types'
 
 export default class Amqp {
   private config: AmqpConfig
@@ -34,7 +33,10 @@ export default class Amqp {
   private channel: Channel
   private q: Replies.AssertQueue
   private vhostOverride?: string
-  private static connectionPool: Map<string, { connection: ChannelModel; count: number }> = new Map()
+  private static connectionPool: Map<
+    string,
+    { connection: ChannelModel; count: number }
+  > = new Map()
   private connectionErrorHandler: (e: unknown) => void
   private connectionCloseHandler: () => void
   private channelErrorHandler: (e: unknown) => void
@@ -84,8 +86,7 @@ export default class Amqp {
     const { broker } = this.config
 
     // wtf happened to the types?
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
+    // @ts-expect-error
     this.broker = this.RED.nodes.getNode(broker)
 
     if (!this.broker) {
@@ -146,7 +147,10 @@ export default class Amqp {
 
     this.connectionCloseHandler = (): void => {
       /* istanbul ignore next */
-      this.setBrokerNodeState('disconnected', new Error('AMQP connection closed'))
+      this.setBrokerNodeState(
+        'disconnected',
+        new Error('AMQP connection closed'),
+      )
       this.node.status(NODE_STATUS.Disconnected)
       this.node.log(`AMQP Connection closed`)
     }
@@ -183,7 +187,7 @@ export default class Amqp {
     if (this.shouldAutoCreateExchangeBindings()) {
       await this.assertExchange()
     }
-    return this.channel;
+    return this.channel
   }
 
   public async consume(): Promise<void> {
@@ -204,7 +208,9 @@ export default class Amqp {
           if (!amqpMessage) {
             this.node.warn('AMQP consumer was cancelled')
             this.node.status(NODE_STATUS.Disconnected)
-            const eventEmitterNode = this.node as unknown as { emit?: (event: string) => void }
+            const eventEmitterNode = this.node as unknown as {
+              emit?: (event: string) => void
+            }
             eventEmitterNode.emit?.('amqp:consumer-cancelled')
             return
           }
@@ -212,7 +218,7 @@ export default class Amqp {
           this.node.log(
             `Received message with deliveryTag: ${msg?.fields?.deliveryTag}`,
           )
-          this.node.send(msg as any)
+          this.node.send(msg as unknown as NodeMessage)
           /* istanbul ignore else */
           if (!noAck && !this.isManualAck()) {
             this.ack(msg)
@@ -261,7 +267,9 @@ export default class Amqp {
   public ack(msg: AssembledMessage): void {
     const allUpTo = !!msg.manualAck?.allUpTo
     try {
-      this.node.log(`Acking message with deliveryTag: ${msg?.fields?.deliveryTag}`)
+      this.node.log(
+        `Acking message with deliveryTag: ${msg?.fields?.deliveryTag}`,
+      )
       this.channel.ack(msg, allUpTo)
     } catch (e) {
       this.node.error(`Could not ack message: ${e}`)
@@ -363,12 +371,7 @@ export default class Amqp {
       }
       // when the name field is empty, publish just like the sendToQueue method;
       // see https://amqp-node.github.io/amqplib/channel_api.html#channel_publish
-      this.channel.publish(
-        name,
-        routingKey,
-        this.toPublishBuffer(msg),
-        options,
-      )
+      this.channel.publish(name, routingKey, this.toPublishBuffer(msg), options)
 
       if (config.waitForConfirms) {
         await (this.channel as ConfirmChannel).waitForConfirms()
@@ -439,15 +442,20 @@ export default class Amqp {
               await this.channel.deleteQueue(queueName)
               rpcQueueHasBeenDeleted = true
             } catch (deleteError) {
-              this.node.error(`Error trying to cancel RPC consumer: ${deleteError}`)
+              this.node.error(
+                `Error trying to cancel RPC consumer: ${deleteError}`,
+              )
 
-              const canCancelConsumer = typeof this.channel.cancel === 'function'
+              const canCancelConsumer =
+                typeof this.channel.cancel === 'function'
               if (canCancelConsumer && rpcConsumerTag) {
                 try {
                   await this.channel.cancel(rpcConsumerTag)
                   rpcQueueHasBeenDeleted = true
                 } catch (cancelError) {
-                  this.node.error(`Error trying to cancel RPC consumer: ${cancelError}`)
+                  this.node.error(
+                    `Error trying to cancel RPC consumer: ${cancelError}`,
+                  )
                 }
               }
             } finally {
@@ -476,7 +484,7 @@ export default class Amqp {
             const msg = this.assembleMessage(amqpMessage)
             if (msg.properties.correlationId === correlationId) {
               if (finalizeRpcResponse()) {
-                this.node.send(msg as any)
+                this.node.send(msg as unknown as NodeMessage)
                 void cleanupRpcResources()
               }
             } else {
@@ -550,7 +558,9 @@ export default class Amqp {
           await this.channel.unbindQueue(queueName, exchangeName, routingKey)
         } catch (e) {
           /* istanbul ignore next */
-          this.node.error(`Error unbinding queue for routing key ${routingKey}: ${e.message}`)
+          this.node.error(
+            `Error unbinding queue for routing key ${routingKey}: ${e.message}`,
+          )
         }
       }
     }
@@ -561,7 +571,10 @@ export default class Amqp {
 
     // Keep bindings for long-lived queues so reconnects don't temporarily
     // remove routes and drop unroutable messages in-flight.
-    return this.shouldAutoCreateExchangeBindings() && (!name || exclusive || autoDelete)
+    return (
+      this.shouldAutoCreateExchangeBindings() &&
+      (!name || exclusive || autoDelete)
+    )
   }
 
   private shouldAutoCreateExchangeBindings(configParams?: AmqpConfig): boolean {
@@ -626,7 +639,9 @@ export default class Amqp {
       /* istanbul ignore next */
       this.setBrokerNodeState('errored', e)
       this.node.status(NODE_STATUS.Disconnected)
-      this.node.error(`AMQP Connection Error ${e}`, { payload: { error: e, source: 'Amqp' } })
+      this.node.error(`AMQP Connection Error ${e}`, {
+        payload: { error: e, source: 'Amqp' },
+      })
     }
 
     this.channelCloseHandler = (): void => {
@@ -644,7 +659,7 @@ export default class Amqp {
     this.channel.on('close', this.channelCloseHandler)
     this.channel.on('return', this.channelReturnHandler)
 
-    return this.channel;
+    return this.channel
   }
 
   private async assertExchange(): Promise<void> {
@@ -660,14 +675,15 @@ export default class Amqp {
 
   private async assertQueue(configParams?: AmqpConfig): Promise<string> {
     const { queue } = configParams || this.config
-    const { name, exclusive, durable, autoDelete, queueType, queueArguments } = queue
+    const { name, exclusive, durable, autoDelete, queueType, queueArguments } =
+      queue
 
     this.q = await this.channel.assertQueue(name, {
       exclusive,
       durable,
       autoDelete,
       arguments: {
-        "x-queue-type": queueType,
+        'x-queue-type': queueType,
         ...(queueArguments || {}),
       },
     })
@@ -680,7 +696,9 @@ export default class Amqp {
     const { name } = queue
 
     if (!name) {
-      throw new Error('Queue Name is required when "Auto-create" queue is disabled')
+      throw new Error(
+        'Queue Name is required when "Auto-create" queue is disabled',
+      )
     }
 
     this.q = { queue: name } as Replies.AssertQueue
@@ -738,11 +756,9 @@ export default class Amqp {
     password: string
   } {
     return {
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore
+      // @ts-expect-error
       username: this.RED.settings.MW_CONTRIB_AMQP_USERNAME,
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore
+      // @ts-expect-error
       password: this.RED.settings.MW_CONTRIB_AMQP_PASSWORD,
     }
   }
@@ -795,8 +811,9 @@ export default class Amqp {
   }
 
   private isConnectionOpen(connection: ChannelModel): boolean {
-    const stream = (connection as { connection?: { stream?: { destroyed?: boolean } } })
-      .connection?.stream
+    const stream = (
+      connection as { connection?: { stream?: { destroyed?: boolean } } }
+    ).connection?.stream
     return stream?.destroyed !== true
   }
 
@@ -823,7 +840,10 @@ export default class Amqp {
 
   private toBrokerNodeError(error: unknown): BrokerNodeError {
     const message = error instanceof Error ? error.message : String(error)
-    const code = error && typeof error === 'object' ? String((error as { code?: unknown }).code || '') : ''
+    const code =
+      error && typeof error === 'object'
+        ? String((error as { code?: unknown }).code || '')
+        : ''
     return {
       message,
       code: code || undefined,
