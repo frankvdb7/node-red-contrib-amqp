@@ -1450,6 +1450,57 @@ describe('amqp-out Node', () => {
     }
   })
 
+  it('clears a failed-switch reconnect timer before retrying the same vhost', async function () {
+    const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+    try {
+      const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+      const channelMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+      const connectStub = sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+      sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+      sinon.stub(Amqp.prototype, 'close').resolves()
+      sinon.stub(Amqp.prototype, 'getConnection').returns(connectionMock as any)
+      sinon.stub(Amqp.prototype, 'getChannel').returns(channelMock as any)
+      sinon.stub(Amqp.prototype, 'publish').resolves()
+
+      let requestedVhost = 'vh1'
+      let initializedVhost: string | undefined = 'vh1'
+      sinon.stub(Amqp.prototype, 'getVhost').callsFake(() => requestedVhost)
+      sinon
+        .stub(Amqp.prototype, 'isInitializedForVhost')
+        .callsFake((vhost: string) => initializedVhost === vhost)
+      const setVhostStub = sinon
+        .stub(Amqp.prototype, 'setVhost')
+        .callsFake(async (vhost: string) => {
+          requestedVhost = vhost
+          initializedVhost = undefined
+          if (setVhostStub.calledOnce) {
+            throw new Error('transient switch failure')
+          }
+          initializedVhost = vhost
+        })
+
+      const flow = JSON.parse(JSON.stringify(amqpOutFlowFixture))
+      flow[0].reconnectOnError = true
+      await helper.load([amqpOut, amqpBroker], flow, credentialsFixture)
+      const amqpOutNode = helper.getNode('n1')
+
+      amqpOutNode.receive({ payload: 'first', vhost: 'vh2' })
+      await clock.tickAsync(0)
+      expect(setVhostStub.calledOnce).to.equal(true)
+
+      amqpOutNode.receive({ payload: 'second', vhost: 'vh2' })
+      await clock.tickAsync(0)
+      expect(setVhostStub.calledTwice).to.equal(true)
+      expect(connectStub.calledOnce).to.equal(true)
+
+      await clock.tickAsync(2000)
+
+      expect(connectStub.calledOnce).to.equal(true)
+    } finally {
+      clock.restore()
+    }
+  })
+
   it('does not schedule reconnect after an in-progress reconnect close is superseded by a vhost switch', async function () {
     const clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
     try {

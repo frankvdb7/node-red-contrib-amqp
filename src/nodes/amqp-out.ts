@@ -290,6 +290,14 @@ module.exports = function (RED: NodeRedApp): void {
 
           const vhostSwitchRequired = !amqp.isInitializedForVhost(vhost)
           if (vhostSwitchRequired) {
+            if (!vhostChanged) {
+              clearTimeout(reconnectTimeout)
+              reconnectScheduled = false
+              initializationVersion += 1
+              initializationAbortController?.abort(
+                new Error('AMQP initialization cancelled for virtual host switch'),
+              )
+            }
             removeEventListeners()
             await amqp.setVhost(vhost)
 
