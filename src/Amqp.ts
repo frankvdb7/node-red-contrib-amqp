@@ -27,6 +27,7 @@ import {
 } from './types'
 import { NODE_STATUS } from './constants'
 import DeliverySettlementTracker from './delivery-settlement-tracker'
+import { brokerUrl, parseJson as parseTransportJson, parseJsonObject as parseTransportJsonObject, routingKeys } from './amqp-transport-utils'
 const RETURN_TOKEN_HEADER = 'x-node-red-contrib-amqp-return-token'
 const MAX_UNMATCHED_RPC_RESPONSES = 100
 const BINDING_CLEANUP_TIMEOUT_MS = 5_000
@@ -1777,23 +1778,11 @@ export default class Amqp {
   }
 
   private getBrokerUrl(broker: BrokerConfig): string {
-    let url = ''
-
-    if (broker) {
-      const { host, port, vhost, tls, credsFromSettings, credentials } = broker
-
-      const { username, password } = credsFromSettings
-        ? this.getCredsFromSettings()
-        : credentials
-
-      const protocol = tls ? /* istanbul ignore next */ 'amqps' : 'amqp'
-      const vhostPath = vhost ? `/${encodeURIComponent(vhost)}` : '/'
-      url = `${protocol}://${encodeURIComponent(username)}:${encodeURIComponent(
-        password,
-      )}@${host}:${port}${vhostPath}`
-    }
-
-    return url
+    if (!broker) return ''
+    const credentials = broker.credsFromSettings
+      ? this.getCredsFromSettings()
+      : broker.credentials
+    return brokerUrl(broker, credentials)
   }
 
   private getCredsFromSettings(): {
@@ -1811,10 +1800,7 @@ export default class Amqp {
   }
 
   private parseRoutingKeys(routingKeyArg?: string): string[] {
-    const routingKey =
-      routingKeyArg || this.config.exchange.routingKey || this.q?.queue || ''
-    const keys = routingKey?.split(',').map(key => key.trim())
-    return keys
+    return routingKeys(routingKeyArg, this.config.exchange.routingKey, this.q?.queue)
   }
 
   private assembleMessage(amqpMessage: ConsumeMessage): AssembledMessage {
@@ -1848,22 +1834,20 @@ export default class Amqp {
   }
 
   private parseJson(jsonInput: unknown, logError = false): JsonValue {
-    let output: unknown
     try {
-      output = JSON.parse(jsonInput as string)
+      return parseTransportJson(jsonInput)
     } catch (e) {
-      output = jsonInput
-      /* istanbul ignore next */
-      if (logError) {
-        this.node.error(`Invalid JSON payload: ${e}`)
-      }
+      if (logError) this.node.error(`Invalid JSON payload: ${e}`)
+      return jsonInput as JsonValue
     }
-    return output as JsonValue
   }
 
   private parseJsonObject(jsonInput: unknown, logError = false): JsonObject {
-    const output = this.parseJson(jsonInput, logError)
-    return this.isJsonObject(output) ? output : {}
+    if (logError) {
+      const output = this.parseJson(jsonInput, true)
+      return this.isJsonObject(output) ? output : {}
+    }
+    return parseTransportJsonObject(jsonInput)
   }
 
   private isJsonObject(value: JsonValue): value is JsonObject {
