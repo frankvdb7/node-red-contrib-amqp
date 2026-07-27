@@ -104,6 +104,7 @@ export default class Amqp {
   private channel: Channel
   private q: Replies.AssertQueue
   private vhostOverride?: string
+  private initializedVhost?: string
   private connectionPoolKey?: string
   private static connectionPool: Map<string, { connection: ChannelModel; count: number }> = new Map()
   private static pendingConnections: Map<string, PendingConnection> = new Map()
@@ -297,6 +298,7 @@ export default class Amqp {
     }
 
     this.connectionCloseHandler = (): void => {
+      this.initializedVhost = undefined
       /* istanbul ignore next */
       this.setBrokerNodeState('disconnected', new Error('AMQP connection closed'))
       this.node.status(NODE_STATUS.Disconnected)
@@ -341,11 +343,13 @@ export default class Amqp {
       }
       return this.channel
     })()
-    return this.awaitAbortable(
+    const channel = await this.awaitAbortable(
       initialization,
       options.signal,
       'AMQP channel initialization was cancelled',
     )
+    this.initializedVhost = this.getVhost()
+    return channel
   }
 
   public async consume(): Promise<void> {
@@ -405,11 +409,19 @@ export default class Amqp {
     return this.vhostOverride ?? broker?.vhost
   }
 
+  public isInitializedForVhost(vhost: string): boolean {
+    return (
+      !this.closed &&
+      !!this.connection &&
+      !!this.channel &&
+      this.initializedVhost === vhost
+    )
+  }
+
   public async setVhost(newVhost: string): Promise<void> {
     const broker = this.broker as unknown as BrokerConfig
-    const currentVhost = this.getVhost()
 
-    if (!broker || currentVhost === newVhost) {
+    if (!broker || this.isInitializedForVhost(newVhost)) {
       return
     }
 
@@ -420,6 +432,7 @@ export default class Amqp {
       await this.initialize()
       this.markConnected()
     } catch (e) {
+      await this.close().catch(() => undefined)
       this.node.error(`Could not switch vhost: ${e}`)
       throw e
     }
@@ -1234,6 +1247,7 @@ export default class Amqp {
       return
     }
     this.closed = true
+    this.initializedVhost = undefined
     this.lifecycleVersion += 1
     const closeOperation = (async (): Promise<void> => {
       let cleanupError: unknown
@@ -1672,6 +1686,7 @@ export default class Amqp {
     }
 
     this.channelCloseHandler = (): void => {
+      this.initializedVhost = undefined
       /* istanbul ignore next */
       this.node.status(NODE_STATUS.Disconnected)
       this.node.log('AMQP Channel closed')

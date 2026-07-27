@@ -288,7 +288,8 @@ module.exports = function (RED: NodeRedApp): void {
             return
           }
 
-          if (vhostChanged) {
+          const vhostSwitchRequired = !amqp.isInitializedForVhost(vhost)
+          if (vhostSwitchRequired) {
             removeEventListeners()
             await amqp.setVhost(vhost)
 

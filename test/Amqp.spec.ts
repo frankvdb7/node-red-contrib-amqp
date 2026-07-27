@@ -2935,6 +2935,10 @@ describe('Amqp Class', () => {
 
     it('does nothing when vhost is unchanged', async () => {
       amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+      ;(amqp as any).closed = false
+      ;(amqp as any).connection = {}
+      ;(amqp as any).channel = {}
+      ;(amqp as any).initializedVhost = 'vh1'
       const closeStub = sinon.stub(amqp, 'close').resolves()
       const connectStub = sinon.stub(amqp, 'connect').resolves()
       const initStub = sinon.stub(amqp, 'initialize').resolves()
@@ -2945,6 +2949,51 @@ describe('Amqp Class', () => {
       expect(connectStub.called).to.equal(false)
       expect(initStub.called).to.equal(false)
       expect((amqp as any).vhostOverride).to.be.undefined
+    })
+
+    it('retries the same vhost after a failed switch and cleans partial resources', async () => {
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+      const closeStub = sinon.stub(amqp, 'close').callsFake(async () => {
+        ;(amqp as any).closed = true
+        ;(amqp as any).connection = undefined
+        ;(amqp as any).channel = undefined
+        ;(amqp as any).initializedVhost = undefined
+      })
+      const connectStub = sinon.stub(amqp, 'connect')
+      connectStub.onFirstCall().callsFake(async () => {
+        ;(amqp as any).closed = false
+        ;(amqp as any).connection = {}
+      })
+      connectStub.onSecondCall().callsFake(async () => {
+        ;(amqp as any).closed = false
+        ;(amqp as any).connection = {}
+      })
+      const initializeStub = sinon.stub(amqp, 'initialize')
+      initializeStub.onFirstCall().callsFake(async () => {
+        ;(amqp as any).channel = {}
+        throw new Error('transient switch failure')
+      })
+      initializeStub.onSecondCall().callsFake(async () => {
+        ;(amqp as any).channel = {}
+        ;(amqp as any).initializedVhost = 'vh2'
+        return (amqp as any).channel
+      })
+
+      let switchError: Error | undefined
+      try {
+        await amqp.setVhost('vh2')
+      } catch (error) {
+        switchError = error as Error
+      }
+      expect(switchError?.message).to.equal('transient switch failure')
+      expect(amqp.isInitializedForVhost('vh2')).to.equal(false)
+
+      await amqp.setVhost('vh2')
+
+      expect(connectStub.calledTwice).to.equal(true)
+      expect(initializeStub.calledTwice).to.equal(true)
+      expect(closeStub.callCount).to.equal(3)
+      expect(amqp.isInitializedForVhost('vh2')).to.equal(true)
     })
 
     it('does not mutate shared broker config', async () => {

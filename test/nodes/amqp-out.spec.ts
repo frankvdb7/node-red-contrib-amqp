@@ -403,6 +403,42 @@ describe('amqp-out Node', () => {
     expect(publishStub.notCalled).to.be.true;
   });
 
+  it('retries a failed vhost switch when the next message targets the same vhost', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    let requestedVhost = 'vh1'
+    let initializedVhost: string | undefined = 'vh1'
+    sinon.stub(Amqp.prototype, 'getVhost').callsFake(() => requestedVhost)
+    sinon
+      .stub(Amqp.prototype, 'isInitializedForVhost')
+      .callsFake((vhost: string) => initializedVhost === vhost)
+    const setVhostStub = sinon
+      .stub(Amqp.prototype, 'setVhost')
+      .callsFake(async (vhost: string) => {
+        requestedVhost = vhost
+        initializedVhost = undefined
+        if (setVhostStub.calledOnce) {
+          throw new Error('transient switch failure')
+        }
+        initializedVhost = vhost
+      })
+    const publishStub = sinon.stub(Amqp.prototype, 'publish').resolves()
+
+    await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture)
+    const amqpOutNode = helper.getNode('n1')
+
+    amqpOutNode.receive({ payload: 'first', vhost: 'vh2' })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    amqpOutNode.receive({ payload: 'second', vhost: 'vh2' })
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(setVhostStub.calledTwice).to.equal(true)
+    expect(publishStub.calledOnce).to.equal(true)
+    expect(publishStub.firstCall.args[0]).to.equal('second')
+  })
+
   it('calls done with error when publish fails', async function () {
     const publishStub = sinon.stub(Amqp.prototype, 'publish').rejects(new Error('publish failed'));
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
@@ -816,6 +852,7 @@ describe('amqp-out Node', () => {
     const initializeStub = sinon
       .stub(Amqp.prototype, 'initialize')
       .resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'isInitializedForVhost').returns(true)
     const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
     sinon.stub(Amqp.prototype, 'close').resolves()
     let notifyPublished: () => void = () => undefined
@@ -867,6 +904,7 @@ describe('amqp-out Node', () => {
       notifyInitializeStarted()
       return pendingInitialization as any
     })
+    sinon.stub(Amqp.prototype, 'isInitializedForVhost').returns(true)
     const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
     sinon.stub(Amqp.prototype, 'close').resolves()
     let notifyPublished: () => void = () => undefined
