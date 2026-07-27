@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-require('ts-node/register');
+require('@swc/register')({ module: { type: 'commonjs' } });
+
 require('source-map-support/register');
 const Mocha = require('mocha');
 const glob = require('glob');
