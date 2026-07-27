@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-require('ts-node/register');
+require('tsx/cjs/api').register();
 require('source-map-support/register');
 const Mocha = require('mocha');
 const glob = require('glob');

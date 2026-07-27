@@ -9,7 +9,6 @@ import {
 } from 'amqplib'
 import cloneDeep from 'lodash.clonedeep'
 import type { Node, NodeMessage, NodeRedApp } from 'node-red'
-import { v4 as uuidv4 } from 'uuid'
 import { NODE_STATUS } from './constants'
 import {
   type AmqpBrokerNode,
@@ -351,6 +350,7 @@ export default class Amqp {
 
       if (rpcRequested) {
         // Send request for remote procedure call
+        const uuidv4 = (await import('uuid')).v4
         correlationId =
           properties?.correlationId ||
           this.config.amqpProperties?.correlationId ||
@@ -364,10 +364,10 @@ export default class Amqp {
       }
 
       const options = {
-        correlationId,
-        replyTo,
         ...this.config.amqpProperties,
         ...properties,
+        correlationId,
+        replyTo,
       }
       // when the name field is empty, publish just like the sendToQueue method;
       // see https://amqp-node.github.io/amqplib/channel_api.html#channel_publish
