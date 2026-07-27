@@ -1,5 +1,5 @@
-import { NodeRedApp } from 'node-red'
-import { AmqpBrokerNode, BrokerNodeState, NodeType } from '../types'
+import type { NodeRedApp } from 'node-red'
+import { type AmqpBrokerNode, type BrokerNodeState, NodeType } from '../types'
 
 type ConfiguredAmqpNode = {
   id: string
@@ -7,7 +7,7 @@ type ConfiguredAmqpNode = {
   broker?: string
 }
 
-module.exports = function (RED: NodeRedApp): void {
+module.exports = (RED: NodeRedApp): void => {
   const brokerNodes: AmqpBrokerNode[] = []
   const amqpNodeTypes = new Set<string>([
     NodeType.AmqpIn,
@@ -17,8 +17,7 @@ module.exports = function (RED: NodeRedApp): void {
 
   function AmqpBroker(this: AmqpBrokerNode, n): void {
     // wtf happened to the types?
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
+    // @ts-expect-error
     RED.nodes.createNode(this, n)
     this.name = n.name
     this.host = n.host
@@ -38,8 +37,7 @@ module.exports = function (RED: NodeRedApp): void {
       }
     })
   }
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
+  // @ts-expect-error
   RED.nodes.registerType('amqp-broker', AmqpBroker, {
     credentials: {
       username: { type: 'text' },
@@ -52,11 +50,13 @@ module.exports = function (RED: NodeRedApp): void {
       const states = getEffectiveNodeStates(brokerNode)
       const stateValues = Object.values(states)
       const uniqueStates = new Set(stateValues)
-      const status: BrokerNodeState = stateValues.length > 0 && stateValues.every(state => state === 'connected')
-        ? 'connected'
-        : uniqueStates.has('errored')
-        ? 'errored'
-        : 'disconnected'
+      const status: BrokerNodeState =
+        stateValues.length > 0 &&
+        stateValues.every(state => state === 'connected')
+          ? 'connected'
+          : uniqueStates.has('errored')
+            ? 'errored'
+            : 'disconnected'
 
       const brokerStatus: {
         id: string
@@ -79,7 +79,8 @@ module.exports = function (RED: NodeRedApp): void {
     })
 
     const hasBrokers = brokerStatuses.length > 0
-    const allConnected = hasBrokers && brokerStatuses.every(b => b.status === 'connected')
+    const allConnected =
+      hasBrokers && brokerStatuses.every(b => b.status === 'connected')
 
     const statusCode = allConnected ? 200 : 503
     const response = {

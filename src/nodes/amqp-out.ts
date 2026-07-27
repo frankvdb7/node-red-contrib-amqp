@@ -1,19 +1,32 @@
-import { NodeRedApp, EditorNodeProperties, Node, NodeMessageInFlow } from 'node-red'
-import { NODE_STATUS } from '../constants'
-import { AmqpInNodeDefaults, AmqpOutNodeDefaults, ErrorLocationEnum, ErrorType, NodeType } from '../types'
+import type { Channel, ChannelModel, MessageProperties } from 'amqplib'
+import type {
+  EditorNodeProperties,
+  Node,
+  NodeMessageInFlow,
+  NodeRedApp,
+} from 'node-red'
 import Amqp from '../Amqp'
-import { MessageProperties, Channel, ChannelModel } from 'amqplib'
+import { NODE_STATUS } from '../constants'
 import ReconnectBackoff from '../reconnect-backoff'
+import {
+  type AmqpInNodeDefaults,
+  type AmqpOutNodeDefaults,
+  ErrorLocationEnum,
+  ErrorType,
+  NodeType,
+} from '../types'
 
-module.exports = function (RED: NodeRedApp): void {
+module.exports = (RED: NodeRedApp): void => {
   const isErrorLike = (
     value: unknown,
   ): value is { code?: string; message?: string; isOperational?: boolean } =>
     typeof value === 'object' && value !== null
-  const isInvalidLoginError = (
-    err: { code?: string; message?: string },
-  ): boolean =>
-    err.code === ErrorType.InvalidLogin || /ACCESS_REFUSED/i.test(err.message || '')
+  const isInvalidLoginError = (err: {
+    code?: string
+    message?: string
+  }): boolean =>
+    err.code === ErrorType.InvalidLogin ||
+    /ACCESS_REFUSED/i.test(err.message || '')
   const toError = (value: unknown): Error =>
     value instanceof Error ? value : new Error(String(value))
 
@@ -34,15 +47,13 @@ module.exports = function (RED: NodeRedApp): void {
     let onConnError: (e: unknown) => Promise<void>
     let onChannelClose: () => Promise<void>
     let onChannelError: (e: unknown) => Promise<void>
-    const me = this
     const reconnectBackoff = new ReconnectBackoff()
 
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
+    // @ts-expect-error
     RED.nodes.createNode(this, config)
     this.status(NODE_STATUS.Disconnected)
-    
-    const configAmqp: AmqpInNodeDefaults & AmqpOutNodeDefaults = config;
+
+    const configAmqp: AmqpInNodeDefaults & AmqpOutNodeDefaults = config
 
     const amqp = new Amqp(RED, this, configAmqp)
 
@@ -69,9 +80,15 @@ module.exports = function (RED: NodeRedApp): void {
         try {
           await reconnect()
         } catch (reconnectError) {
-          nodeIns.error(`Reconnect failed after connection close: ${reconnectError}`, {
-            payload: { error: reconnectError, location: ErrorLocationEnum.ConnectionErrorEvent },
-          })
+          nodeIns.error(
+            `Reconnect failed after connection close: ${reconnectError}`,
+            {
+              payload: {
+                error: reconnectError,
+                location: ErrorLocationEnum.ConnectionErrorEvent,
+              },
+            },
+          )
         }
       }
 
@@ -80,13 +97,22 @@ module.exports = function (RED: NodeRedApp): void {
           try {
             await reconnect()
           } catch (reconnectError) {
-            nodeIns.error(`Reconnect failed after connection error: ${reconnectError}`, {
-              payload: { error: reconnectError, location: ErrorLocationEnum.ConnectionErrorEvent },
-            })
+            nodeIns.error(
+              `Reconnect failed after connection error: ${reconnectError}`,
+              {
+                payload: {
+                  error: reconnectError,
+                  location: ErrorLocationEnum.ConnectionErrorEvent,
+                },
+              },
+            )
           }
         }
         nodeIns.error(`Connection error ${e}`, {
-          payload: { error: e, location: ErrorLocationEnum.ConnectionErrorEvent },
+          payload: {
+            error: e,
+            location: ErrorLocationEnum.ConnectionErrorEvent,
+          },
         })
       }
 
@@ -95,9 +121,15 @@ module.exports = function (RED: NodeRedApp): void {
         try {
           await reconnect()
         } catch (reconnectError) {
-          nodeIns.error(`Reconnect failed after channel close: ${reconnectError}`, {
-            payload: { error: reconnectError, location: ErrorLocationEnum.ChannelErrorEvent },
-          })
+          nodeIns.error(
+            `Reconnect failed after channel close: ${reconnectError}`,
+            {
+              payload: {
+                error: reconnectError,
+                location: ErrorLocationEnum.ChannelErrorEvent,
+              },
+            },
+          )
         }
       }
 
@@ -106,9 +138,15 @@ module.exports = function (RED: NodeRedApp): void {
           try {
             await reconnect()
           } catch (reconnectError) {
-            nodeIns.error(`Reconnect failed after channel error: ${reconnectError}`, {
-              payload: { error: reconnectError, location: ErrorLocationEnum.ChannelErrorEvent },
-            })
+            nodeIns.error(
+              `Reconnect failed after channel error: ${reconnectError}`,
+              {
+                payload: {
+                  error: reconnectError,
+                  location: ErrorLocationEnum.ChannelErrorEvent,
+                },
+              },
+            )
           }
         }
         nodeIns.error(`Channel error ${e}`, {
@@ -134,9 +172,15 @@ module.exports = function (RED: NodeRedApp): void {
           await reconnect().catch(reconnectError => {
             reconnectFailed = true
             nodeIns.status(NODE_STATUS.Error)
-            nodeIns.error(`Reconnect failed during initialization: ${reconnectError}`, {
-              payload: { error: reconnectError, location: ErrorLocationEnum.ConnectError },
-            })
+            nodeIns.error(
+              `Reconnect failed during initialization: ${reconnectError}`,
+              {
+                payload: {
+                  error: reconnectError,
+                  location: ErrorLocationEnum.ConnectError,
+                },
+              },
+            )
           })
           if (!reconnectFailed) {
             nodeIns.status(NODE_STATUS.Invalid)
@@ -149,9 +193,15 @@ module.exports = function (RED: NodeRedApp): void {
         if (reconnectOnError) {
           await reconnect().catch(reconnectError => {
             nodeIns.status(NODE_STATUS.Error)
-            nodeIns.error(`Reconnect failed during initialization: ${reconnectError}`, {
-              payload: { error: reconnectError, location: ErrorLocationEnum.ConnectError },
-            })
+            nodeIns.error(
+              `Reconnect failed during initialization: ${reconnectError}`,
+              {
+                payload: {
+                  error: reconnectError,
+                  location: ErrorLocationEnum.ConnectError,
+                },
+              },
+            )
           })
         } else {
           nodeIns.status(NODE_STATUS.Error)
@@ -170,11 +220,8 @@ module.exports = function (RED: NodeRedApp): void {
       done?: (err?: Error) => void,
     ) => {
       const { payload, routingKey, vhost, properties: msgProperties } = msg
-      const {
-        exchangeRoutingKey,
-        exchangeRoutingKeyType,
-        amqpProperties,
-      } = config
+      const { exchangeRoutingKey, exchangeRoutingKeyType, amqpProperties } =
+        config
 
       // message properties override config properties
       let properties: MessageProperties
@@ -183,7 +230,7 @@ module.exports = function (RED: NodeRedApp): void {
           ...JSON.parse(amqpProperties),
           ...msgProperties,
         }
-      } catch (e) {
+      } catch {
         properties = msgProperties
       }
 
@@ -208,7 +255,10 @@ module.exports = function (RED: NodeRedApp): void {
           break
         case 'jsonata': {
           try {
-            const expr = RED.util.prepareJSONataExpression(exchangeRoutingKey, this)
+            const expr = RED.util.prepareJSONataExpression(
+              exchangeRoutingKey,
+              this,
+            )
             const result = await new Promise<unknown>((resolve, reject) => {
               RED.util.evaluateJSONataExpression(expr, msg, (err, value) => {
                 if (err) {
@@ -256,10 +306,10 @@ module.exports = function (RED: NodeRedApp): void {
 
           connection = amqp.getConnection()
           channel = amqp.getChannel()
-          setupEventListeners(me)
+          setupEventListeners(this)
           amqp.markConnected()
         } catch (e) {
-          await handleError(e, me)
+          await handleError(e, this)
           done && done(toError(e))
           return
         }
@@ -277,30 +327,38 @@ module.exports = function (RED: NodeRedApp): void {
 
     this.on('input', inputListener)
     // When the node is re-deployed
-    this.on('close', async (removedOrDone: boolean | ((err?: Error) => void), doneMaybe?: (err?: Error) => void): Promise<void> => {
-      const removed = typeof removedOrDone === 'boolean' ? removedOrDone : false
-      const done = typeof removedOrDone === 'function' ? removedOrDone : doneMaybe
-      isShuttingDown = true
-      clearTimeout(reconnectTimeout)
-      removeEventListeners()
-      let closeError: unknown
-      try {
-        await amqp.close()
-      } catch (e) {
-        closeError = e
-      } finally {
-        if (removed) {
-          amqp.removeBrokerNodeState()
+    this.on(
+      'close',
+      async (
+        removedOrDone: boolean | ((err?: Error) => void),
+        doneMaybe?: (err?: Error) => void,
+      ): Promise<void> => {
+        const removed =
+          typeof removedOrDone === 'boolean' ? removedOrDone : false
+        const done =
+          typeof removedOrDone === 'function' ? removedOrDone : doneMaybe
+        isShuttingDown = true
+        clearTimeout(reconnectTimeout)
+        removeEventListeners()
+        let closeError: unknown
+        try {
+          await amqp.close()
+        } catch (e) {
+          closeError = e
+        } finally {
+          if (removed) {
+            amqp.removeBrokerNodeState()
+          }
         }
-      }
 
-      if (closeError) {
-        done && done(toError(closeError))
-        return
-      }
+        if (closeError) {
+          done && done(toError(closeError))
+          return
+        }
 
-      done && done()
-    })
+        done && done()
+      },
+    )
 
     async function initializeNode(nodeIns: Node) {
       reconnect = async () => {
@@ -318,7 +376,9 @@ module.exports = function (RED: NodeRedApp): void {
           await amqp.close()
           if (isShuttingDown) {
             reconnectScheduled = false
-            nodeIns.log('Reconnect aborted: node started shutting down while closing AMQP resources')
+            nodeIns.log(
+              'Reconnect aborted: node started shutting down while closing AMQP resources',
+            )
             return
           }
           channel = null
@@ -363,9 +423,8 @@ module.exports = function (RED: NodeRedApp): void {
     }
 
     // call
-    initializeNode(this);
+    initializeNode(this)
   }
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
+  // @ts-expect-error
   RED.nodes.registerType(NodeType.AmqpOut, AmqpOut)
 }

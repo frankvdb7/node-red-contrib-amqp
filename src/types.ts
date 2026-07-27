@@ -1,5 +1,5 @@
-import { Node } from 'node-red'
-import { ConsumeMessage, MessageProperties } from 'amqplib'
+import type { ConsumeMessage, MessageProperties } from 'amqplib'
+import type { Node } from 'node-red'
 
 export interface BrokerConfig extends Node {
   host: string
@@ -18,10 +18,7 @@ export interface AmqpBrokerNode extends BrokerConfig {
   lastError: Record<string, BrokerNodeError>
 }
 
-export type BrokerNodeState =
-  | 'connected'
-  | 'disconnected'
-  | 'errored'
+export type BrokerNodeState = 'connected' | 'disconnected' | 'errored'
 
 export interface BrokerNodeError {
   message: string
@@ -149,5 +146,5 @@ export enum DefaultExchangeName {
 export enum ErrorLocationEnum {
   ConnectError = 'ConnectError',
   ConnectionErrorEvent = 'ConnectionErrorEvent',
-  ChannelErrorEvent = 'ChannelErrorEvent'
+  ChannelErrorEvent = 'ChannelErrorEvent',
 }

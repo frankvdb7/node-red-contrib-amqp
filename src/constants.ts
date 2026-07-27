@@ -1,4 +1,4 @@
-import { NodeStatus } from 'node-red'
+import type { NodeStatus } from 'node-red'
 
 export const NODE_STATUS: { [index: string]: NodeStatus } = Object.freeze({
   Connected: { fill: 'green', shape: 'dot', text: 'Connected' },
