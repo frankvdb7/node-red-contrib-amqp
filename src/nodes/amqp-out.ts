@@ -278,6 +278,9 @@ module.exports = function (RED: NodeRedApp): void {
 
           const vhostSwitchRequired = !amqp.isInitializedForVhost(vhost)
           if (vhostSwitchRequired) {
+            const switchCancellation = new Error(
+              'AMQP virtual host switch was cancelled before publishing',
+            )
             const switched = await lifecycle.replace(
               new Error('AMQP initialization cancelled for virtual host switch'),
               async attempt => {
@@ -291,12 +294,13 @@ module.exports = function (RED: NodeRedApp): void {
               },
             )
             if (!switched || (await stopIfShuttingDown())) {
+              done && done(switchCancellation)
               return
             }
           }
         } catch (e) {
           if (lifecycle.isShuttingDown()) {
-            done && done()
+            done && done(toError(e))
             return
           }
           await handleError(e, me)

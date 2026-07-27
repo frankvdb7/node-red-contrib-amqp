@@ -2933,6 +2933,27 @@ describe('Amqp Class', () => {
       expect((amqp as any).vhostOverride).to.equal('vh2')
     })
 
+    it('does not log an expected aborted vhost switch as an AMQP failure', async () => {
+      amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
+      sinon.stub(amqp, 'close').resolves()
+      sinon.stub(amqp, 'connect').callsFake(async (options: { signal?: AbortSignal }) => {
+        throw options.signal?.reason ?? new Error('switch failed')
+      })
+      const errorStub = sinon.stub(amqp.node, 'error')
+      const controller = new AbortController()
+      controller.abort(new Error('shutdown'))
+
+      let switchError: Error | undefined
+      try {
+        await amqp.setVhost('vh2', { signal: controller.signal })
+      } catch (error) {
+        switchError = error as Error
+      }
+
+      expect(switchError?.message).to.equal('shutdown')
+      expect(errorStub.called).to.equal(false)
+    })
+
     it('does nothing when vhost is unchanged', async () => {
       amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
       ;(amqp as any).closed = false

@@ -1103,14 +1103,59 @@ describe('amqp-out Node', () => {
     )
 
     const amqpOutNode = helper.getNode('n1')
-    amqpOutNode.receive({ payload: 'must-not-publish', vhost: 'vh2' })
+    let doneCalls = 0
+    let doneError: Error | undefined
+    ;(amqpOutNode as any)._inputCallback(
+      { payload: 'must-not-publish', vhost: 'vh2' },
+      undefined,
+      (error?: Error) => {
+        doneCalls += 1
+        doneError = error
+      },
+    )
     await switchStarted
     await amqpOutNode.close()
 
     releaseSwitch()
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await new Promise(resolve => setTimeout(resolve, 50))
 
     expect(publishStub.called).to.be.false
+    expect(doneCalls).to.equal(1)
+    expect(doneError).to.be.instanceOf(Error)
+  })
+
+  it('completes a signal-rejected vhost switch exactly once with an error', async function () {
+    const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const channelMock = { on: sinon.stub(), off: sinon.stub() }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'close').resolves()
+    sinon.stub(Amqp.prototype, 'isInitializedForVhost').returns(false)
+    let notifySwitchStarted: () => void = () => undefined
+    const switchStarted = new Promise<void>(resolve => {
+      notifySwitchStarted = resolve
+    })
+    sinon.stub(Amqp.prototype, 'setVhost').callsFake(async (_vhost, options?: { signal?: AbortSignal }) => {
+      notifySwitchStarted()
+      await new Promise<void>((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true })
+      })
+    })
+
+    await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture)
+    const node = helper.getNode('n1')
+    let doneCalls = 0
+    let doneError: Error | undefined
+    ;(node as any)._inputCallback({ payload: 'cancelled', vhost: 'vh2' }, undefined, (error?: Error) => {
+      doneCalls += 1
+      doneError = error
+    })
+    await switchStarted
+    await node.close()
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    expect(doneCalls).to.equal(1)
+    expect(doneError).to.be.instanceOf(Error)
   })
 
   it('aborts a never-settling connection created by a vhost switch on shutdown', async function () {

@@ -436,7 +436,9 @@ export default class Amqp {
       this.markConnected()
     } catch (e) {
       await this.close().catch(() => undefined)
-      this.node.error(`Could not switch vhost: ${e}`)
+      if (!options.signal?.aborted) {
+        this.node.error(`Could not switch vhost: ${e}`)
+      }
       throw e
     }
   }
