@@ -1113,6 +1113,106 @@ describe('amqp-out Node', () => {
     expect(publishStub.called).to.be.false
   })
 
+  it('aborts a never-settling connection created by a vhost switch on shutdown', async function () {
+    const connectionMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const channelMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    let switchSignal: AbortSignal | undefined
+    let notifySwitchStarted: () => void = () => undefined
+    const switchStarted = new Promise<void>(resolve => {
+      notifySwitchStarted = resolve
+    })
+    let releaseSwitch: () => void = () => undefined
+    const pendingSwitch = new Promise<void>(resolve => {
+      releaseSwitch = resolve
+    })
+    const connectStub = sinon.stub(Amqp.prototype, 'connect')
+    connectStub.onFirstCall().callsFake(function (this: { broker?: unknown }) {
+      this.broker = { vhost: 'vh1' }
+      return Promise.resolve(connectionMock as any)
+    })
+    connectStub.onSecondCall().callsFake((options?: { signal?: AbortSignal }) => {
+      switchSignal = options?.signal
+      notifySwitchStarted()
+      return pendingSwitch as any
+    })
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'close').resolves()
+    sinon.stub(Amqp.prototype, 'isInitializedForVhost').returns(false)
+    const publishStub = sinon.stub(Amqp.prototype, 'publish').resolves()
+
+    await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture)
+    const amqpOutNode = helper.getNode('n1')
+    amqpOutNode.receive({ payload: 'switching', vhost: 'vh2' })
+    await switchStarted
+
+    await amqpOutNode.close()
+    const switchWasAborted = switchSignal?.aborted
+    releaseSwitch()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(switchWasAborted).to.equal(true)
+    expect(publishStub.called).to.equal(false)
+  })
+
+  it('aborts never-settling channel creation created by a vhost switch on shutdown', async function () {
+    const connectionMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    const channelMock = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub(),
+    }
+    sinon
+      .stub(Amqp.prototype, 'connect')
+      .callsFake(function (this: { broker?: unknown }) {
+        this.broker = { vhost: 'vh1' }
+        return Promise.resolve(connectionMock as any)
+      })
+    let switchSignal: AbortSignal | undefined
+    let notifySwitchStarted: () => void = () => undefined
+    const switchStarted = new Promise<void>(resolve => {
+      notifySwitchStarted = resolve
+    })
+    let releaseSwitch: () => void = () => undefined
+    const pendingSwitch = new Promise<void>(resolve => {
+      releaseSwitch = resolve
+    })
+    const initializeStub = sinon.stub(Amqp.prototype, 'initialize')
+    initializeStub.onFirstCall().resolves(channelMock as any)
+    initializeStub.onSecondCall().callsFake((options?: { signal?: AbortSignal }) => {
+      switchSignal = options?.signal
+      notifySwitchStarted()
+      return pendingSwitch as any
+    })
+    sinon.stub(Amqp.prototype, 'close').resolves()
+    sinon.stub(Amqp.prototype, 'isInitializedForVhost').returns(false)
+    const publishStub = sinon.stub(Amqp.prototype, 'publish').resolves()
+
+    await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture)
+    const amqpOutNode = helper.getNode('n1')
+    amqpOutNode.receive({ payload: 'switching', vhost: 'vh2' })
+    await switchStarted
+
+    await amqpOutNode.close()
+    const switchWasAborted = switchSignal?.aborted
+    releaseSwitch()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(switchWasAborted).to.equal(true)
+    expect(publishStub.called).to.equal(false)
+  })
+
   it('removes listeners before switching vhost', function (done) {
     const connectionMock = {
       off: sinon.spy(),

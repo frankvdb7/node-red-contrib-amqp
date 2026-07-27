@@ -418,7 +418,10 @@ export default class Amqp {
     )
   }
 
-  public async setVhost(newVhost: string): Promise<void> {
+  public async setVhost(
+    newVhost: string,
+    options: Pick<AmqpConnectOptions, 'signal'> = {},
+  ): Promise<void> {
     const broker = this.broker as unknown as BrokerConfig
 
     if (!broker || this.isInitializedForVhost(newVhost)) {
@@ -428,8 +431,8 @@ export default class Amqp {
     try {
       await this.close(new Error('AMQP virtual host changed during RPC'))
       this.vhostOverride = newVhost
-      await this.connect()
-      await this.initialize()
+      await this.connect(options)
+      await this.initialize(options)
       this.markConnected()
     } catch (e) {
       await this.close().catch(() => undefined)
