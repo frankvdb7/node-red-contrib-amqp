@@ -18,7 +18,8 @@ export function routingKeys(
 }
 
 export function parseJson(jsonInput: unknown): JsonValue {
-  return JSON.parse(jsonInput as string) as JsonValue
+  if (typeof jsonInput !== 'string') return jsonInput as JsonValue
+  try { return JSON.parse(jsonInput) as JsonValue } catch { return jsonInput as JsonValue }
 }
 
 export function parseJsonObject(jsonInput: unknown): JsonObject {

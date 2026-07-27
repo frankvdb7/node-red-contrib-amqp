@@ -27,7 +27,7 @@ import {
 } from './types'
 import { NODE_STATUS } from './constants'
 import DeliverySettlementTracker from './delivery-settlement-tracker'
-import { brokerUrl, parseJson as parseTransportJson, parseJsonObject as parseTransportJsonObject, routingKeys } from './amqp-transport-utils'
+import { brokerUrl, parseJsonObject as parseTransportJsonObject, routingKeys } from './amqp-transport-utils'
 const RETURN_TOKEN_HEADER = 'x-node-red-contrib-amqp-return-token'
 const MAX_UNMATCHED_RPC_RESPONSES = 100
 const BINDING_CLEANUP_TIMEOUT_MS = 5_000
@@ -1834,8 +1834,9 @@ export default class Amqp {
   }
 
   private parseJson(jsonInput: unknown, logError = false): JsonValue {
+    if (typeof jsonInput !== 'string') return jsonInput as JsonValue
     try {
-      return parseTransportJson(jsonInput)
+      return JSON.parse(jsonInput) as JsonValue
     } catch (e) {
       if (logError) this.node.error(`Invalid JSON payload: ${e}`)
       return jsonInput as JsonValue
