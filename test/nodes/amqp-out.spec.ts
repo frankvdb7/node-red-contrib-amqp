@@ -1103,16 +1103,9 @@ describe('amqp-out Node', () => {
     )
 
     const amqpOutNode = helper.getNode('n1')
-    let doneCalls = 0
-    let doneError: Error | undefined
-    ;(amqpOutNode as any)._inputCallback(
-      { payload: 'must-not-publish', vhost: 'vh2' },
-      undefined,
-      (error?: Error) => {
-        doneCalls += 1
-        doneError = error
-      },
-    )
+    const callErrors: unknown[] = []
+    amqpOutNode.on('call:error', call => callErrors.push(call.args[0]))
+    amqpOutNode.receive({ payload: 'must-not-publish', vhost: 'vh2' })
     await switchStarted
     await amqpOutNode.close()
 
@@ -1120,8 +1113,8 @@ describe('amqp-out Node', () => {
     await new Promise(resolve => setTimeout(resolve, 50))
 
     expect(publishStub.called).to.be.false
-    expect(doneCalls).to.equal(1)
-    expect(doneError).to.be.instanceOf(Error)
+    expect(callErrors).to.have.length(1)
+    expect(callErrors[0]).to.be.instanceOf(Error)
   })
 
   it('completes a signal-rejected vhost switch exactly once with an error', async function () {
@@ -1144,18 +1137,15 @@ describe('amqp-out Node', () => {
 
     await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture)
     const node = helper.getNode('n1')
-    let doneCalls = 0
-    let doneError: Error | undefined
-    ;(node as any)._inputCallback({ payload: 'cancelled', vhost: 'vh2' }, undefined, (error?: Error) => {
-      doneCalls += 1
-      doneError = error
-    })
+    const callErrors: unknown[] = []
+    node.on('call:error', call => callErrors.push(call.args[0]))
+    node.receive({ payload: 'cancelled', vhost: 'vh2' })
     await switchStarted
     await node.close()
     await new Promise(resolve => setTimeout(resolve, 50))
 
-    expect(doneCalls).to.equal(1)
-    expect(doneError).to.be.instanceOf(Error)
+    expect(callErrors).to.have.length(1)
+    expect(callErrors[0]).to.be.instanceOf(Error)
   })
 
   it('aborts a never-settling connection created by a vhost switch on shutdown', async function () {

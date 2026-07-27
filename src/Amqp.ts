@@ -26,22 +26,11 @@ import {
   BrokerNodeError,
 } from './types'
 import { NODE_STATUS } from './constants'
-
-const DELIVERY_TOKEN: unique symbol = Symbol('amqp-delivery-token')
+import DeliverySettlementTracker from './delivery-settlement-tracker'
 const RETURN_TOKEN_HEADER = 'x-node-red-contrib-amqp-return-token'
 const MAX_UNMATCHED_RPC_RESPONSES = 100
 const BINDING_CLEANUP_TIMEOUT_MS = 5_000
 const BINDING_CLEANUP_MAX_ATTEMPTS = 3
-
-type TrackedAssembledMessage = AssembledMessage & {
-  [DELIVERY_TOKEN]?: string
-}
-
-interface TrackedDelivery {
-  message: AssembledMessage
-  channel: Channel
-  deliveryTag: number
-}
 
 interface PendingRpcRequest {
   owner: Amqp
@@ -125,7 +114,7 @@ export default class Amqp {
   private rpcInterruptHandlers: Set<(error: Error) => void> = new Set()
   private rpcConsumers: Map<string, RpcConsumerState> = new Map()
   private returnedPublishes: Map<string, Error> = new Map()
-  private trackedDeliveries: Map<string, TrackedDelivery> = new Map()
+  private readonly deliveryTracker: DeliverySettlementTracker
   private closed = false
   private closePromise: Promise<void> | null = null
   private bindingCleanupPromise: Promise<void> | null = null
@@ -170,6 +159,7 @@ export default class Amqp {
       outputs: config.outputs,
       rpcTimeout: config.rpcTimeoutMilliseconds,
     }
+    this.deliveryTracker = new DeliverySettlementTracker(this.node)
   }
 
   public async connect(
@@ -285,7 +275,6 @@ export default class Amqp {
         }
       }
     }
-
     entry.count += 1
     this.connection = entry.connection
     this.connectionPoolKey = key
@@ -477,7 +466,7 @@ export default class Amqp {
     try {
       this.node.log('Acking all outstanding messages')
       this.channel.ackAll()
-      this.trackedDeliveries.clear()
+      this.deliveryTracker.clear()
       return true
     } catch (e) {
       this.node.error(`Could not ackAll messages: ${e}`)
@@ -513,7 +502,7 @@ export default class Amqp {
     try {
       this.node.log('Nacking all outstanding messages')
       this.channel.nackAll(requeue)
-      this.trackedDeliveries.clear()
+      this.deliveryTracker.clear()
       return true
     } catch (e) {
       this.node.error(`Could not nackAll messages: ${e}`)
@@ -1517,7 +1506,7 @@ export default class Amqp {
   }
 
   private async closeChannel(): Promise<void> {
-    this.trackedDeliveries.clear()
+    this.deliveryTracker.clear()
     this.returnedPublishes.clear()
     this.rpcInterruptHandlers.clear()
     if (this.channel) {
@@ -1666,7 +1655,7 @@ export default class Amqp {
     const { prefetch, waitForConfirms } = this.config
     const lifecycleVersion = this.lifecycleVersion
 
-    this.trackedDeliveries.clear()
+    this.deliveryTracker.clear()
     const channel = await (waitForConfirms
       ? this.connection.createConfirmChannel()
       : this.connection.createChannel())
@@ -1830,18 +1819,9 @@ export default class Amqp {
 
   private assembleMessage(amqpMessage: ConsumeMessage): AssembledMessage {
     const payload = this.parseJson(amqpMessage.content.toString(), true)
-    const msg = amqpMessage as TrackedAssembledMessage
+    const msg = amqpMessage as AssembledMessage
     msg.payload = payload
-    if (this.isManualAck()) {
-      const token = uuidv4()
-      msg[DELIVERY_TOKEN] = token
-      this.trackedDeliveries.set(token, {
-        message: msg,
-        channel: this.channel,
-        deliveryTag: msg.fields.deliveryTag,
-      })
-    }
-    return msg
+    return this.deliveryTracker.track(msg, this.channel, this.isManualAck())
   }
 
   private isManualAck(): boolean {
@@ -1851,50 +1831,20 @@ export default class Amqp {
   private resolveDelivery(
     msg: AssembledMessage,
     operation: string,
-  ): (TrackedDelivery & { token?: string }) | null {
-    if (!this.isManualAck()) {
-      return {
-        message: msg,
-        channel: this.channel,
-        deliveryTag: msg.fields?.deliveryTag ?? 0,
-      }
-    }
-
-    const token = (msg as TrackedAssembledMessage)[DELIVERY_TOKEN]
-    const delivery = token ? this.trackedDeliveries.get(token) : undefined
-    if (!delivery || delivery.channel !== this.channel) {
-      this.node.error(
-        `Could not ${operation} message: delivery does not belong to the active AMQP channel`,
-      )
-      return null
-    }
-
-    return { ...delivery, token }
+  ): ReturnType<DeliverySettlementTracker['resolve']> {
+    return this.deliveryTracker.resolve(
+      msg,
+      operation,
+      this.channel,
+      this.isManualAck(),
+    )
   }
 
   private removeTrackedDeliveries(
-    delivery: TrackedDelivery & { token?: string },
+    delivery: NonNullable<ReturnType<DeliverySettlementTracker['resolve']>>,
     allUpTo: boolean,
   ): void {
-    if (!this.isManualAck()) {
-      return
-    }
-
-    if (!allUpTo) {
-      if (delivery.token) {
-        this.trackedDeliveries.delete(delivery.token)
-      }
-      return
-    }
-
-    for (const [token, trackedDelivery] of this.trackedDeliveries) {
-      if (
-        trackedDelivery.channel === delivery.channel &&
-        trackedDelivery.deliveryTag <= delivery.deliveryTag
-      ) {
-        this.trackedDeliveries.delete(token)
-      }
-    }
+    this.deliveryTracker.remove(delivery, allUpTo, this.isManualAck())
   }
 
   private parseJson(jsonInput: unknown, logError = false): JsonValue {
