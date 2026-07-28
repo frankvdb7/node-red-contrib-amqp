@@ -8,7 +8,7 @@ This repository provides a set of Node-RED nodes for interacting with RabbitMQ a
 - **AMQP Out:** Publish messages to an exchange.
 - **AMQP In Manual Ack:** Consume messages with manual acknowledgment.
 - **Dynamic Virtual Host:** Change the vhost at runtime for the `amqp-out` node by setting `msg.vhost`.
-- **Reconnect Support:** Supports automatic reconnect behavior and input-triggered reconnect calls for inbound nodes.
+- **Reconnect Support:** Uses amqplib's built-in automatic connection recovery.
 
 ## Prerequisites
 
@@ -42,8 +42,6 @@ The nodes support runtime control via `msg`:
   - `msg.routingKey`: overrides routing key when node routing key mode is `str`.
   - `msg.vhost`: changes virtual host at runtime and reconnects with the new vhost.
   - `msg.properties`: AMQP message properties merged over configured JSON properties.
-- `amqp-in` and `amqp-in-manual-ack`
-  - `msg.payload.reconnectCall = true`: triggers reconnect logic from a flow.
 - `amqp-in-manual-ack`
   - `msg.manualAck.ackMode`: explicit ack mode (`ack`, `ackAll`, `nack`, `nackAll`, `reject`).
   - `msg.manualAck.requeue`: used by `nack`, `nackAll`, and `reject` (defaults to `true`).
@@ -87,9 +85,9 @@ Example response:
 
 ### Troubleshooting
 
-- Reconnect loops:
+- Reconnection:
   - Verify host/port/TLS/vhost values and broker reachability.
-  - Check whether `reconnectOnError` is enabled when desired.
+  - amqplib retries with its built-in exponential backoff and recreates node topology after reconnecting.
 - Login or permission errors:
   - Confirm credentials and vhost access rights on the broker.
 - Queue type mismatch:
@@ -102,7 +100,7 @@ Example response:
 
 When importing older flows, ensure node configs include current fields:
 
-- `amqp-out`: `exchangeRoutingKeyType`, `waitForConfirms`, `reconnectOnError`
+- `amqp-out`: `exchangeRoutingKeyType`, `waitForConfirms`
 - `amqp-in` and `amqp-in-manual-ack`: `queueType`, `queueArguments`
 - JSON fields such as `headers` should be valid JSON strings (for example `"{}"`).
 
