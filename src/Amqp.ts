@@ -36,11 +36,13 @@ export default class Amqp {
   private vhostOverride?: string
   private connectionErrorHandler: (e: unknown) => void
   private connectionCloseHandler: () => void
+  private connectionRecoveryFailedHandler: (e: unknown) => void
   private channelErrorHandler: (e: unknown) => void
   private channelCloseHandler: () => void
   private channelReturnHandler: () => void
   private rpcTimeouts: Set<NodeJS.Timeout> = new Set()
   private closed = false
+  private connectionGeneration = 0
   private recoveryHandler?: () => Promise<void>
   private initialRecovery = true
 
@@ -103,18 +105,30 @@ export default class Amqp {
     const { host, port, vhost } = brokerConfig
 
     const brokerInfo = `${host}:${port}${vhost ? `/${vhost}` : ''}`
+    const connectionGeneration = ++this.connectionGeneration
     this.initialRecovery = true
     this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
     try {
-      this.connection = await connect(`${brokerUrl}?heartbeat=2`, {
+      const connection = await connect(`${brokerUrl}?heartbeat=2`, {
         recovery: {
-          setup: async model => this.handleRecovery(model),
+          maxRetries: 5,
+          setup: async model =>
+            this.handleRecovery(model, connectionGeneration),
         },
       })
+
+      if (connectionGeneration !== this.connectionGeneration) {
+        await connection.close().catch(() => undefined)
+        throw new Error('AMQP connection was closed before it completed')
+      }
+
+      this.connection = connection
       this.node.log(`Connected to AMQP broker ${brokerInfo}`)
     } catch (err) {
-      this.setBrokerNodeState('errored', err)
-      this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
+      if (connectionGeneration === this.connectionGeneration) {
+        this.setBrokerNodeState('errored', err)
+        this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
+      }
       throw err
     }
 
@@ -135,8 +149,16 @@ export default class Amqp {
       this.node.log(`AMQP Connection closed`)
     }
 
+    this.connectionRecoveryFailedHandler = (e): void => {
+      this.setBrokerNodeState('errored', e)
+      this.node.status(NODE_STATUS.Error)
+      this.node.error(`AMQP connection recovery failed: ${e}`)
+    }
+
     this.connection.on('error', this.connectionErrorHandler)
     this.connection.on('disconnect', this.connectionCloseHandler)
+    this.connection.on('connect-failed', this.connectionRecoveryFailedHandler)
+    this.connection.on('reconnect-failed', this.connectionRecoveryFailedHandler)
 
     this.closed = false
 
@@ -521,10 +543,13 @@ export default class Amqp {
   }
 
   public async close(): Promise<void> {
-    if (this.closed) {
+    const wasClosed = this.closed
+    this.closed = true
+    this.connectionGeneration++
+
+    if (wasClosed) {
       return
     }
-    this.closed = true
     this.clearRpcTimeouts()
 
     await this.unbindQueues()
@@ -590,6 +615,14 @@ export default class Amqp {
     if (this.connection) {
       this.connection.off?.('error', this.connectionErrorHandler)
       this.connection.off?.('disconnect', this.connectionCloseHandler)
+      this.connection.off?.(
+        'connect-failed',
+        this.connectionRecoveryFailedHandler,
+      )
+      this.connection.off?.(
+        'reconnect-failed',
+        this.connectionRecoveryFailedHandler,
+      )
     }
 
     try {
@@ -600,9 +633,15 @@ export default class Amqp {
     }
   }
 
-  private async handleRecovery(model: ChannelModel): Promise<void> {
+  private async handleRecovery(
+    model: ChannelModel,
+    connectionGeneration: number,
+  ): Promise<void> {
+    if (connectionGeneration !== this.connectionGeneration) {
+      return
+    }
+
     this.model = model
-    this.closed = false
     if (this.initialRecovery) {
       this.initialRecovery = false
       return

@@ -93,4 +93,64 @@ describe('amqplib native recovery', () => {
 
     expect(manager.close.calledOnce).to.equal(true)
   })
+
+  it('closes a recovery manager that resolves after node shutdown', async () => {
+    const manager = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+    let resolveConnection: (value: typeof manager) => void
+    sinon.stub(amqplib, 'connect').returns(
+      new Promise(resolve => {
+        resolveConnection = resolve
+      }),
+    )
+
+    const connecting = amqp.connect().catch(error => error)
+    await amqp.close()
+    resolveConnection!(manager)
+
+    const error = await connecting
+    expect(String(error)).to.match(/closed before it completed/)
+    expect(manager.close.calledOnce).to.equal(true)
+  })
+
+  it('bounds startup recovery attempts so initial failures reach node startup handling', async () => {
+    let recovery: any
+    sinon.stub(amqplib, 'connect').callsFake(async (_url: string, options: any) => {
+      recovery = options.recovery
+      throw new Error('getaddrinfo ENOTFOUND broker')
+    })
+
+    try {
+      await amqp.connect()
+      expect.fail('connect should reject after the configured recovery attempts')
+    } catch (error) {
+      expect(String(error)).to.match(/ENOTFOUND/)
+    }
+
+    expect(recovery.maxRetries).to.equal(5)
+  })
+
+  it('reports an exhausted reconnection attempt as an error', async () => {
+    const status = sinon.stub()
+    const error = sinon.stub()
+    amqp.node = { ...nodeFixture, status, error }
+    const listeners: Record<string, (error: Error) => void> = {}
+    const manager = {
+      on: sinon.stub().callsFake((event: string, listener: (error: Error) => void) => {
+        listeners[event] = listener
+      }),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+    sinon.stub(amqplib, 'connect').resolves(manager)
+
+    await amqp.connect()
+    listeners['reconnect-failed'](new Error('broker unavailable'))
+
+    expect(status.calledWithMatch({ text: 'Error' })).to.equal(true)
+    expect(error.calledWithMatch(/recovery failed/)).to.equal(true)
+  })
 })
