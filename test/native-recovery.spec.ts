@@ -27,8 +27,8 @@ describe('amqplib native recovery', () => {
     prefetch: sinon.stub().resolves(),
     on: sinon.stub(),
     off: sinon.stub(),
-    assertExchange: sinon.stub(),
-    assertQueue: sinon.stub(),
+    assertExchange: sinon.stub().resolves(),
+    assertQueue: sinon.stub().resolves({ queue: 'declared-queue' }),
     bindQueue: sinon.stub(),
     consume: sinon.stub().resolves(),
     close: sinon.stub().resolves(),
@@ -80,6 +80,74 @@ describe('amqplib native recovery', () => {
     expect(recoveredChannel.bindQueue.called).to.equal(false)
   })
 
+  it('recreates opted-in topology after recovery', async () => {
+    const initialChannel = channel()
+    const recoveredChannel = channel()
+    const initialModel = model(initialChannel)
+    const recoveredModel = model(recoveredChannel)
+    const manager = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+    let recovery: any
+    amqp = new Amqp(RED, nodeFixture, {
+      ...nodeConfigFixture,
+      queueName: 'recovery-queue',
+      autoCreateQueue: true,
+      autoCreateExchangeBindings: true,
+    })
+    sinon.stub(amqplib, 'connect').callsFake(async (_url: string, options: any) => {
+      recovery = options.recovery
+      await recovery.setup(initialModel)
+      return manager
+    })
+
+    amqp.onRecovery(async () => {
+      await amqp.initialize()
+      await amqp.consume()
+    })
+
+    await amqp.connect()
+    await amqp.initialize()
+    await amqp.consume()
+    await recovery.setup(recoveredModel)
+
+    expect(recoveredChannel.assertExchange.calledOnce).to.equal(true)
+    expect(recoveredChannel.assertQueue.calledOnce).to.equal(true)
+    expect(recoveredChannel.bindQueue.calledOnce).to.equal(true)
+    expect(recoveredChannel.consume.calledOnce).to.equal(true)
+  })
+
+  it('propagates recovery setup failures to amqplib', async () => {
+    const initialModel = model(channel())
+    const recoveredModel = model(channel())
+    const manager = {
+      on: sinon.stub(),
+      off: sinon.stub(),
+      close: sinon.stub().resolves(),
+    }
+    let recovery: any
+    sinon.stub(amqplib, 'connect').callsFake(async (_url: string, options: any) => {
+      recovery = options.recovery
+      await recovery.setup(initialModel)
+      return manager
+    })
+    const setupFailure = new Error('queue recovery failed')
+    amqp.onRecovery(async () => {
+      throw setupFailure
+    })
+
+    await amqp.connect()
+
+    try {
+      await recovery.setup(recoveredModel)
+      expect.fail('recovery setup should reject')
+    } catch (error) {
+      expect(error).to.equal(setupFailure)
+    }
+  })
+
   it('closes the recovery manager on node shutdown', async () => {
     const manager = {
       on: sinon.stub(),
@@ -116,7 +184,7 @@ describe('amqplib native recovery', () => {
     expect(manager.close.calledOnce).to.equal(true)
   })
 
-  it('bounds startup recovery attempts so initial failures reach node startup handling', async () => {
+  it('propagates failed initial recovery after the configured retry limit', async () => {
     let recovery: any
     sinon.stub(amqplib, 'connect').callsFake(async (_url: string, options: any) => {
       recovery = options.recovery
