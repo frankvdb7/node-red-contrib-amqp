@@ -12,7 +12,7 @@ This repository provides a set of Node-RED nodes for interacting with RabbitMQ a
 
 ## Prerequisites
 
-- Node.js 20 or newer
+- Node.js 20 or newer (Node.js 22 or newer for development tooling)
 - Node-RED 4.0 or newer
 
 ## Installation
@@ -133,6 +133,8 @@ To contribute to the development of these nodes, please follow these steps:
 - `npm run build:production`: Build without source maps.
 - `npm run copyassets`: Copy node editor HTML and icons into the build output.
 - `npm run lint`: Format code and check for linting errors.
+- `npm run fallow`: Report unused code, dependency issues, duplication, and complexity hotspots.
+- `npm run fallow:audit`: Fail only when a change introduces new Fallow findings; this runs in CI.
 - `npm test`: Run the test suite.
 - `npm run test:watch`: Run tests in watch mode.
 - `npm run test:cov`: Generate a test coverage report.

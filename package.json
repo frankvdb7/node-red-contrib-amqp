@@ -10,6 +10,8 @@
     "build:production": "rimraf build/* --glob && tsc --sourceMap false -p . && npm run copyassets",
     "copyassets": "copyfiles -f src/nodes/**/*.html build/src/nodes && copyfiles -f src/nodes/icons/* build/src/nodes/icons",
     "lint": "biome check src",
+    "fallow": "fallow",
+    "fallow:audit": "fallow audit",
     "test": "npm run build && node scripts/run-tests.js",
     "test:watch": "mocha -w",
     "test:cov": "npm run build && nyc node scripts/run-tests.js"
@@ -32,6 +34,12 @@
   "engines": {
     "node": ">=20.0.0"
   },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.0.0"
+    }
+  },
   "files": [
     "build/src",
     "examples"
@@ -50,8 +58,6 @@
   "bugs": "https://github.com/frankvdb7/node-red-contrib-amqp/issues",
   "devDependencies": {
     "@biomejs/biome": "^2.5.5",
-    "@swc/core": "^1.15.21",
-    "@swc/register": "^0.1.10",
     "@istanbuljs/nyc-config-typescript": "^1.0.2",
     "@swc/core": "^1.15.46",
     "@swc/register": "^0.1.10",
@@ -64,6 +70,7 @@
     "@types/sinon": "^21.0.0",
     "chai": "^6.2.2",
     "copyfiles": "^2.4.1",
+    "fallow": "^3.9.1",
     "mocha": "^11.7.5",
     "node-red": "^5.0.1",
     "node-red-node-test-helper": "^0.3.6",
