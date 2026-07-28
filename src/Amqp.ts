@@ -5,6 +5,7 @@ import {
   type ConsumeMessage,
   connect,
   type MessageProperties,
+  type RecoveringChannelModel,
   type Replies,
 } from 'amqplib'
 import cloneDeep from 'lodash.clonedeep'
@@ -28,21 +29,22 @@ import {
 export default class Amqp {
   private config: AmqpConfig
   private broker: AmqpBrokerNode
-  private connection: ChannelModel
+  private connection: RecoveringChannelModel
+  private model: ChannelModel
   private channel: Channel
   private q: Replies.AssertQueue
   private vhostOverride?: string
-  private static connectionPool: Map<
-    string,
-    { connection: ChannelModel; count: number }
-  > = new Map()
   private connectionErrorHandler: (e: unknown) => void
   private connectionCloseHandler: () => void
+  private connectionRecoveryFailedHandler: (e: unknown) => void
   private channelErrorHandler: (e: unknown) => void
   private channelCloseHandler: () => void
   private channelReturnHandler: () => void
   private rpcTimeouts: Set<NodeJS.Timeout> = new Set()
   private closed = false
+  private connectionGeneration = 0
+  private recoveryHandler?: () => Promise<void>
+  private initialRecovery = true
 
   constructor(
     private readonly RED: NodeRedApp,
@@ -53,7 +55,6 @@ export default class Amqp {
       name: config.name,
       broker: config.broker,
       prefetch: config.prefetch,
-      reconnectOnError: config.reconnectOnError,
       noAck: config.noAck,
       waitForConfirms: config.waitForConfirms,
       exchange: {
@@ -81,7 +82,7 @@ export default class Amqp {
     }
   }
 
-  public async connect(): Promise<ChannelModel> {
+  public async connect(): Promise<RecoveringChannelModel> {
     const { broker } = this.config
 
     // wtf happened to the types?
@@ -104,38 +105,32 @@ export default class Amqp {
     const { host, port, vhost } = brokerConfig
 
     const brokerInfo = `${host}:${port}${vhost ? `/${vhost}` : ''}`
-    const key = `${broker}:${vhost}`
+    const connectionGeneration = ++this.connectionGeneration
+    this.initialRecovery = true
+    this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
+    try {
+      const connection = await connect(`${brokerUrl}?heartbeat=2`, {
+        recovery: {
+          maxRetries: 5,
+          setup: async model =>
+            this.handleRecovery(model, connectionGeneration),
+        },
+      })
 
-    let entry = Amqp.connectionPool.get(key)
-    if (entry && !this.isConnectionOpen(entry.connection)) {
-      Amqp.connectionPool.delete(key)
-      entry = undefined
-    }
+      if (connectionGeneration !== this.connectionGeneration) {
+        await connection.close().catch(() => undefined)
+        throw new Error('AMQP connection was closed before it completed')
+      }
 
-    if (!entry) {
-      this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
-      try {
-        const connection = await connect(brokerUrl, { heartbeat: 2 })
-        this.node.log(`Connected to AMQP broker ${brokerInfo}`)
-
-        connection.on('close', () => {
-          const current = Amqp.connectionPool.get(key)
-          if (current?.connection === connection) {
-            Amqp.connectionPool.delete(key)
-          }
-        })
-
-        entry = { connection, count: 0 }
-        Amqp.connectionPool.set(key, entry)
-      } catch (err) {
+      this.connection = connection
+      this.node.log(`Connected to AMQP broker ${brokerInfo}`)
+    } catch (err) {
+      if (connectionGeneration === this.connectionGeneration) {
         this.setBrokerNodeState('errored', err)
         this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
-        throw err
       }
+      throw err
     }
-
-    entry.count += 1
-    this.connection = entry.connection
 
     this.connectionErrorHandler = (e): void => {
       /* istanbul ignore next */
@@ -154,12 +149,24 @@ export default class Amqp {
       this.node.log(`AMQP Connection closed`)
     }
 
+    this.connectionRecoveryFailedHandler = (e): void => {
+      this.setBrokerNodeState('errored', e)
+      this.node.status(NODE_STATUS.Error)
+      this.node.error(`AMQP connection recovery failed: ${e}`)
+    }
+
     this.connection.on('error', this.connectionErrorHandler)
-    this.connection.on('close', this.connectionCloseHandler)
+    this.connection.on('disconnect', this.connectionCloseHandler)
+    this.connection.on('connect-failed', this.connectionRecoveryFailedHandler)
+    this.connection.on('reconnect-failed', this.connectionRecoveryFailedHandler)
 
     this.closed = false
 
     return this.connection
+  }
+
+  public onRecovery(handler: () => Promise<void>): void {
+    this.recoveryHandler = handler
   }
 
   public markConnected(): void {
@@ -256,7 +263,7 @@ export default class Amqp {
   }
 
   public getConnection(): ChannelModel {
-    return this.connection
+    return this.connection as ChannelModel
   }
 
   public getChannel(): Channel {
@@ -536,10 +543,13 @@ export default class Amqp {
   }
 
   public async close(): Promise<void> {
-    if (this.closed) {
+    const wasClosed = this.closed
+    this.closed = true
+    this.connectionGeneration++
+
+    if (wasClosed) {
       return
     }
-    this.closed = true
     this.clearRpcTimeouts()
 
     await this.unbindQueues()
@@ -599,40 +609,53 @@ export default class Amqp {
   }
 
   private async releaseConnection(): Promise<void> {
-    const brokerId = this.config.broker
-    const broker = this.broker as unknown as BrokerConfig
-    const vhost = this.vhostOverride ?? broker?.vhost
-    const key = `${brokerId}:${vhost}`
-
     this.setBrokerNodeState('disconnected')
     this.node.status(NODE_STATUS.Disconnected)
 
     if (this.connection) {
       this.connection.off?.('error', this.connectionErrorHandler)
-      this.connection.off?.('close', this.connectionCloseHandler)
+      this.connection.off?.('disconnect', this.connectionCloseHandler)
+      this.connection.off?.(
+        'connect-failed',
+        this.connectionRecoveryFailedHandler,
+      )
+      this.connection.off?.(
+        'reconnect-failed',
+        this.connectionRecoveryFailedHandler,
+      )
     }
 
-    const entry = Amqp.connectionPool.get(key)
-    if (entry) {
-      entry.count -= 1
-      if (entry.count <= 0) {
-        Amqp.connectionPool.delete(key)
-        try {
-          await entry.connection.close()
-        } catch (e) {
-          /* istanbul ignore next */
-          this.node.error(`Error closing AMQP connection: ${e}`)
-        }
-      }
+    try {
+      await this.connection?.close()
+    } catch (e) {
+      /* istanbul ignore next */
+      this.node.error(`Error closing AMQP connection: ${e}`)
     }
+  }
+
+  private async handleRecovery(
+    model: ChannelModel,
+    connectionGeneration: number,
+  ): Promise<void> {
+    if (connectionGeneration !== this.connectionGeneration) {
+      return
+    }
+
+    this.model = model
+    if (this.initialRecovery) {
+      this.initialRecovery = false
+      return
+    }
+    await this.recoveryHandler?.()
   }
 
   private async createChannel(): Promise<Channel> {
     const { prefetch, waitForConfirms } = this.config
 
+    const model = this.model ?? (this.connection as unknown as ChannelModel)
     this.channel = await (waitForConfirms
-      ? this.connection.createConfirmChannel()
-      : this.connection.createChannel())
+      ? model.createConfirmChannel()
+      : model.createChannel())
     this.channel.prefetch(Number(prefetch))
 
     this.channelErrorHandler = (e): void => {
@@ -808,13 +831,6 @@ export default class Amqp {
       clearTimeout(timeout)
     }
     this.rpcTimeouts.clear()
-  }
-
-  private isConnectionOpen(connection: ChannelModel): boolean {
-    const stream = (
-      connection as { connection?: { stream?: { destroyed?: boolean } } }
-    ).connection?.stream
-    return stream?.destroyed !== true
   }
 
   private setBrokerNodeState(state: BrokerNodeState, error?: unknown): void {

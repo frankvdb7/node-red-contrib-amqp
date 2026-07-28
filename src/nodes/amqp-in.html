@@ -6,7 +6,6 @@
       name: { value: '' },
       broker: { value: '', type: 'amqp-broker' },
       prefetch: { value: 0 },
-      reconnectOnError: { value: false },
       noAck: { value: true },
       exchangeName: { value: '' },
       exchangeType: { value: 'topic' },
@@ -111,11 +110,6 @@
   <div class="form-row">
     <label for="node-input-prefetch"><i class="fa fa-filter"></i>&nbsp;&nbsp;Prefetch</label>
     <input type="text" id="node-input-prefetch" placeholder="0 for no prefetch restriction">
-  </div>
-  <div class="form-row">
-    <label>&nbsp;&nbsp;</label>
-    <input id="node-input-reconnectOnError" style="width:20px; vertical-align:baseline; margin-right:5px;" type="checkbox">
-    <label for="node-input-reconnectOnError" style="width:auto; margin-top:7px;">reconnectOnError</label>
   </div>
   <div class="form-row">
     <label>&nbsp;</label>
@@ -259,10 +253,6 @@
 
   <h3>Inputs</h3>
   <dl class="message-properties">
-    <dt>payload.reconnectCall
-      <span class="property-type">boolean</span>
-    </dt>
-    <dd>Set to <code>true</code> to trigger a reconnect.</dd>
   </dl>
 
   <h3>Behavior Notes</h3>
