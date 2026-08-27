@@ -111,6 +111,18 @@ describe('Amqp Class', () => {
     expect(warnStub.called).to.be.false
   })
 
+  it('connect() leaves heartbeat negotiation to the broker', async () => {
+    const result = { on: sinon.stub() }
+
+    // @ts-ignore
+    const connectStub = sinon.stub(amqplib, 'connect').resolves(result)
+
+    await amqp.connect()
+
+    expect(connectStub.firstCall.args[0]).to.equal('amqp://username:password@host:222/')
+    expect(connectStub.firstCall.args[1]).to.equal(undefined)
+  })
+
   it('connect() logs events', async () => {
     const events: { [key: string]: Function } = {}
     const result = { on: (ev: string, cb: Function): void => { events[ev] = cb } }

@@ -115,7 +115,7 @@ export default class Amqp {
     if (!entry) {
       this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
       try {
-        const connection = await connect(brokerUrl, { heartbeat: 2 })
+        const connection = await connect(brokerUrl)
         this.node.log(`Connected to AMQP broker ${brokerInfo}`)
 
         connection.on('close', () => {
