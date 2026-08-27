@@ -61,7 +61,6 @@
     "@istanbuljs/nyc-config-typescript": "^1.0.2",
     "@swc/core": "^1.15.46",
     "@swc/register": "^0.1.10",
-    "@types/amqplib": "^0.10.8",
     "@types/chai": "^5.2.3",
     "@types/lodash.clonedeep": "^4.5.9",
     "@types/mocha": "^10.0.10",
@@ -85,7 +84,7 @@
     "access": "public"
   },
   "dependencies": {
-    "amqplib": "^0.10.9",
+    "amqplib": "^2.0.1",
     "uuid": "^14.0.0"
   }
 }
