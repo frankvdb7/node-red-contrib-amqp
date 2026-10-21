@@ -15,6 +15,87 @@ const amqpBroker = require('../../src/nodes/amqp-broker')
 helper.init(require.resolve('node-red'))
 
 describe('amqp-out Node', () => {
+  describe('reconnect after a successful connection', () => {
+    let clock
+    let connection
+    let connectStub
+
+    beforeEach(() => {
+      clock = sinon.useFakeTimers({ shouldClearNativeTimers: true })
+      connection = { on: sinon.stub(), off: sinon.stub() }
+      connectStub = sinon.stub(Amqp.prototype, 'connect').resolves(connection)
+      sinon.stub(Amqp.prototype, 'initialize').resolves({ on: sinon.stub(), off: sinon.stub() })
+      sinon.stub(Amqp.prototype, 'close').resolves()
+    })
+
+    afterEach(() => clock.restore())
+
+    const loadNode = async () => {
+      const flow = JSON.parse(JSON.stringify(amqpOutFlowFixture))
+      flow[0].reconnectOnError = false
+      await helper.load([amqpOut, amqpBroker], flow, credentialsFixture)
+      await clock.tickAsync(0)
+      return helper.getNode('n1')
+    }
+
+    const disconnect = () => connection.on.withArgs('close').lastCall.args[1]()
+
+    for (const [label, error] of [
+      ['connection error', new Error('broker unavailable')],
+      ['authentication error', new CustomError(ErrorType.InvalidLogin)],
+    ]) {
+      it(`keeps retrying after a failed reconnect: ${label}`, async () => {
+        connectStub.onSecondCall().rejects(error)
+        const markConnected = sinon.spy(Amqp.prototype, 'markConnected')
+        await loadNode()
+        await disconnect()
+        await clock.tickAsync(2000)
+        expect(connectStub.callCount).to.equal(2)
+        await clock.tickAsync(4000)
+        expect(connectStub.callCount).to.equal(3)
+        expect(markConnected.callCount).to.equal(2)
+      })
+
+      it(`does not retry initial startup failure: ${label}`, async () => {
+        connectStub.rejects(error)
+        await loadNode()
+        await clock.tickAsync(60000)
+        expect(connectStub.callCount).to.equal(1)
+      })
+    }
+
+    it('uses 2s, 4s, 8s backoff and resets after recovery', async () => {
+      connectStub.onSecondCall().rejects(new Error('broker unavailable'))
+      connectStub.onThirdCall().rejects(new Error('broker unavailable'))
+      await loadNode()
+      await disconnect()
+      for (const [delay, count] of [[2000, 2], [4000, 3], [8000, 4]]) {
+        await clock.tickAsync(delay - 1)
+        expect(connectStub.callCount).to.equal(count - 1)
+        await clock.tickAsync(1)
+        expect(connectStub.callCount).to.equal(count)
+      }
+      await disconnect()
+      await clock.tickAsync(1999)
+      expect(connectStub.callCount).to.equal(4)
+      await clock.tickAsync(1)
+      expect(connectStub.callCount).to.equal(5)
+    })
+
+    it('cancels retries when closed after a failed reconnect', async () => {
+      connectStub.onSecondCall().rejects(new Error('broker unavailable'))
+      const node = await loadNode()
+      await disconnect()
+      await clock.tickAsync(2000)
+      expect(connectStub.callCount).to.equal(2)
+      await node.close()
+      await clock.tickAsync(60000)
+      await disconnect()
+      await clock.tickAsync(60000)
+      expect(connectStub.callCount).to.equal(2)
+    })
+  })
+
   it('uses the configured routing key after a message override', async function () {
     const connection = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const publish = sinon.stub()
