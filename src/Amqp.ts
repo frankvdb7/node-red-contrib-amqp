@@ -231,10 +231,6 @@ export default class Amqp {
     }
   }
 
-  public setRoutingKey(newRoutingKey: string): void {
-    this.config.exchange.routingKey = newRoutingKey
-  }
-
   public async setVhost(newVhost: string): Promise<void> {
     const broker = this.broker as unknown as BrokerConfig
     const currentVhost = this.vhostOverride ?? broker?.vhost

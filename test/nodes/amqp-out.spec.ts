@@ -101,7 +101,6 @@ describe('amqp-out Node', () => {
   })
 
   it('should handle JSONata expression evaluation error', async function () {
-    const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
@@ -130,7 +129,6 @@ describe('amqp-out Node', () => {
     });
 
     expect(hasJsonataError).to.be.true;
-    expect(setRoutingKeyStub.notCalled).to.be.true;
     expect(publishStub.notCalled).to.be.true;
   });
 
@@ -191,7 +189,6 @@ describe('amqp-out Node', () => {
   });
 
   it('should handle dynamic routing key from `flow` context', async function () {
-    const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
@@ -215,7 +212,6 @@ describe('amqp-out Node', () => {
   });
 
   it('should handle dynamic routing key from `global` context', function (done) {
-    const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
 
     const flowFixture = [...amqpOutFlowFixture];

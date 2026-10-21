@@ -1075,7 +1075,7 @@ describe('Amqp Class', () => {
         exclusive: false,
         autoDelete: false,
       }
-      amqp.setRoutingKey('runtime.override.key')
+      amqp.config.exchange.routingKey = 'runtime.override.key'
 
       await (amqp as any).unbindQueues()
 
@@ -1093,7 +1093,7 @@ describe('Amqp Class', () => {
         exclusive: false,
         autoDelete: false,
       }
-      amqp.setRoutingKey('orders.created,orders.updated,orders.deleted')
+      amqp.config.exchange.routingKey = 'orders.created,orders.updated,orders.deleted'
 
       await (amqp as any).unbindQueues()
 
