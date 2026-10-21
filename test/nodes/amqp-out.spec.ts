@@ -15,6 +15,33 @@ const amqpBroker = require('../../src/nodes/amqp-broker')
 helper.init(require.resolve('node-red'))
 
 describe('amqp-out Node', () => {
+  it('uses the configured routing key after a message override', async function () {
+    const connection = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
+    const publish = sinon.stub()
+    const channel = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub(), publish }
+    sinon.stub(Amqp.prototype, 'connect').resolves(connection)
+    sinon.stub(Amqp.prototype, 'initialize').callsFake(function () {
+      this.channel = channel
+      return Promise.resolve(channel)
+    })
+    const flow = JSON.parse(JSON.stringify(amqpOutFlowFixture))
+    flow[0].exchangeRoutingKeyType = 'str'
+    flow[0].exchangeRoutingKey = 'orders.created'
+    await helper.load([amqpOut, amqpBroker], flow, credentialsFixture)
+    const node = helper.getNode('n1')
+    for (const msg of [
+      { payload: 'first', routingKey: 'orders.updated' },
+      { payload: 'second' },
+      { payload: 'third' },
+    ]) {
+      node.receive(msg)
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    expect(publish.getCalls().map(call => call.args[1])).to.deep.equal([
+      'orders.updated', 'orders.created', 'orders.created',
+    ])
+  })
+
   beforeEach(function (done) {
     helper.startServer(done)
   })
@@ -74,7 +101,6 @@ describe('amqp-out Node', () => {
   })
 
   it('should handle JSONata expression evaluation error', async function () {
-    const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
@@ -103,7 +129,6 @@ describe('amqp-out Node', () => {
     });
 
     expect(hasJsonataError).to.be.true;
-    expect(setRoutingKeyStub.notCalled).to.be.true;
     expect(publishStub.notCalled).to.be.true;
   });
 
@@ -164,8 +189,7 @@ describe('amqp-out Node', () => {
   });
 
   it('should handle dynamic routing key from `flow` context', async function () {
-    const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
-    sinon.stub(Amqp.prototype, 'publish');
+    const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
     sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
@@ -184,11 +208,10 @@ describe('amqp-out Node', () => {
     flowContext.set('myFlowVar', 'flow_routing_key');
     await amqpOutNode.receive({ payload: 'foo' });
 
-    expect(setRoutingKeyStub.calledWith('flow_routing_key')).to.be.true;
+    expect(publishStub.calledWith('foo', sinon.match.any, 'flow_routing_key')).to.be.true;
   });
 
   it('should handle dynamic routing key from `global` context', function (done) {
-    const setRoutingKeyStub = sinon.stub(Amqp.prototype, 'setRoutingKey');
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
 
     const flowFixture = [...amqpOutFlowFixture];
@@ -201,15 +224,15 @@ describe('amqp-out Node', () => {
       amqpOutNode.receive({ payload: 'foo' });
 
       setTimeout(() => {
-        expect(setRoutingKeyStub.calledWith('global_routing_key')).to.be.true;
+        expect(publishStub.calledWith('foo', sinon.match.any, 'global_routing_key')).to.be.true;
         done();
       }, 50);
     });
   });
 
   it('calls done with error when routing key evaluation path throws', async function () {
-    const setRoutingKeyStub = sinon
-      .stub(Amqp.prototype, 'setRoutingKey')
+    const evaluateStub = sinon
+      .stub(require('node-red').util, 'evaluateNodeProperty')
       .throws(new Error('routing key evaluation failed'));
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
@@ -234,7 +257,7 @@ describe('amqp-out Node', () => {
     const doneError = callErrors.find(arg => arg instanceof Error) as Error | undefined;
     expect(doneError).to.not.equal(undefined);
     expect(doneError?.message).to.match(/routing key evaluation failed/i);
-    expect(setRoutingKeyStub.calledOnce).to.be.true;
+    expect(evaluateStub.calledOnce).to.be.true;
     expect(publishStub.notCalled).to.be.true;
   });
 

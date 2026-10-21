@@ -749,6 +749,39 @@ describe('Amqp Class', () => {
   })
 
   describe('publish()', () => {
+    for (const queue of ['', 'fallback.queue']) {
+      it(`falls back to ${queue || 'an empty key'} for an empty routing override`, async () => {
+        amqp.config.exchange.routingKey = 'payload.route'
+        amqp.q = { queue }
+        const publish = sinon.stub()
+        amqp.channel = { publish }
+
+        await amqp.publish('first', undefined, '')
+        await amqp.publish('second')
+
+        expect(publish.getCalls().map(call => call.args[1])).to.deep.equal([
+          queue, 'payload.route',
+        ])
+        expect(amqp.config.exchange.routingKey).to.equal('payload.route')
+      })
+    }
+
+    it('keeps routing key overrides local to each publish call', async () => {
+      amqp.config.exchange.routingKey = 'orders.created'
+      const publish = sinon.stub()
+      amqp.channel = { publish }
+
+      await Promise.all([
+        amqp.publish('first', undefined, 'orders.updated, orders.deleted'),
+        amqp.publish('second'),
+      ])
+
+      expect(publish.getCalls().map(call => call.args[1])).to.deep.equal([
+        'orders.updated', 'orders.deleted', 'orders.created',
+      ])
+      expect(amqp.config.exchange.routingKey).to.equal('orders.created')
+    })
+
     it('publishes a message (topic)', async () => {
       const publishStub = sinon.stub()
       amqp.channel = {
@@ -1042,7 +1075,7 @@ describe('Amqp Class', () => {
         exclusive: false,
         autoDelete: false,
       }
-      amqp.setRoutingKey('runtime.override.key')
+      amqp.config.exchange.routingKey = 'runtime.override.key'
 
       await (amqp as any).unbindQueues()
 
@@ -1060,7 +1093,7 @@ describe('Amqp Class', () => {
         exclusive: false,
         autoDelete: false,
       }
-      amqp.setRoutingKey('orders.created,orders.updated,orders.deleted')
+      amqp.config.exchange.routingKey = 'orders.created,orders.updated,orders.deleted'
 
       await (amqp as any).unbindQueues()
 

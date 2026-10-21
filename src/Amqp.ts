@@ -231,10 +231,6 @@ export default class Amqp {
     }
   }
 
-  public setRoutingKey(newRoutingKey: string): void {
-    this.config.exchange.routingKey = newRoutingKey
-  }
-
   public async setVhost(newVhost: string): Promise<void> {
     const broker = this.broker as unknown as BrokerConfig
     const currentVhost = this.vhostOverride ?? broker?.vhost
@@ -322,8 +318,9 @@ export default class Amqp {
   public async publish(
     msg: unknown,
     properties?: MessageProperties,
+    routingKey?: string,
   ): Promise<void> {
-    const routingKeys = this.parseRoutingKeys()
+    const routingKeys = this.parseRoutingKeys(routingKey)
     await Promise.all(
       routingKeys.map(routingKey =>
         this.handlePublish(this.config, msg, properties, routingKey),
@@ -765,7 +762,7 @@ export default class Amqp {
 
   private parseRoutingKeys(routingKeyArg?: string): string[] {
     const routingKey =
-      routingKeyArg || this.config.exchange.routingKey || this.q?.queue || ''
+      (routingKeyArg ?? this.config.exchange.routingKey) || this.q?.queue || ''
     const keys = routingKey?.split(',').map(key => key.trim())
     return keys
   }
