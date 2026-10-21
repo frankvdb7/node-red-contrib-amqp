@@ -41,6 +41,7 @@ module.exports = (RED: NodeRedApp): void => {
     let reconnect: (() => Promise<void>) | null = null
     let reconnectScheduled = false
     let isShuttingDown = false
+    let hasConnectedOnce = false
     let connection: ChannelModel | null = null
     let channel: Channel | null = null
     let onConnClose: (e: unknown) => Promise<void>
@@ -167,7 +168,7 @@ module.exports = (RED: NodeRedApp): void => {
         nodeIns.error(`AmqpOut() Could not connect to broker ${e}`, {
           payload: { error: e, location: ErrorLocationEnum.ConnectError },
         })
-        if (reconnectOnError) {
+        if (reconnectOnError || hasConnectedOnce) {
           let reconnectFailed = false
           await reconnect().catch(reconnectError => {
             reconnectFailed = true
@@ -190,7 +191,7 @@ module.exports = (RED: NodeRedApp): void => {
         nodeIns.error(`AmqpOut() ${e}`, {
           payload: { error: e, location: ErrorLocationEnum.ConnectError },
         })
-        if (reconnectOnError) {
+        if (reconnectOnError || hasConnectedOnce) {
           await reconnect().catch(reconnectError => {
             nodeIns.status(NODE_STATUS.Error)
             nodeIns.error(
@@ -410,6 +411,7 @@ module.exports = (RED: NodeRedApp): void => {
           }
           setupEventListeners(nodeIns)
           amqp.markConnected()
+          hasConnectedOnce = true
           reconnectBackoff.reset()
         }
       } catch (e) {
