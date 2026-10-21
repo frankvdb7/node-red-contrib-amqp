@@ -749,6 +749,22 @@ describe('Amqp Class', () => {
   })
 
   describe('publish()', () => {
+    it('keeps routing key overrides local to each publish call', async () => {
+      amqp.config.exchange.routingKey = 'orders.created'
+      const publish = sinon.stub()
+      amqp.channel = { publish }
+
+      await Promise.all([
+        amqp.publish('first', undefined, 'orders.updated, orders.deleted'),
+        amqp.publish('second'),
+      ])
+
+      expect(publish.getCalls().map(call => call.args[1])).to.deep.equal([
+        'orders.updated', 'orders.deleted', 'orders.created',
+      ])
+      expect(amqp.config.exchange.routingKey).to.equal('orders.created')
+    })
+
     it('publishes a message (topic)', async () => {
       const publishStub = sinon.stub()
       amqp.channel = {

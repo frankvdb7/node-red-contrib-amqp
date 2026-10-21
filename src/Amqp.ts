@@ -322,8 +322,9 @@ export default class Amqp {
   public async publish(
     msg: unknown,
     properties?: MessageProperties,
+    routingKey?: string,
   ): Promise<void> {
-    const routingKeys = this.parseRoutingKeys()
+    const routingKeys = this.parseRoutingKeys(routingKey)
     await Promise.all(
       routingKeys.map(routingKey =>
         this.handlePublish(this.config, msg, properties, routingKey),

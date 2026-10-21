@@ -234,18 +234,17 @@ module.exports = (RED: NodeRedApp): void => {
         properties = msgProperties
       }
 
+      let effectiveRoutingKey: string | undefined
       switch (exchangeRoutingKeyType) {
         case 'msg':
         case 'flow':
         case 'global':
           try {
-            amqp.setRoutingKey(
-              RED.util.evaluateNodeProperty(
-                exchangeRoutingKey,
-                exchangeRoutingKeyType,
-                this,
-                msg,
-              ),
+            effectiveRoutingKey = RED.util.evaluateNodeProperty(
+              exchangeRoutingKey,
+              exchangeRoutingKeyType,
+              this,
+              msg,
             )
           } catch (err) {
             this.error(`Failed to evaluate routing key: ${err}`)
@@ -275,7 +274,7 @@ module.exports = (RED: NodeRedApp): void => {
               )
             }
 
-            amqp.setRoutingKey(String(result))
+            effectiveRoutingKey = String(result)
           } catch (err) {
             this.error(`Failed to evaluate JSONata expression: ${err}`)
             done && done(toError(err))
@@ -291,7 +290,7 @@ module.exports = (RED: NodeRedApp): void => {
 
             // Superfluous (and possibly confusing) at this point
             // but keeping it to retain backwards compatibility
-            amqp.setRoutingKey(routingKey)
+            effectiveRoutingKey = routingKey
           }
           break
       }
@@ -316,7 +315,7 @@ module.exports = (RED: NodeRedApp): void => {
       }
 
       try {
-        await amqp.publish(payload, properties)
+        await amqp.publish(payload, properties, effectiveRoutingKey)
       } catch (e) {
         done && done(toError(e))
         return
