@@ -766,7 +766,7 @@ export default class Amqp {
 
   private parseRoutingKeys(routingKeyArg?: string): string[] {
     const routingKey =
-      routingKeyArg || this.config.exchange.routingKey || this.q?.queue || ''
+      (routingKeyArg ?? this.config.exchange.routingKey) || this.q?.queue || ''
     const keys = routingKey?.split(',').map(key => key.trim())
     return keys
   }
