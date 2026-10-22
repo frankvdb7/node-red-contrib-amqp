@@ -1070,7 +1070,7 @@ describe('Amqp Class', () => {
     it('reconnects when vhost changes', async () => {
       amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
       const closeStub = sinon.stub(amqp, 'close').resolves()
-      const connectStub = sinon.stub(amqp, 'connect').resolves({ waitForConnect: sinon.stub().resolves() })
+      const connectStub = sinon.stub(amqp, 'connect').callsFake(async () => amqp.markConnected())
       const initStub = sinon.stub(amqp, 'initialize').resolves()
 
       await amqp.setVhost('vh2')
@@ -1085,7 +1085,7 @@ describe('Amqp Class', () => {
     it('does nothing when vhost is unchanged', async () => {
       amqp.broker = { ...brokerConfigFixture, vhost: 'vh1' }
       const closeStub = sinon.stub(amqp, 'close').resolves()
-      const connectStub = sinon.stub(amqp, 'connect').resolves({ waitForConnect: sinon.stub().resolves() })
+      const connectStub = sinon.stub(amqp, 'connect').resolves()
       const initStub = sinon.stub(amqp, 'initialize').resolves()
 
       await amqp.setVhost('vh1')
@@ -1100,7 +1100,7 @@ describe('Amqp Class', () => {
       const sharedBroker = { ...brokerConfigFixture, vhost: 'vh1' }
       amqp.broker = sharedBroker
       const closeStub = sinon.stub(amqp, 'close').resolves()
-      const connectStub = sinon.stub(amqp, 'connect').resolves({ waitForConnect: sinon.stub().resolves() })
+      const connectStub = sinon.stub(amqp, 'connect').callsFake(async () => amqp.markConnected())
       const initStub = sinon.stub(amqp, 'initialize').resolves()
 
       await amqp.setVhost('vh2')
@@ -1119,10 +1119,10 @@ describe('Amqp Class', () => {
       amqp1.broker = sharedBroker
       amqp2.broker = sharedBroker
       sinon.stub(amqp1, 'close').resolves()
-      sinon.stub(amqp1, 'connect').resolves({ waitForConnect: sinon.stub().resolves() })
+      sinon.stub(amqp1, 'connect').callsFake(async () => amqp1.markConnected())
       sinon.stub(amqp1, 'initialize').resolves()
       sinon.stub(amqp2, 'close').resolves()
-      sinon.stub(amqp2, 'connect').resolves({ waitForConnect: sinon.stub().resolves() })
+      sinon.stub(amqp2, 'connect').callsFake(async () => amqp2.markConnected())
       sinon.stub(amqp2, 'initialize').resolves()
 
       await amqp1.setVhost('vh2')

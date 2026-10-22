@@ -126,7 +126,8 @@ Publishing while disconnected fails through the node's error/completion path. Re
 does not replay messages or guarantee delivery of a publish whose confirmation was
 interrupted. Applications must handle such uncertain outcomes themselves.
 
-A runtime `msg.vhost` switch waits up to 10 seconds for readiness. If the destination
+A runtime `msg.vhost` switch waits up to 10 seconds for that node's restored channel,
+including when it joins a shared connection that is already recovering. If the destination
 remains unavailable, the input completes with an error and the message is not
 published. Native recovery continues for the destination, and closing the node
 cancels its pending readiness waits.

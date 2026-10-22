@@ -125,7 +125,6 @@ describe('Node-RED native recovery lifecycle', () => {
     await options.setup(raw)
     wrapper.emit('connect', raw)
     await new Promise(resolve => setImmediate(resolve))
-    wrapper.waitForConnect = sinon.stub().returns(new Promise(() => {}))
     const publish = sinon.stub(require('../../src/Amqp').default.prototype, 'publish').resolves()
     const node = helper.getNode('node'), errors = []
     node.on('call:error', call => errors.push(call.args[0]))

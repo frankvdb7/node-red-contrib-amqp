@@ -64,7 +64,7 @@ export default class Amqp {
   private channelCloseHandler: () => void
   private channelReturnHandler: () => void
   private rpcTimeouts: Set<NodeJS.Timeout> = new Set()
-  private vhostWaits = new Set<(error: Error) => void>()
+  private vhostWaits = new Map<() => void, (error: Error) => void>()
   private closed = false
   private shuttingDown = false
 
@@ -210,6 +210,7 @@ export default class Amqp {
     this.ready = true
     this.setBrokerNodeState('connected')
     this.node.status(NODE_STATUS.Connected)
+    for (const complete of this.vhostWaits.keys()) complete()
   }
 
   public removeBrokerNodeState(): void {
@@ -302,10 +303,10 @@ export default class Amqp {
 
   private async waitForVhostReady(): Promise<void> {
     let timeout: NodeJS.Timeout
-    let cancel: (error: Error) => void
-    const deadline = new Promise<never>((_, reject) => {
-      cancel = reject
-      this.vhostWaits.add(cancel)
+    let complete: () => void
+    const readiness = new Promise<void>((resolve, reject) => {
+      complete = resolve
+      this.vhostWaits.set(complete, reject)
       timeout = setTimeout(() => {
         reject(
           new Error(
@@ -315,13 +316,10 @@ export default class Amqp {
       }, VHOST_READY_TIMEOUT_MS)
     })
     try {
-      await Promise.race([
-        this.connect().then(connection => connection.waitForConnect()),
-        deadline,
-      ])
+      await Promise.all([this.connect(), readiness])
     } finally {
       clearTimeout(timeout)
-      this.vhostWaits.delete(cancel)
+      this.vhostWaits.delete(complete)
     }
   }
 
@@ -604,7 +602,7 @@ export default class Amqp {
 
   public async close(permanent = true): Promise<void> {
     if (permanent) this.shuttingDown = true
-    for (const cancel of this.vhostWaits) {
+    for (const cancel of this.vhostWaits.values()) {
       cancel(new Error('AMQP vhost readiness wait cancelled'))
     }
     if (this.closed) {

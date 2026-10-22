@@ -142,7 +142,6 @@ describe('native recovery ownership', () => {
   })
   for (const switching of [false, true]) {
     it(`unbinds an exclusive non-auto-delete queue on ${switching ? 'vhost switching' : 'shutdown'} without disturbing its shared peer`, async () => {
-      wrapper.waitForConnect = sinon.stub().resolves()
       const ephemeral = client('ephemeral', { type: 'amqp-in', queueName: 'exclusive',
         autoCreateQueue: true, autoCreateExchangeBindings: true,
         exchangeRoutingKey: 'first,second', queueExclusive: true, queueAutoDelete: false }).amqp
@@ -152,8 +151,12 @@ describe('native recovery ownership', () => {
       await Promise.all([ephemeral.connect(), durable.connect()])
       const raw = await recover()
       const old = ephemeral.channel, peer = durable.channel
-      if (switching) await ephemeral.setVhost('another')
-      else await ephemeral.close()
+      if (switching) {
+        const switched = ephemeral.setVhost('another')
+        await new Promise(resolve => setImmediate(resolve))
+        await recover()
+        await switched
+      } else await ephemeral.close()
       expect(old.unbindQueue.args.map(args => args.slice(0, 3))).to.deep.equal([
         ['generated', 'exchangeName', 'first'], ['generated', 'exchangeName', 'second'],
       ])
@@ -420,10 +423,12 @@ describe('native recovery ownership', () => {
     expect(broker.nodeStates.one).to.equal('connected')
   })
   it('releases the old vhost recovery before starting another one', async () => {
-    wrapper.waitForConnect = sinon.stub().resolves()
     const { amqp } = client('one')
     await amqp.connect()
-    await amqp.setVhost('another')
+    const switched = amqp.setVhost('another')
+    await new Promise(resolve => setImmediate(resolve))
+    await recover()
+    await switched
     expect(wrapper.close.callCount).to.equal(1)
     expect(connect.callCount).to.equal(2)
     expect(connect.secondCall.args[0]).to.equal('amqp://username:password@host:222/another')
@@ -433,7 +438,6 @@ describe('native recovery ownership', () => {
   it('bounds a switch to an unavailable vhost and clears its deadline', async () => {
     const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
-      wrapper.waitForConnect = sinon.stub().returns(new Promise(() => {}))
       const { amqp } = client('one')
       await amqp.connect()
       let result
@@ -454,10 +458,40 @@ describe('native recovery ownership', () => {
       clock.restore()
     }
   })
+  it('waits for its restored channel when switching to a previously connected vhost that is recovering', async () => {
+    const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      wrapper.waitForConnect = sinon.stub().resolves()
+      const peer = client('peer').amqp
+      peer.vhostOverride = 'customer-a'
+      await peer.connect()
+      const restoreDestination = options.setup
+      await recover()
+      const switchingNode = client('switching', { waitForConfirms: true }).amqp
+      await switchingNode.connect()
+      wrapper.emit('disconnect', new Error('destination outage'))
+      let result
+      const switching = switchingNode.setVhost('customer-a').then(() => { result = 'ready' }, error => { result = error })
+      await new Promise(resolve => setImmediate(resolve))
+      await clock.tickAsync(9999)
+      expect(result).to.equal(undefined)
+      expect(broker.nodeStates.switching).not.to.equal('connected')
+      const recovered = model()
+      await restoreDestination(recovered)
+      wrapper.emit('connect', recovered)
+      await switching
+      expect(result).to.equal('ready')
+      expect(clock.countTimers()).to.equal(0)
+      await switchingNode.publish('after destination recovery')
+      expect(switchingNode.channel.waitForConfirms.calledOnce).to.equal(true)
+      expect(connect.callCount).to.equal(2)
+    } finally {
+      clock.restore()
+    }
+  })
   it('cancels a vhost readiness wait on close even when another owner retains the connection', async () => {
     const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
-      wrapper.waitForConnect = sinon.stub().returns(new Promise(() => {}))
       const { amqp } = client('one')
       await amqp.connect()
       const peer = client('peer').amqp
@@ -490,7 +524,6 @@ describe('native recovery ownership', () => {
     expect(connect.callCount).to.equal(1)
   })
   it('does not let cancelled setup close a replacement vhost channel', async () => {
-    wrapper.waitForConnect = sinon.stub().resolves()
     const { amqp } = client('one')
     await amqp.connect()
     const old = model(), pending = channel()
@@ -498,8 +531,10 @@ describe('native recovery ownership', () => {
     old.createChannel.callsFake(() => new Promise(resolve => { finish = resolve }))
     const setup = options.setup(old)
     await new Promise(resolve => setImmediate(resolve))
-    await amqp.setVhost('replacement')
+    const switched = amqp.setVhost('replacement')
+    await new Promise(resolve => setImmediate(resolve))
     await recover()
+    await switched
     const replacement = amqp.channel
     finish(pending)
     await setup
