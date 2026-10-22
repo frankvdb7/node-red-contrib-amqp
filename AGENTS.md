@@ -16,9 +16,17 @@ These instructions apply to the entire repository.
 ## Testing
 - The project uses Mocha, Chai, and Sinon for testing, along with the `node-red-node-test-helper` library.
 - Add unit tests in `test/` for any code change.
-- Run the full test suite with `npm test`.
-- Generate a test coverage report with `npm run test:cov`.
+- Run the unit suite with `npm test`; it excludes integration tests and does not require Docker.
+- Generate a unit test coverage report with `npm run test:cov`.
 - The test suite has pre-existing failures. New changes should not introduce additional failures.
+
+### RabbitMQ Integration Tests
+- Run `npm run test:integration` with Node.js 22 or newer and a running Docker daemon supporting Linux containers.
+- Keep integration tests in `test/integration/`. Load the compiled nodes from `build/src/` in the Node-RED test runtime and use the ephemeral Testcontainers RabbitMQ broker.
+- Assert real broker delivery, acknowledgements, queue and consumer state. Do not stub AMQP connections, channels, publishing or consumption in integration tests.
+- Use unique topology names, bounded polling or event assertions, and teardown that closes runtime and broker resources even when a test fails.
+- CI runs separate Node-RED 4 and 5 jobs on Node.js 24. For runtime or harness changes, validate both majors using `npm install --no-save --package-lock=false node-red@4` or `node-red@5` before running the integration suite. Restore the locked dependencies afterward; do not save the temporary version override.
+- Keep known regressions explicitly pending with issue references until their fixes land. Report passing and pending integration counts separately from unit test results.
 
 ### Testing Node-RED Nodes
 - When testing Node-RED nodes, direct stubbing of node methods (e.g., `node.error()`) with Sinon can conflict with `node-red-node-test-helper`'s instrumentation. A more reliable pattern is to use the helper's event-based assertions, like `node.on('call:error', ...)`, to verify method calls and avoid race conditions.

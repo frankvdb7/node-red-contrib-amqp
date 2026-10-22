@@ -6,7 +6,8 @@
   "reporter": ["lcov", "text"],
   "cache": true,
   "exclude": [
-    "coverage/**"
+    "coverage/**",
+    "test/integration/**"
   ],
   "check-coverage": true,
   "statements": 82,
