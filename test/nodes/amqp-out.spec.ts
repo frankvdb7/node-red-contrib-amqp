@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-var-requires */
-/* eslint-disable @typescript-eslint/ban-ts-comment */
 export {}
 const { expect } = require('chai')
 const sinon = require('sinon')
@@ -59,14 +57,12 @@ describe('amqp-out Node', () => {
   })
 
   it('should connect to the server and send some messages', function (done) {
-    // @ts-ignore
     Amqp.prototype.channel = {
       unbindQueue: (): null => null,
       close: (): null => null,
       off: (): null => null,
       on: (): null => null,
     }
-    // @ts-ignore
     Amqp.prototype.connection = {
       close: (): null => null,
       off: (): null => null,
@@ -74,8 +70,8 @@ describe('amqp-out Node', () => {
     }
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
-      .resolves(Amqp.prototype.connection as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
+      .resolves(Amqp.prototype.connection)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel)
 
     helper.load(
       [amqpOut, amqpBroker],
@@ -100,8 +96,8 @@ describe('amqp-out Node', () => {
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
-    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock)
 
     const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
     flowFixture[0].exchangeRoutingKeyType = 'jsonata';
@@ -132,8 +128,8 @@ describe('amqp-out Node', () => {
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
-    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock)
 
     const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
     flowFixture[0].exchangeRoutingKeyType = 'jsonata';
@@ -158,8 +154,8 @@ describe('amqp-out Node', () => {
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
     const channelMock = { on: sinon.stub(), off: sinon.stub() };
-    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
-    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock);
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock);
 
     const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
     flowFixture[0].exchangeRoutingKeyType = 'jsonata';
@@ -188,8 +184,8 @@ describe('amqp-out Node', () => {
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
-    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock)
 
     const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
     flowFixture[0].exchangeRoutingKeyType = 'flow';
@@ -233,8 +229,8 @@ describe('amqp-out Node', () => {
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };
     const channelMock = { on: sinon.stub(), off: sinon.stub() };
-    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any);
-    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any);
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock);
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock);
 
     const flowFixture = JSON.parse(JSON.stringify(amqpOutFlowFixture));
     flowFixture[0].exchangeRoutingKeyType = 'msg';
@@ -294,8 +290,8 @@ describe('amqp-out Node', () => {
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
-    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock)
 
     await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture);
     const amqpOutNode = helper.getNode('n1');
@@ -318,8 +314,8 @@ describe('amqp-out Node', () => {
     const publishStub = sinon.stub(Amqp.prototype, 'publish').rejects(new Error('publish failed'));
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
-    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock)
 
     await helper.load([amqpOut, amqpBroker], amqpOutFlowFixture, credentialsFixture);
     const amqpOutNode = helper.getNode('n1');
@@ -342,10 +338,10 @@ describe('amqp-out Node', () => {
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
     sinon
       .stub(Amqp.prototype, 'connect')
-      .resolves(connectionMock as any)
+      .resolves(connectionMock)
     sinon
       .stub(Amqp.prototype, 'initialize')
-      .resolves(channelMock as any)
+      .resolves(channelMock)
 
     helper.load(
       [amqpOut, amqpBroker],
@@ -363,8 +359,8 @@ describe('amqp-out Node', () => {
   it('completes node close when amqp.close fails', async function () {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
-    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock)
     const closeStub = sinon.stub(Amqp.prototype, 'close').rejects(new Error('close failed'))
 
     await helper.load(
@@ -379,14 +375,12 @@ describe('amqp-out Node', () => {
   })
 
   it('should connect to the server and send some messages with a dynamic routing key from `msg`', function (done) {
-    // @ts-ignore
     Amqp.prototype.channel = {
       unbindQueue: (): null => null,
       close: (): null => null,
       off: (): null => null,
       on: (): null => null,
     }
-    // @ts-ignore
     Amqp.prototype.connection = {
       close: (): null => null,
       off: (): null => null,
@@ -394,11 +388,10 @@ describe('amqp-out Node', () => {
     }
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
-      .resolves(Amqp.prototype.connection as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
+      .resolves(Amqp.prototype.connection)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel)
 
     const flowFixture = [...amqpOutFlowFixture]
-    // @ts-ignore
     flowFixture[0].exchangeRoutingKeyType = 'msg'
 
     helper.load(
@@ -420,14 +413,12 @@ describe('amqp-out Node', () => {
   })
 
   it('should connect to the server and send some messages with a dynamic jsonata routing key', function (done) {
-    // @ts-ignore
     Amqp.prototype.channel = {
       unbindQueue: (): null => null,
       close: (): null => null,
       off: (): null => null,
       on: (): null => null,
     }
-    // @ts-ignore
     Amqp.prototype.connection = {
       close: (): null => null,
       off: (): null => null,
@@ -435,11 +426,10 @@ describe('amqp-out Node', () => {
     }
     const connectStub = sinon
       .stub(Amqp.prototype, 'connect')
-      .resolves(Amqp.prototype.connection as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
+      .resolves(Amqp.prototype.connection)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel)
 
     const flowFixture = [...amqpOutFlowFixture]
-    // @ts-ignore
     flowFixture[0].exchangeRoutingKeyType = 'jsonata'
 
     helper.load(
@@ -461,21 +451,19 @@ describe('amqp-out Node', () => {
   })
 
   it('switches vhost dynamically from msg', function (done) {
-    // @ts-ignore
     Amqp.prototype.channel = {
       unbindQueue: (): null => null,
       close: (): null => null,
       off: (): null => null,
       on: (): null => null,
     }
-    // @ts-ignore
     Amqp.prototype.connection = {
       close: (): null => null,
       off: (): null => null,
       on: (): null => null,
     }
-    sinon.stub(Amqp.prototype, 'connect').resolves(Amqp.prototype.connection as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel as any)
+    sinon.stub(Amqp.prototype, 'connect').resolves(Amqp.prototype.connection)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(Amqp.prototype.channel)
     const setVhostStub = sinon.stub(Amqp.prototype, 'setVhost').resolves()
 
     helper.load(
@@ -497,8 +485,8 @@ describe('amqp-out Node', () => {
   it('removes broker node state when delete close fails', async function () {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
-    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock)
     sinon.stub(Amqp.prototype, 'close').rejects(new Error('close failed'))
     const removeBrokerNodeStateStub = sinon.stub(Amqp.prototype, 'removeBrokerNodeState')
 
@@ -516,8 +504,8 @@ describe('amqp-out Node', () => {
   it('removes broker node state when node is permanently deleted', async function () {
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }
     const channelMock = { on: sinon.stub(), off: sinon.stub() }
-    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock as any)
-    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock as any)
+    sinon.stub(Amqp.prototype, 'connect').resolves(connectionMock)
+    sinon.stub(Amqp.prototype, 'initialize').resolves(channelMock)
     sinon.stub(Amqp.prototype, 'close').resolves()
     const removeBrokerNodeStateStub = sinon.stub(Amqp.prototype, 'removeBrokerNodeState')
 

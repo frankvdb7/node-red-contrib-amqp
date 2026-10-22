@@ -1,18 +1,15 @@
-import type {
-  EditorNodeProperties,
-  NodeMessageInFlow,
-  NodeRedApp,
-} from 'node-red'
+import type { Node, NodeAPI, NodeMessageInFlow } from 'node-red'
 import { createAmqpNode, toError } from '../node-lifecycle'
 import {
+  type AmqpNodeConfig,
   type AssembledMessage,
   type ManualAckFields,
   ManualAckType,
   NodeType,
 } from '../types'
 
-module.exports = (RED: NodeRedApp): void => {
-  function AmqpInManualAck(config: EditorNodeProperties): void {
+module.exports = (RED: NodeAPI): void => {
+  function AmqpInManualAck(this: Node, config: AmqpNodeConfig): void {
     const amqp = createAmqpNode(RED, this, config)
     const inputListener = async (
       msg: NodeMessageInFlow &
@@ -65,6 +62,5 @@ module.exports = (RED: NodeRedApp): void => {
     }
     this.on('input', inputListener)
   }
-  // @ts-expect-error Node-RED supplies the runtime node instance.
   RED.nodes.registerType(NodeType.AmqpInManualAck, AmqpInManualAck)
 }

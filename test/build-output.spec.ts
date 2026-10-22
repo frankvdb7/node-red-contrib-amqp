@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-var-requires */
 export {}
 const { expect } = require('chai')
 const fs = require('fs')

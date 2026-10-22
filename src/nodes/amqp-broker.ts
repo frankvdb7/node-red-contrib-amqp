@@ -1,13 +1,12 @@
-import type { NodeRedApp } from 'node-red'
-import { type AmqpBrokerNode, type BrokerNodeState, NodeType } from '../types'
+import type { NodeAPI } from 'node-red'
+import {
+  type AmqpBrokerNode,
+  type AmqpBrokerNodeDef,
+  type BrokerNodeState,
+  NodeType,
+} from '../types'
 
-type ConfiguredAmqpNode = {
-  id: string
-  type: string
-  broker?: string
-}
-
-module.exports = (RED: NodeRedApp): void => {
+module.exports = (RED: NodeAPI): void => {
   const brokerNodes: AmqpBrokerNode[] = []
   const amqpNodeTypes = new Set<string>([
     NodeType.AmqpIn,
@@ -15,9 +14,7 @@ module.exports = (RED: NodeRedApp): void => {
     NodeType.AmqpOut,
   ])
 
-  function AmqpBroker(this: AmqpBrokerNode, n): void {
-    // wtf happened to the types?
-    // @ts-expect-error
+  function AmqpBroker(this: AmqpBrokerNode, n: AmqpBrokerNodeDef): void {
     RED.nodes.createNode(this, n)
     this.name = n.name
     this.host = n.host
@@ -31,13 +28,11 @@ module.exports = (RED: NodeRedApp): void => {
 
     this.on('close', () => {
       const index = brokerNodes.indexOf(this)
-      /* istanbul ignore else */
       if (index > -1) {
         brokerNodes.splice(index, 1)
       }
     })
   }
-  // @ts-expect-error
   RED.nodes.registerType('amqp-broker', AmqpBroker, {
     credentials: {
       username: { type: 'text' },
@@ -95,12 +90,12 @@ module.exports = (RED: NodeRedApp): void => {
     brokerNode: AmqpBrokerNode,
   ): Record<string, BrokerNodeState> {
     const states: Record<string, BrokerNodeState> = {}
-    const nodes = RED.nodes as unknown as {
-      eachNode?: (callback: (node: ConfiguredAmqpNode) => void) => void
-    }
-
-    nodes.eachNode?.(node => {
-      if (node.broker === brokerNode.id && amqpNodeTypes.has(node.type)) {
+    RED.nodes.eachNode(node => {
+      if (
+        'broker' in node &&
+        node.broker === brokerNode.id &&
+        amqpNodeTypes.has(node.type)
+      ) {
         states[node.id] = brokerNode.nodeStates?.[node.id] || 'disconnected'
       }
     })

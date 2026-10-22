@@ -3,12 +3,12 @@ import type {
   ChannelModel,
   ConfirmChannel,
   ConsumeMessage,
-  MessageProperties,
+  Options,
   RecoveringChannelModel,
   Replies,
 } from 'amqplib'
 import cloneDeep from 'lodash.clonedeep'
-import type { Node, NodeMessage, NodeRedApp } from 'node-red'
+import type { Node, NodeAPI } from 'node-red'
 import { NODE_STATUS } from './constants'
 import SharedConnection, { type ConnectionOwner } from './shared-connection'
 import {
@@ -16,6 +16,7 @@ import {
   type AmqpConfig,
   type AmqpInNodeDefaults,
   type AmqpOutNodeDefaults,
+  type AmqpSettings,
   type AssembledMessage,
   type BrokerConfig,
   type BrokerNodeError,
@@ -67,7 +68,7 @@ export default class Amqp {
   private shuttingDown = false
 
   constructor(
-    private readonly RED: NodeRedApp,
+    private readonly RED: NodeAPI<AmqpSettings>,
     private readonly node: Node,
     config: AmqpInNodeDefaults & AmqpOutNodeDefaults,
   ) {
@@ -93,9 +94,7 @@ export default class Amqp {
         queueType: config.queueType,
         queueArguments: this.parseJsonObject(config.queueArguments),
       },
-      amqpProperties: this.parseJsonObject(
-        config.amqpProperties,
-      ) as unknown as MessageProperties,
+      amqpProperties: this.parseJsonObject(config.amqpProperties),
       headers: this.parseJsonObject(config.headers),
       outputs: config.outputs,
       rpcTimeout: config.rpcTimeoutMilliseconds,
@@ -143,21 +142,20 @@ export default class Amqp {
   }
 
   private getBrokerConfig(): BrokerConfig {
-    // wtf happened to the types?
-    // @ts-expect-error
-    this.broker = this.RED.nodes.getNode(this.config.broker)
+    const broker = this.RED.nodes.getNode(this.config.broker)
 
-    if (!this.broker) {
+    if (!this.isBrokerNode(broker)) {
       const err = new Error(`AMQP broker node not found: ${this.config.broker}`)
       this.node.error(err.message)
       throw err
     }
 
-    return {
-      ...(this.broker as unknown as BrokerConfig),
-      vhost:
-        this.vhostOverride ?? (this.broker as unknown as BrokerConfig).vhost,
-    }
+    this.broker = broker
+    return { ...broker, vhost: this.vhostOverride ?? broker.vhost }
+  }
+
+  private isBrokerNode(node: Node): node is AmqpBrokerNode {
+    return node?.type === 'amqp-broker'
   }
 
   private async restore(model: ChannelModel): Promise<void> {
@@ -267,8 +265,7 @@ export default class Amqp {
           this.node.log(
             `Received message with deliveryTag: ${msg?.fields?.deliveryTag}`,
           )
-          this.node.send(msg as unknown as NodeMessage)
-          /* istanbul ignore else */
+          this.node.send(msg)
           if (!noAck && !this.isManualAck()) {
             this.ack(msg)
           }
@@ -282,7 +279,7 @@ export default class Amqp {
   }
 
   public async setVhost(newVhost: string): Promise<void> {
-    const broker = this.broker as unknown as BrokerConfig
+    const broker = this.broker
     const currentVhost = this.vhostOverride ?? broker?.vhost
 
     if (!broker || currentVhost === newVhost) {
@@ -361,7 +358,7 @@ export default class Amqp {
 
   public async publish(
     msg: unknown,
-    properties?: MessageProperties,
+    properties?: Options.Publish,
     routingKey?: string,
   ): Promise<void> {
     if (this.closed || !this.ready) {
@@ -378,7 +375,7 @@ export default class Amqp {
   private async handlePublish(
     config: AmqpConfig,
     msg: unknown,
-    properties?: MessageProperties,
+    properties?: Options.Publish,
     routingKey?: string,
   ) {
     const {
@@ -529,7 +526,7 @@ export default class Amqp {
             const msg = this.assembleMessage(amqpMessage)
             if (msg.properties.correlationId === correlationId) {
               if (finalizeRpcResponse()) {
-                this.node.send(msg as unknown as NodeMessage)
+                this.node.send(msg)
                 void cleanupRpcResources()
               }
             } else {
@@ -650,7 +647,6 @@ export default class Amqp {
     this.channel = channel
 
     this.channelErrorHandler = (e): void => {
-      /* istanbul ignore next */
       if (this.closed || this.channel !== channel) return
       this.setupFailure = e instanceof Error ? e : new Error(String(e))
       this.disconnected(e)
@@ -661,7 +657,6 @@ export default class Amqp {
     }
 
     this.channelCloseHandler = (): void => {
-      /* istanbul ignore next */
       if (this.closed || this.channel !== channel) return
       this.channel = undefined
       this.setupFailure = new Error('AMQP channel closed')
@@ -672,7 +667,6 @@ export default class Amqp {
     }
 
     this.channelReturnHandler = (): void => {
-      /* istanbul ignore next */
       this.node.warn('AMQP Message returned')
     }
 
@@ -686,8 +680,6 @@ export default class Amqp {
 
   private async assertExchange(): Promise<void> {
     const { name, type, durable } = this.config.exchange
-
-    /* istanbul ignore else */
     if (name) {
       await this.channel.assertExchange(name, type, {
         durable,
@@ -763,7 +755,7 @@ export default class Amqp {
         ? this.getCredsFromSettings()
         : credentials
 
-      const protocol = tls ? /* istanbul ignore next */ 'amqps' : 'amqp'
+      const protocol = tls ? 'amqps' : 'amqp'
       const vhostPath = vhost ? `/${encodeURIComponent(vhost)}` : '/'
       url = `${protocol}://${encodeURIComponent(username)}:${encodeURIComponent(
         password,
@@ -778,9 +770,7 @@ export default class Amqp {
     password: string
   } {
     return {
-      // @ts-expect-error
       username: this.RED.settings.MW_CONTRIB_AMQP_USERNAME,
-      // @ts-expect-error
       password: this.RED.settings.MW_CONTRIB_AMQP_PASSWORD,
     }
   }
@@ -808,7 +798,6 @@ export default class Amqp {
       output = JSON.parse(jsonInput as string)
     } catch (e) {
       output = jsonInput
-      /* istanbul ignore next */
       if (logError) {
         this.node.error(`Invalid JSON payload: ${e}`)
       }

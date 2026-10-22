@@ -108,9 +108,8 @@ export const nodeFixture = {
   warn: (): null => null,
   error: (): null => null,
 }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const brokerConfigFixture: any & BrokerConfig = {
+  type: 'amqp-broker',
   host: 'host',
   port: 222,
   vhost: '',

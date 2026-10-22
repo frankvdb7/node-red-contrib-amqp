@@ -1,7 +1,7 @@
-import type { EditorNodeProperties, Node, NodeRedApp } from 'node-red'
+import type { Node, NodeAPI } from 'node-red'
 import Amqp from './Amqp'
 import { NODE_STATUS } from './constants'
-import type { AmqpInNodeDefaults, AmqpOutNodeDefaults } from './types'
+import type { AmqpNodeConfig } from './types'
 
 export const toError = (value: unknown): Error =>
   value instanceof Error ? value : new Error(String(value))
@@ -29,17 +29,12 @@ function startNode(node: Node, amqp: Amqp): void {
 }
 
 export function createAmqpNode(
-  RED: NodeRedApp,
+  RED: NodeAPI,
   node: Node,
-  config: EditorNodeProperties,
+  config: AmqpNodeConfig,
 ): Amqp {
-  // @ts-expect-error Node-RED supplies the runtime node instance.
   RED.nodes.createNode(node, config)
-  const amqp = new Amqp(
-    RED,
-    node,
-    config as AmqpInNodeDefaults & AmqpOutNodeDefaults,
-  )
+  const amqp = new Amqp(RED, node, config)
   startNode(node, amqp)
   return amqp
 }

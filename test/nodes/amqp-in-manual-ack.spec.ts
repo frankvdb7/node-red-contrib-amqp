@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-var-requires */
-/* eslint-disable @typescript-eslint/ban-ts-comment */
 export {}
 const { expect } = require('chai')
 const sinon = require('sinon')

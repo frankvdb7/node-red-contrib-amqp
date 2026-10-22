@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-/* eslint-disable @typescript-eslint/ban-ts-comment */
 export {}
 const { expect } = require('chai')
 const { NODE_STATUS } = require('../src/constants')
@@ -25,9 +23,7 @@ describe('Amqp Class', () => {
       },
     }
 
-    ;(Amqp as any).connectionPool.clear()
-
-    // @ts-ignore
+    ;(Amqp).connectionPool.clear()
     amqp = new Amqp(RED, nodeFixture, nodeConfigFixture)
     amqp.markConnected()
     done()
@@ -39,7 +35,6 @@ describe('Amqp Class', () => {
   })
 
   it('constructs with default Direct exchange', () => {
-    // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, {
       ...nodeConfigFixture,
       exchangeType: ExchangeType.Direct,
@@ -49,7 +44,6 @@ describe('Amqp Class', () => {
   })
 
   it('constructs with default Fanout exchange', () => {
-    // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, {
       ...nodeConfigFixture,
       exchangeType: ExchangeType.Fanout,
@@ -59,7 +53,6 @@ describe('Amqp Class', () => {
   })
 
   it('constructs with default Topic exchange', () => {
-    // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, {
       ...nodeConfigFixture,
       exchangeType: ExchangeType.Topic,
@@ -69,7 +62,6 @@ describe('Amqp Class', () => {
   })
 
   it('constructs with default Headers exchange', () => {
-    // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, {
       ...nodeConfigFixture,
       exchangeType: ExchangeType.Headers,
@@ -79,7 +71,6 @@ describe('Amqp Class', () => {
   })
 
   it('defaults auto-create queue and exchange bindings to false when omitted', () => {
-    // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, {
       ...nodeConfigFixture,
       autoCreateQueue: undefined,
@@ -92,8 +83,6 @@ describe('Amqp Class', () => {
 
   it('connect() leaves heartbeat negotiation to the broker', async () => {
     const result = { on: sinon.stub() }
-
-    // @ts-ignore
     const connectStub = sinon.stub(amqplib, 'connect').resolves(result)
 
     await amqp.connect()
@@ -117,6 +106,16 @@ describe('Amqp Class', () => {
     }
   })
 
+  it('rejects a registry entry that is not an AMQP broker', async () => {
+    RED.nodes.getNode.returns({ id: 'b1', type: 'amqp-out' })
+    try {
+      await amqp.connect()
+      expect.fail('expected a broker configuration error')
+    } catch (error) {
+      expect(error.message).to.equal('AMQP broker node not found: b1')
+    }
+  })
+
   describe('getBrokerUrl()', () => {
     it('encodes credentials and vhost', () => {
       const broker = {
@@ -128,7 +127,7 @@ describe('Amqp Class', () => {
         credentials: { username: 'user@name', password: 'p@ss/word' },
       }
 
-      const url = (amqp as any).getBrokerUrl(broker)
+      const url = (amqp).getBrokerUrl(broker)
 
       expect(url).to.equal(
         'amqp://user%40name:p%40ss%2Fword@localhost:5672/foo%2Fbar',
@@ -138,7 +137,7 @@ describe('Amqp Class', () => {
     it('falls back to root when vhost missing', () => {
       const broker = { ...brokerConfigFixture, vhost: undefined }
 
-      const url = (amqp as any).getBrokerUrl(broker)
+      const url = (amqp).getBrokerUrl(broker)
 
       expect(url).to.equal('amqp://username:password@host:222/')
     })
@@ -155,7 +154,7 @@ describe('Amqp Class', () => {
         credentials: { username: 'ignored', password: 'ignored' },
       }
 
-      const url = (amqp as any).getBrokerUrl(broker)
+      const url = (amqp).getBrokerUrl(broker)
 
       expect(url).to.equal('amqp://settings%20user:settings%2Fpassword@host:222/vhost')
     })
@@ -202,7 +201,7 @@ describe('Amqp Class', () => {
       lastError: { n1: { message: 'connection dropped', at: new Date().toISOString() } },
     }
 
-    ;(amqp as any).setBrokerNodeState('disconnected')
+    ;(amqp).setBrokerNodeState('disconnected')
 
     expect(amqp.broker.nodeStates.n1).to.equal('disconnected')
     expect(amqp.broker.lastError.n1?.message).to.equal('connection dropped')
@@ -216,7 +215,7 @@ describe('Amqp Class', () => {
       lastError: { n1: { message: 'previous error', at: new Date().toISOString() } },
     }
 
-    ;(amqp as any).setBrokerNodeState('connected')
+    ;(amqp).setBrokerNodeState('connected')
 
     expect(amqp.broker.nodeStates.n1).to.equal('connected')
     expect(amqp.broker.lastError.n1).to.equal(undefined)
@@ -287,7 +286,7 @@ describe('Amqp Class', () => {
     const logStub = sinon.stub()
     amqp.channel = { nackAll: nackAllStub }
     amqp.node = { log: logStub }
-    amqp.nackAll(msg as any)
+    amqp.nackAll(msg)
     sinon.assert.calledOnce(nackAllStub)
     sinon.assert.calledWith(nackAllStub, true)
   })
@@ -298,7 +297,7 @@ describe('Amqp Class', () => {
     const logStub = sinon.stub()
     amqp.channel = { reject: rejectStub }
     amqp.node = { log: logStub }
-    amqp.reject(msg as any)
+    amqp.reject(msg)
     sinon.assert.calledOnce(rejectStub)
     sinon.assert.calledWith(rejectStub, msg, false)
   })
@@ -316,7 +315,6 @@ describe('Amqp Class', () => {
       consume: function (
         queue: string,
         cb: (arg0: any) => void,
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         config: GenericJsonObject,
       ): void {
         const amqpMessage = { content: messageContent, fields: { deliveryTag: 1 } }
@@ -324,13 +322,13 @@ describe('Amqp Class', () => {
       },
       ack,
     }
-    amqp.channel = channel as any
+    amqp.channel = channel
     amqp.assertQueue = assertQueueStub
     amqp.bindQueue = bindQueueStub
     amqp.config.queue.name = 'queueName'
     amqp.config.queue.autoCreate = false
     amqp.config.exchange.autoCreate = false
-    amqp.node = node as any
+    amqp.node = node
 
     await amqp.consume()
     expect(assertQueueStub.calledOnce).to.equal(false)
@@ -362,7 +360,7 @@ describe('Amqp Class', () => {
     amqp.channel = {
       checkQueue: checkQueueStub,
       consume: consumeStub,
-    } as any
+    }
     amqp.assertQueue = assertQueueStub
     amqp.bindQueue = bindQueueStub
     amqp.node = { send: sinon.stub(), error: sinon.stub(), log: sinon.stub() }
@@ -387,7 +385,7 @@ describe('Amqp Class', () => {
     const bindQueueStub = sinon.stub()
     const consumeStub = sinon.stub()
 
-    amqp.channel = { consume: consumeStub } as any
+    amqp.channel = { consume: consumeStub }
     amqp.assertQueue = assertQueueStub
     amqp.bindQueue = bindQueueStub
     amqp.node = { send: sinon.stub(), error: sinon.stub(), log: sinon.stub() }
@@ -412,7 +410,7 @@ describe('Amqp Class', () => {
     const bindQueueStub = sinon.stub()
     const consumeStub = sinon.stub()
 
-    amqp.channel = { consume: consumeStub } as any
+    amqp.channel = { consume: consumeStub }
     amqp.assertQueue = assertQueueStub
     amqp.bindQueue = bindQueueStub
     amqp.node = { send: sinon.stub(), error: sinon.stub(), log: sinon.stub() }
@@ -435,7 +433,7 @@ describe('Amqp Class', () => {
     const consumeStub = sinon.stub()
     const errorStub = sinon.stub()
 
-    amqp.channel = { checkQueue: checkQueueStub, consume: consumeStub } as any
+    amqp.channel = { checkQueue: checkQueueStub, consume: consumeStub }
     amqp.node = { send: sinon.stub(), error: errorStub, log: sinon.stub() }
 
     try {
@@ -469,13 +467,13 @@ describe('Amqp Class', () => {
       },
       ack,
     }
-    amqp.channel = channel as any
+    amqp.channel = channel
     amqp.assertQueue = assertQueueStub
     amqp.bindQueue = bindQueueStub
     amqp.config.queue.name = 'queueName'
     amqp.config.queue.autoCreate = false
     amqp.config.exchange.autoCreate = false
-    amqp.node = node as any
+    amqp.node = node
 
     await amqp.consume()
 
@@ -489,7 +487,7 @@ describe('Amqp Class', () => {
 
   it('assembleMessage retains reference and parses payload', () => {
     const amqpMessage: any = { content: Buffer.from('{"a":1}'), fields: { deliveryTag: 1 }, properties: {} }
-    const result = (amqp as any).assembleMessage(amqpMessage)
+    const result = (amqp).assembleMessage(amqpMessage)
     expect(result).to.equal(amqpMessage)
     expect(result).to.have.property('payload').that.deep.equals({ a: 1 })
   })
@@ -502,7 +500,7 @@ describe('Amqp Class', () => {
     }
     const errorStub = sinon.stub()
     amqp.node = { ...nodeFixture, error: errorStub }
-    const result = (amqp as any).assembleMessage(amqpMessage)
+    const result = (amqp).assembleMessage(amqpMessage)
     expect(result).to.equal(amqpMessage)
     expect(result).to.have.property('payload', '{invalid')
     expect(errorStub.calledWithMatch('Invalid JSON payload')).to.be.true
@@ -512,7 +510,7 @@ describe('Amqp Class', () => {
     const logStub = sinon.stub()
     const ackStub = sinon.stub()
     amqp.node = { ...nodeFixture, log: logStub, error: sinon.stub() }
-    amqp.channel = { ack: ackStub } as any
+    amqp.channel = { ack: ackStub }
     const msg: any = { fields: { deliveryTag: 5 } }
     amqp.ack(msg)
     expect(ackStub.calledOnceWith(msg, false)).to.be.true
@@ -564,7 +562,6 @@ describe('Amqp Class', () => {
     })
 
     it('publishes a message (fanout)', async () => {
-      // @ts-ignore
       amqp = new Amqp(RED, nodeFixture, {
         ...nodeConfigFixture,
         exchangeType: ExchangeType.Fanout,
@@ -579,7 +576,6 @@ describe('Amqp Class', () => {
     })
 
     it('publishes a message (direct w/RPC)', async () => {
-      // @ts-ignore
       amqp = new Amqp(RED, nodeFixture, {
         ...nodeConfigFixture,
         exchangeType: ExchangeType.Direct,
@@ -763,7 +759,7 @@ describe('Amqp Class', () => {
       const closeStub = sinon.stub().resolves()
       amqp.channel = { close: closeStub, off: sinon.stub() }
 
-      await (amqp as any).closeChannel()
+      await (amqp).closeChannel()
 
       expect(closeStub.calledOnce).to.be.true
     })
@@ -774,7 +770,7 @@ describe('Amqp Class', () => {
       amqp.channel = { close: closeStub, off: sinon.stub() }
       amqp.node = { error: errorStub }
 
-      await (amqp as any).closeChannel()
+      await (amqp).closeChannel()
 
       expect(errorStub.calledOnceWithMatch('Error closing AMQP channel')).to.be.true
     })
@@ -890,7 +886,7 @@ describe('Amqp Class', () => {
     await amqp.assertQueue({
       ...amqp.config,
       queue: { ...amqp.config.queue, queueArguments: undefined },
-    } as any)
+    })
     expect(assertQueueStub.calledOnce).to.equal(true)
     expect(
       assertQueueStub.calledWith(queueName, {
@@ -906,7 +902,7 @@ describe('Amqp Class', () => {
     const queueName = amqp.useExistingQueue({
       ...amqp.config,
       queue: { ...amqp.config.queue, name: 'existing.queue' },
-    } as any)
+    })
 
     expect(queueName).to.equal('existing.queue')
     expect(amqp.q.queue).to.equal('existing.queue')
@@ -932,7 +928,6 @@ describe('Amqp Class', () => {
       exchangeType: ExchangeType.Direct,
       exchangeRoutingKey: 'routing-key',
     }
-    // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, config)
 
     const queue = 'queueName'
@@ -954,7 +949,6 @@ describe('Amqp Class', () => {
       exchangeType: ExchangeType.Fanout,
       exchangeRoutingKey: '',
     }
-    // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, config)
 
     const queue = 'queueName'
@@ -975,7 +969,6 @@ describe('Amqp Class', () => {
       exchangeRoutingKey: '',
       headers: { some: 'headers' },
     }
-    // @ts-ignore
     amqp = new Amqp(RED, nodeFixture, config)
 
     const queue = 'queueName'
@@ -1086,7 +1079,7 @@ describe('Amqp Class', () => {
       expect(connectStub.calledOnce).to.equal(true)
       expect(initStub.called).to.equal(false)
       expect((amqp.broker as BrokerConfig).vhost).to.equal('vh1')
-      expect((amqp as any).vhostOverride).to.equal('vh2')
+      expect((amqp).vhostOverride).to.equal('vh2')
     })
 
     it('does nothing when vhost is unchanged', async () => {
@@ -1100,7 +1093,7 @@ describe('Amqp Class', () => {
       expect(closeStub.called).to.equal(false)
       expect(connectStub.called).to.equal(false)
       expect(initStub.called).to.equal(false)
-      expect((amqp as any).vhostOverride).to.be.undefined
+      expect((amqp).vhostOverride).to.be.undefined
     })
 
     it('does not mutate shared broker config', async () => {
@@ -1113,7 +1106,7 @@ describe('Amqp Class', () => {
       await amqp.setVhost('vh2')
 
       expect(sharedBroker.vhost).to.equal('vh1')
-      expect((amqp as any).vhostOverride).to.equal('vh2')
+      expect((amqp).vhostOverride).to.equal('vh2')
       expect(closeStub.calledOnce).to.equal(true)
       expect(connectStub.calledOnce).to.equal(true)
       expect(initStub.called).to.equal(false)
@@ -1348,7 +1341,7 @@ describe('Amqp Class', () => {
         };
         amqp.connection = poolConnection;
         amqp.broker = { ...brokerConfigFixture, vhost: 'vh1', id: 'b1' };
-        (Amqp as any).connectionPool.set('b1:vh1', { connection: poolConnection, count: 1 });
+        (Amqp).connectionPool.set('b1:vh1', { connection: poolConnection, count: 1 });
 
         amqp.config.outputs = 1;
         amqp.config.rpcTimeout = 1000;

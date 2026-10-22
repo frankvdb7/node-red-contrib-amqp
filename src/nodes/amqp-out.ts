@@ -1,15 +1,12 @@
-import type { MessageProperties } from 'amqplib'
-import type {
-  EditorNodeProperties,
-  NodeMessageInFlow,
-  NodeRedApp,
-} from 'node-red'
+import type { Options } from 'amqplib'
+import type { Node, NodeAPI, NodeMessageInFlow } from 'node-red'
 import { createAmqpNode, toError } from '../node-lifecycle'
-import { NodeType } from '../types'
+import { type AmqpNodeConfig, NodeType } from '../types'
 
-module.exports = (RED: NodeRedApp): void => {
+module.exports = (RED: NodeAPI): void => {
   function AmqpOut(
-    config: EditorNodeProperties & {
+    this: Node,
+    config: AmqpNodeConfig & {
       exchangeRoutingKey: string
       exchangeRoutingKeyType: string
       amqpProperties: string
@@ -22,7 +19,7 @@ module.exports = (RED: NodeRedApp): void => {
       msg: NodeMessageInFlow & {
         routingKey?: string
         vhost?: string
-        properties?: MessageProperties
+        properties?: Options.Publish
       },
       _: unknown,
       done?: (err?: Error) => void,
@@ -32,7 +29,7 @@ module.exports = (RED: NodeRedApp): void => {
         config
 
       // message properties override config properties
-      let properties: MessageProperties
+      let properties: Options.Publish
       try {
         properties = {
           ...JSON.parse(amqpProperties),
@@ -125,6 +122,5 @@ module.exports = (RED: NodeRedApp): void => {
 
     this.on('input', inputListener)
   }
-  // @ts-expect-error Node-RED supplies the runtime node instance.
   RED.nodes.registerType(NodeType.AmqpOut, AmqpOut)
 }
