@@ -49,7 +49,8 @@ export default class SharedConnection {
           new Error(`AMQP retry ${attempt} in ${delay}ms: ${error.message}`),
         )
       })
-      connection.on('connect', () => {
+      connection.on('connect', model => {
+        if (this.stopped || this.model !== model) return
         this.ready = true
         for (const owner of this.owners.keys()) {
           void this.attach(owner).catch(error => owner.failed(error))
@@ -93,20 +94,15 @@ export default class SharedConnection {
 
   // Channel-level failures request a disconnect; only amqplib schedules retries.
   async restart(): Promise<void> {
-    if (!this.ready || !this.model || this.stopped) return
+    if (!this.model || this.stopped) return
     if (!this.restarting) {
       const model = this.model
-      this.ready = false
+      // A channel can fail after its own setup while a shared peer is still pending.
+      this.invalidate()
       this.notify('disconnected', new Error('AMQP channel requires recovery'))
-      this.restarting = model
-        .close()
-        .catch(error => {
-          if (this.model === model) this.ready = true
-          throw error
-        })
-        .finally(() => {
-          this.restarting = undefined
-        })
+      this.restarting = model.close().finally(() => {
+        this.restarting = undefined
+      })
     }
     await this.restarting
   }
@@ -119,18 +115,18 @@ export default class SharedConnection {
     model.on('error', error => {
       if (this.model === model) this.notify('failed', error)
     })
-    let closed = false
     model.once('close', () => {
-      closed = true
+      if (this.model === model) this.invalidate()
     })
     for (const owner of this.owners.keys()) this.owners.set(owner, undefined)
     // Include owners added while another owner's asynchronous setup was running.
-    while (!this.stopped) {
+    while (!this.stopped && this.model === model) {
       const pending = [...this.owners].filter(([, setup]) => !setup)
       if (!pending.length) break
       await Promise.all(pending.map(([owner]) => this.setupOwner(owner, model)))
     }
-    if (closed) throw new Error('AMQP connection closed during setup')
+    if (!this.stopped && this.model !== model)
+      throw new Error('AMQP connection invalidated during setup')
   }
 
   private async attach(owner: ConnectionOwner): Promise<void> {

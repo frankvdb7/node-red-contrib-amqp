@@ -272,6 +272,51 @@ describe('native recovery ownership', () => {
     expect(broker.nodeStates).to.deep.equal({ first: 'connected', late: 'connected' })
     expect(raw.createConfirmChannel.callCount).to.equal(1)
   })
+  for (const type of ['amqp-out', 'amqp-in']) {
+    it(`rejects shared setup when a restored ${type} channel closes while a peer is still initializing`, async () => {
+      const first = client('first', { type, queueName: 'first', waitForConfirms: type === 'amqp-out' })
+      const peer = client('peer').amqp
+      await Promise.all([first.amqp.connect(), peer.connect()])
+      const raw = model(), restored = channel()
+      let finishPeer
+      const pending = () => new Promise(resolve => { finishPeer = resolve })
+      if (type === 'amqp-out') {
+        raw.createConfirmChannel.resolves(restored)
+        raw.createChannel.callsFake(pending)
+      } else {
+        raw.createChannel.onFirstCall().resolves(restored)
+        raw.createChannel.onSecondCall().callsFake(pending)
+      }
+      raw.close.callsFake(async () => { raw.emit('close') })
+      const setupResult = options.setup(raw).then(() => undefined, error => error)
+      await new Promise(resolve => setImmediate(resolve))
+      expect(first.amqp.settingUp).to.equal(false)
+      expect(first.amqp.channel).to.equal(restored)
+      restored.emit('close')
+      await new Promise(resolve => setImmediate(resolve))
+      finishPeer(channel())
+      expect(await setupResult).to.be.instanceOf(Error)
+      expect(raw.close.calledOnce).to.equal(true)
+      // A late native connect event must not revive the invalidated setup result.
+      wrapper.emit('connect', raw)
+      await new Promise(resolve => setImmediate(resolve))
+      expect(first.node.status.calledWithMatch({ text: 'Connected' })).to.equal(false)
+      expect(broker.nodeStates.first).not.to.equal('connected')
+      expect(first.amqp.channel).to.equal(undefined)
+      wrapper.emit('disconnect', new Error('setup interrupted'))
+      await recover()
+      await new Promise(resolve => setImmediate(resolve))
+      expect(broker.nodeStates).to.deep.equal({ first: 'connected', peer: 'connected' })
+      expect(first.amqp.channel).not.to.equal(restored)
+      if (type === 'amqp-out') {
+        await first.amqp.publish('after valid recovery')
+        expect(first.amqp.channel.waitForConfirms.calledOnce).to.equal(true)
+      } else {
+        expect(first.amqp.channel.consume.calledOnce).to.equal(true)
+      }
+      expect(connect.calledOnce).to.equal(true)
+    })
+  }
   it('closes a channel that arrives after its node was shut down', async () => {
     const { amqp, node } = client('closing')
     await amqp.connect()
