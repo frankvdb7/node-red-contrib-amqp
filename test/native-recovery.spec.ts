@@ -4,6 +4,7 @@ const sinon = require('sinon')
 const { EventEmitter } = require('node:events')
 const amqplib = require('amqplib')
 const Amqp = require('../src/Amqp').default
+const SharedConnection = require('../src/shared-connection').default
 const { nodeConfigFixture, brokerConfigFixture } = require('./doubles')
 
 describe('native recovery ownership', () => {
@@ -52,6 +53,20 @@ describe('native recovery ownership', () => {
     expect(options.maxDelay).to.be.greaterThan(options.initialDelay)
     expect(options.jitter).to.be.greaterThan(0)
     expect(connect.firstCall.args[0]).to.equal('amqp://username:password@host:222/')
+  })
+  it('starts shared connection I/O explicitly and reuses one startup promise', async () => {
+    const shared = new SharedConnection('amqp://localhost')
+    expect(connect.called).to.equal(false)
+    const starting = shared.connect()
+    expect(shared.connect()).to.equal(starting)
+    expect(connect.calledOnce).to.equal(true)
+    expect(await starting).to.equal(wrapper)
+    const owner = { setup: sinon.stub().resolves(), connected: sinon.stub(),
+      disconnected: sinon.stub(), failed: sinon.stub() }
+    expect(await shared.add(owner)).to.equal(wrapper)
+    expect(connect.calledOnce).to.equal(true)
+    await shared.remove(owner, async () => {})
+    expect(wrapper.close.calledOnce).to.equal(true)
   })
   it('reports an established raw connection error once per shared owner through native forwarding', async () => {
     const owners = [client('one'), client('two')]

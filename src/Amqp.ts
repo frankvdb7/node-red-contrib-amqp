@@ -114,7 +114,7 @@ export default class Amqp {
     const key = `${broker}:${vhost}`
 
     if (this.closed) return this.connection
-    if (this.poolEntry) return this.poolEntry.connection
+    if (this.poolEntry) return this.poolEntry.connect()
     this.setBrokerNodeState('disconnected')
     let entry = Amqp.connectionPool.get(key)
     if (!entry) {

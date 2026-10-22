@@ -19,10 +19,12 @@ export default class SharedConnection {
   private stopped = false
   private restarting?: Promise<void>
   private cleanup = Promise.resolve()
-  readonly connection: Promise<RecoveringChannelModel>
+  private connection?: Promise<RecoveringChannelModel>
 
-  constructor(url: string) {
-    this.connection = connect(url, {
+  constructor(private readonly url: string) {}
+
+  connect(): Promise<RecoveringChannelModel> {
+    this.connection ??= connect(this.url, {
       timeout: 10000,
       recovery: {
         waitForConnect: false,
@@ -58,11 +60,12 @@ export default class SharedConnection {
       })
       return connection
     })
+    return this.connection
   }
 
   async add(owner: ConnectionOwner): Promise<RecoveringChannelModel> {
     this.owners.set(owner, undefined)
-    const connection = await this.connection
+    const connection = await this.connect()
     if (this.ready && this.model && this.owners.has(owner)) {
       await this.attach(owner)
     }
@@ -88,7 +91,7 @@ export default class SharedConnection {
     try {
       await cleaning
     } finally {
-      if (lastOwner) await (await this.connection).close()
+      if (lastOwner && this.connection) await (await this.connection).close()
     }
   }
 
