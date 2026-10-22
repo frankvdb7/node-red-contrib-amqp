@@ -110,6 +110,13 @@ A topology setup failure marks only the affected node as errored. Healthy nodes 
 the shared connection remain usable. Failed setup is attempted again on the next
 native connection recovery or a manual reconnect request.
 
+An unexpected channel closure after setup restarts the entire shared connection.
+All nodes using that broker and vhost temporarily lose their channels, including
+otherwise healthy publishers. With publisher confirms enabled, interrupted
+confirmations complete the affected inputs with an error; broker delivery may
+already have occurred. Recovery restores every owner's channels without replaying
+those messages.
+
 Publishing while disconnected fails through the node's error/completion path. Recovery
 does not replay messages or guarantee delivery of a publish whose confirmation was
 interrupted. Applications must handle such uncertain outcomes themselves.

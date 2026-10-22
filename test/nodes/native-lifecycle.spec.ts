@@ -70,6 +70,55 @@ describe('Node-RED native recovery lifecycle', () => {
       expect(errors.some(error => /manual close failed/.test(String(error)))).to.equal(true)
     })
   }
+  it('reports an interrupted peer publisher confirmation when a channel failure restarts the shared transport', async () => {
+    await helper.load(modules, [
+      { id: 'broker', type: 'amqp-broker', host: 'localhost', port: 5672, vhost: '/' },
+      { id: 'consumer', type: 'amqp-in', broker: 'broker', queueName: 'test' },
+      { id: 'publisher', type: 'amqp-out', broker: 'broker', waitForConfirms: true },
+    ], { broker: { username: 'user', password: 'pass' } })
+    const raw = rawModel()
+    const consumer = await raw.createChannel()
+    let rejectConfirmation
+    const confirm = Object.assign(new EventEmitter(), {
+      prefetch: sinon.stub().resolves(), close: sinon.stub().resolves(), publish: sinon.stub(),
+      waitForConfirms: sinon.stub().callsFake(() => new Promise((_, reject) => { rejectConfirmation = reject })),
+    })
+    raw.createConfirmChannel = sinon.stub().resolves(confirm)
+    raw.close.callsFake(async () => {
+      rejectConfirmation(new Error('channel closed before confirmation'))
+      confirm.emit('close')
+      wrapper.emit('disconnect', new Error('shared transport restarted'))
+    })
+    await options.setup(raw)
+    wrapper.emit('connect', raw)
+    await new Promise(resolve => setImmediate(resolve))
+    const node = helper.getNode('publisher'), errors = []
+    node.on('call:error', call => errors.push(call.args[0]))
+    node.receive({ payload: 'uncertain' })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(confirm.waitForConfirms.calledOnce).to.equal(true)
+    expect(errors).to.have.length(0)
+    consumer.emit('close')
+    await new Promise(resolve => setImmediate(resolve))
+    expect(raw.close.calledOnce).to.equal(true)
+    const doneErrors = errors.filter(error => error instanceof Error)
+    expect(doneErrors).to.have.length(1)
+    expect(doneErrors[0].message).to.include('before confirmation')
+    expect(helper.getNode('broker').nodeStates).to.include({ consumer: 'disconnected', publisher: 'disconnected' })
+    const replacement = rawModel()
+    const restoredConfirm = Object.assign(new EventEmitter(), {
+      prefetch: sinon.stub().resolves(), close: sinon.stub().resolves(), publish: sinon.stub(),
+      waitForConfirms: sinon.stub().resolves(),
+    })
+    replacement.createConfirmChannel = sinon.stub().resolves(restoredConfirm)
+    await options.setup(replacement)
+    wrapper.emit('connect', replacement)
+    await new Promise(resolve => setImmediate(resolve))
+    expect(helper.getNode('broker').nodeStates).to.include({ consumer: 'connected', publisher: 'connected' })
+    expect(confirm.publish.calledOnce).to.equal(true)
+    expect(restoredConfirm.publish.called).to.equal(false)
+    expect(amqplib.connect.calledOnce).to.equal(true)
+  })
   it('completes amqp-out input with an error when the destination vhost stays unavailable', async () => {
     await load('amqp-out', false)
     const raw = rawModel()
