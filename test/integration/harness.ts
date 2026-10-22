@@ -94,6 +94,15 @@ class Harness {
     return response.json()
   }
 
+  async bindings(queue) {
+    const response = await fetch(`http://${this.container.getHost()}:${this.container.getMappedPort(15672)}/api/queues/%2F/${encodeURIComponent(queue)}/bindings`, {
+      headers: { Authorization: `Basic ${Buffer.from('integration:integration').toString('base64')}` },
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!response.ok) throw new Error(`Bindings for ${queue}: HTTP ${response.status}`)
+    return response.json()
+  }
+
   topology() {
     const queue = `integration-${randomUUID()}`
     const exchange = `${queue}-exchange`

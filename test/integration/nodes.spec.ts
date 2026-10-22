@@ -78,6 +78,30 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
     expect((await helper.request().get('/amqp-broker/health')).status).to.equal(503)
   })
 
+  it('unbinds an exclusive non-auto-delete queue on node close while retaining the shared transport and durable bindings', async () => {
+    const exclusive = broker.topology(), durable = broker.topology()
+    await broker.load([
+      consumer(exclusive, { id: 'exclusive', queueExclusive: true, queueDurable: false, queueAutoDelete: false }),
+      consumer(durable, { id: 'durable' }), { id: 'sink', type: 'helper' },
+    ])
+    const connectionNames = (await broker.connections()).map(connection => connection.name).sort()
+    expect((await broker.bindings(exclusive.queue)).some(binding => binding.source === exclusive.exchange)).to.equal(true)
+    await helper.getNode('exclusive').close()
+    const remaining = await broker.queue(exclusive.queue)
+    expect(remaining.exclusive).to.equal(true)
+    expect(remaining.auto_delete).to.equal(false)
+    expect(remaining.consumer_details).to.have.length(0)
+    expect((await broker.bindings(exclusive.queue)).some(binding => binding.source === exclusive.exchange)).to.equal(false)
+    expect((await broker.connections()).map(connection => connection.name).sort()).to.deep.equal(connectionNames)
+    expect((await broker.bindings(durable.queue)).some(binding => binding.source === durable.exchange)).to.equal(true)
+    const receive = nextMessage(helper.getNode('sink'))
+    broker.channel.publish(durable.exchange, durable.key, Buffer.from('"surviving consumer"'))
+    await broker.channel.waitForConfirms()
+    expect((await receive()).payload).to.equal('surviving consumer')
+    await helper.getNode('durable').close()
+    expect((await broker.bindings(durable.queue)).some(binding => binding.source === durable.exchange)).to.equal(true)
+  })
+
   it('manually nacks/requeues, observes redelivery, then acks without redelivery on shutdown', async () => {
     const topology = broker.topology()
     const flow = [consumer(topology, { type: 'amqp-in-manual-ack' }), { id: 'sink', type: 'helper' }]

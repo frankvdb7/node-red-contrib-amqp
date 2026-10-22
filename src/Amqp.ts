@@ -627,17 +627,46 @@ export default class Amqp {
     return (configParams || this.config).queue.autoCreate
   }
 
-  private async closeChannel(): Promise<void> {
+  private shouldUnbindQueueOnClose(): boolean {
+    const { name, exclusive, autoDelete } = this.config.queue
+    return (
+      this.shouldAutoCreateExchangeBindings() &&
+      (!name || exclusive || autoDelete)
+    )
+  }
+
+  private async unbindQueues(channel: Channel): Promise<void> {
+    const { name, type } = this.config.exchange
+    const queue = this.q?.queue
+    if (!name || !queue || !this.shouldUnbindQueueOnClose()) return
+    const keys = this.canHaveRoutingKey(type) ? this.parseRoutingKeys() : ['']
+    const args = type === ExchangeType.Headers ? this.config.headers : undefined
+    for (const key of keys) {
+      try {
+        await channel.unbindQueue(queue, name, key, args)
+      } catch (error) {
+        this.node.error(
+          `Error unbinding queue for routing key ${key}: ${error}`,
+        )
+      }
+    }
+  }
+
+  private async closeChannel(cleanupBindings = false): Promise<void> {
     if (this.channel) {
       const channel = this.channel
+      const { channelErrorHandler, channelCloseHandler, channelReturnHandler } =
+        this
       this.channel = undefined
-      channel.off?.('error', this.channelErrorHandler)
-      channel.off?.('close', this.channelCloseHandler)
-      channel.off?.('return', this.channelReturnHandler)
       try {
+        if (cleanupBindings) await this.unbindQueues(channel)
         await channel.close()
       } catch (e) {
         this.node.error(`Error closing AMQP channel: ${e}`)
+      } finally {
+        channel.off?.('error', channelErrorHandler)
+        channel.off?.('close', channelCloseHandler)
+        channel.off?.('return', channelReturnHandler)
       }
     }
   }
@@ -650,10 +679,12 @@ export default class Amqp {
     this.setBrokerNodeState('disconnected')
     this.node.status(NODE_STATUS.Disconnected)
     if (!entry) {
-      await this.closeChannel()
+      await this.closeChannel(true)
       return
     }
-    const release = entry.remove(this.recoveryOwner, () => this.closeChannel())
+    const release = entry.remove(this.recoveryOwner, () =>
+      this.closeChannel(true),
+    )
     if (!entry.size && Amqp.connectionPool.get(key) === entry) {
       Amqp.connectionPool.delete(key)
     }

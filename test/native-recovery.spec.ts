@@ -12,7 +12,8 @@ describe('native recovery ownership', () => {
     prefetch: sinon.stub().resolves(), close: sinon.stub().resolves(),
     publish: sinon.stub(), waitForConfirms: sinon.stub().resolves(),
     assertExchange: sinon.stub().resolves(), assertQueue: sinon.stub().resolves({ queue: 'generated' }),
-    bindQueue: sinon.stub().resolves(), consume: sinon.stub().resolves({ consumerTag: 'consumer' }),
+    bindQueue: sinon.stub().resolves(), unbindQueue: sinon.stub().resolves(),
+    consume: sinon.stub().resolves({ consumerTag: 'consumer' }),
   })
   const model = () => Object.assign(new EventEmitter(), {
     createChannel: sinon.stub().callsFake(async () => channel()),
@@ -85,6 +86,83 @@ describe('native recovery ownership', () => {
     expect(broker.nodeStates.b).to.equal('connected')
     await b.close()
     expect(wrapper.close.callCount).to.equal(1)
+  })
+  for (const switching of [false, true]) {
+    it(`unbinds an exclusive non-auto-delete queue on ${switching ? 'vhost switching' : 'shutdown'} without disturbing its shared peer`, async () => {
+      wrapper.waitForConnect = sinon.stub().resolves()
+      const ephemeral = client('ephemeral', { type: 'amqp-in', queueName: 'exclusive',
+        autoCreateQueue: true, autoCreateExchangeBindings: true,
+        exchangeRoutingKey: 'first,second', queueExclusive: true, queueAutoDelete: false }).amqp
+      const durable = client('durable', { type: 'amqp-in', queueName: 'durable',
+        autoCreateQueue: true, autoCreateExchangeBindings: true,
+        queueExclusive: false, queueDurable: true, queueAutoDelete: false }).amqp
+      await Promise.all([ephemeral.connect(), durable.connect()])
+      const raw = await recover()
+      const old = ephemeral.channel, peer = durable.channel
+      if (switching) await ephemeral.setVhost('another')
+      else await ephemeral.close()
+      expect(old.unbindQueue.args.map(args => args.slice(0, 3))).to.deep.equal([
+        ['generated', 'exchangeName', 'first'], ['generated', 'exchangeName', 'second'],
+      ])
+      expect(old.unbindQueue.calledBefore(old.close)).to.equal(true)
+      expect(peer.unbindQueue.called).to.equal(false)
+      expect(peer.close.called).to.equal(false)
+      expect(wrapper.close.called).to.equal(false)
+      expect(raw.close.called).to.equal(false)
+      await durable.close()
+      expect(peer.unbindQueue.called).to.equal(false)
+    })
+  }
+  it('does not unbind ephemeral queues during automatic recovery', async () => {
+    const { amqp } = client('in', { type: 'amqp-in', autoCreateQueue: true,
+      autoCreateExchangeBindings: true, queueExclusive: true })
+    await amqp.connect()
+    await recover()
+    const old = amqp.channel
+    wrapper.emit('disconnect', new Error('outage'))
+    await recover()
+    expect(old.unbindQueue.called).to.equal(false)
+    expect(amqp.channel.bindQueue.calledOnce).to.equal(true)
+  })
+  for (const config of [
+    { queueName: '', queueExclusive: false },
+    { queueName: 'auto-delete', queueExclusive: false, queueAutoDelete: true },
+    { exchangeType: 'fanout', exchangeRoutingKey: 'ignored' },
+    { exchangeType: 'headers', exchangeRoutingKey: 'ignored', headers: '{"x-match":"all","kind":"test"}' },
+  ]) {
+    it(`cleans up temporary bindings with options ${JSON.stringify(config)}`, async () => {
+      const { amqp } = client('temporary', { type: 'amqp-in', autoCreateQueue: true,
+        autoCreateExchangeBindings: true, ...config })
+      await amqp.connect()
+      await recover()
+      const old = amqp.channel
+      expect(old.bindQueue.calledOnce).to.equal(true)
+      await amqp.close()
+      expect(old.unbindQueue.calledOnce).to.equal(true)
+      expect(old.unbindQueue.firstCall.args).to.deep.equal([
+        ...old.bindQueue.firstCall.args.slice(0, 3),
+        config.exchangeType === 'headers' ? { 'x-match': 'all', kind: 'test' } : undefined,
+      ])
+    })
+  }
+  it('finishes shutdown after an unbind error without restarting the shared transport', async () => {
+    const { amqp, node } = client('closing', { type: 'amqp-in', autoCreateQueue: true,
+      autoCreateExchangeBindings: true, exchangeRoutingKey: 'first,second' })
+    const peer = client('peer').amqp
+    await Promise.all([amqp.connect(), peer.connect()])
+    const raw = await recover(), old = amqp.channel
+    old.unbindQueue.onFirstCall().callsFake(async () => {
+      old.emit('error', new Error('unbind denied'))
+      throw new Error('unbind denied')
+    })
+    await amqp.close()
+    expect(old.unbindQueue.calledTwice).to.equal(true)
+    expect(node.error.calledWithMatch(/Error unbinding queue.*unbind denied/)).to.equal(true)
+    expect(old.close.calledOnce).to.equal(true)
+    expect(raw.close.called).to.equal(false)
+    expect(wrapper.close.called).to.equal(false)
+    expect(old.listenerCount('error')).to.equal(0)
+    expect(old.listenerCount('close')).to.equal(0)
   })
   it('finishes channel shutdown before closing the final shared transport', async () => {
     const { amqp } = client('one')
