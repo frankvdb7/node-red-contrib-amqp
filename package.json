@@ -14,7 +14,8 @@
     "fallow:audit": "fallow audit",
     "test": "npm run build && node scripts/run-tests.js",
     "test:watch": "mocha -w",
-    "test:cov": "npm run build && nyc node scripts/run-tests.js"
+    "test:cov": "npm run build && nyc node scripts/run-tests.js",
+    "test:integration": "npm run build && node scripts/run-tests.js --integration"
   },
   "keywords": [
     "node-red",
@@ -61,6 +62,7 @@
     "@istanbuljs/nyc-config-typescript": "^1.0.2",
     "@swc/core": "^1.15.46",
     "@swc/register": "^0.1.10",
+    "@testcontainers/rabbitmq": "^12.2.1",
     "@types/chai": "^5.2.3",
     "@types/lodash.clonedeep": "^4.5.9",
     "@types/mocha": "^10.0.10",

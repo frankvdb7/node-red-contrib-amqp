@@ -135,11 +135,34 @@ To contribute to the development of these nodes, please follow these steps:
 - `npm run lint`: Format code and check for linting errors.
 - `npm run fallow`: Report unused code, dependency issues, duplication, and complexity hotspots.
 - `npm run fallow:audit`: Fail only when a change introduces new Fallow findings; this runs in CI.
-- `npm test`: Run the test suite.
+- `npm test`: Run the fast unit suite without Docker.
+- `npm run test:integration`: Build and run the compiled nodes against an ephemeral RabbitMQ container.
 - `npm run test:watch`: Run tests in watch mode.
 - `npm run test:cov`: Generate a test coverage report.
 
 ## Testing Notes
+
+Integration tests require Node.js 22 or newer and a running Docker-compatible
+daemon with Linux containers. Run `npm install`, then `npm run test:integration`.
+The first run pulls the pinned `rabbitmq:4.3.6-management` image. No broker,
+credentials, or fixed host ports need to be configured. Testcontainers starts one
+broker per suite and removes it on teardown; queues and exchanges use unique names.
+Set `DEBUG=testcontainers*` for container startup diagnostics.
+
+The separate `RabbitMQ integration` GitHub Actions workflow runs on pull requests
+to `main` and pushes to `main`, with separate jobs for Node-RED 4 and 5 on Node.js
+24. Each job installs the latest release of its Node-RED major without changing
+the lockfile. Repository branch protection must require both
+`integration (Node-RED 4)` and `integration (Node-RED 5)` checks to enforce them as
+merge gates.
+
+The initial suite covers real publish/consume, publisher confirms, classic and
+quorum declarations, consume-only topology, manual ack and nack/requeue, health
+and consumer shutdown. Delivery, publisher confirmation and acknowledgement are
+separate assertions; these tests do not promise exactly-once processing. Known
+reliability regressions are explicitly pending with issue references. RPC,
+dead-letter rejection and outage/recovery scenarios remain follow-up coverage
+under #192.
 
 - The test suite currently has known pre-existing failures.
 - Changes should not add new test failures.

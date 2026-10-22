@@ -1,0 +1,34 @@
+name: RabbitMQ integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: integration (Node-RED ${{ matrix.node-red }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node-red: [4, 5]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.x
+          cache: npm
+      - run: npm ci
+      - name: Install Node-RED ${{ matrix.node-red }}
+        run: npm install --no-save --package-lock=false node-red@${{ matrix.node-red }}
+      - name: Show installed Node-RED version
+        run: node -p "require('node-red/package.json').version"
+      - run: npm run test:integration
+        env:
+          DEBUG: testcontainers*
