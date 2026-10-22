@@ -70,4 +70,28 @@ describe('Node-RED native recovery lifecycle', () => {
       expect(errors.some(error => /manual close failed/.test(String(error)))).to.equal(true)
     })
   }
+  it('completes amqp-out input with an error when the destination vhost stays unavailable', async () => {
+    await load('amqp-out', false)
+    const raw = rawModel()
+    await options.setup(raw)
+    wrapper.emit('connect', raw)
+    await new Promise(resolve => setImmediate(resolve))
+    wrapper.waitForConnect = sinon.stub().returns(new Promise(() => {}))
+    const publish = sinon.stub(require('../../src/Amqp').default.prototype, 'publish').resolves()
+    const node = helper.getNode('node'), errors = []
+    node.on('call:error', call => errors.push(call.args[0]))
+    const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      node.receive({ payload: 'not sent', vhost: 'unavailable' })
+      await new Promise(resolve => setImmediate(resolve))
+      await clock.tickAsync(10000)
+      const doneErrors = errors.filter(error => error instanceof Error)
+      expect(doneErrors).to.have.length(1)
+      expect(doneErrors[0].message).to.include('Timed out')
+      expect(publish.called).to.equal(false)
+      expect(clock.countTimers()).to.equal(0)
+    } finally {
+      clock.restore()
+    }
+  })
 })

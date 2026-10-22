@@ -254,6 +254,53 @@ describe('native recovery ownership', () => {
     await amqp.close()
     expect(wrapper.close.callCount).to.equal(2)
   })
+  it('bounds a switch to an unavailable vhost and clears its deadline', async () => {
+    const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      wrapper.waitForConnect = sinon.stub().returns(new Promise(() => {}))
+      const { amqp } = client('one')
+      await amqp.connect()
+      let result
+      const switching = amqp.setVhost('unavailable').then(() => { result = 'ready' }, error => { result = error })
+      await new Promise(resolve => setImmediate(resolve))
+      await clock.tickAsync(9999)
+      expect(result).to.equal(undefined)
+      await clock.tickAsync(1)
+      expect(result).to.be.instanceOf(Error)
+      expect(result.message).to.include('Timed out')
+      await switching
+      expect(clock.countTimers()).to.equal(0)
+      // The node still owns the destination, so native recovery can succeed later.
+      await recover()
+      await amqp.publish('after recovery')
+      expect(amqp.channel.publish.callCount).to.equal(1)
+    } finally {
+      clock.restore()
+    }
+  })
+  it('cancels a vhost readiness wait on close even when another owner retains the connection', async () => {
+    const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      wrapper.waitForConnect = sinon.stub().returns(new Promise(() => {}))
+      const { amqp } = client('one')
+      await amqp.connect()
+      const peer = client('peer').amqp
+      peer.vhostOverride = 'unavailable'
+      await peer.connect()
+      let result
+      const switching = amqp.setVhost('unavailable').then(() => { result = 'ready' }, error => { result = error })
+      await new Promise(resolve => setImmediate(resolve))
+      await amqp.close()
+      await new Promise(resolve => setImmediate(resolve))
+      expect(result).to.be.instanceOf(Error)
+      expect(result.message).to.include('cancelled')
+      await switching
+      expect(wrapper.close.callCount).to.equal(1)
+      expect(clock.countTimers()).to.equal(0)
+    } finally {
+      clock.restore()
+    }
+  })
   it('does not start another vhost connection when shutdown interrupts the switch', async () => {
     const { amqp } = client('one')
     await amqp.connect()

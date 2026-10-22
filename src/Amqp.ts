@@ -9,7 +9,7 @@ import type {
 } from 'amqplib'
 import cloneDeep from 'lodash.clonedeep'
 import type { Node, NodeAPI } from 'node-red'
-import { NODE_STATUS } from './constants'
+import { NODE_STATUS, VHOST_READY_TIMEOUT_MS } from './constants'
 import SharedConnection, { type ConnectionOwner } from './shared-connection'
 import {
   type AmqpBrokerNode,
@@ -64,6 +64,7 @@ export default class Amqp {
   private channelCloseHandler: () => void
   private channelReturnHandler: () => void
   private rpcTimeouts: Set<NodeJS.Timeout> = new Set()
+  private vhostWaits = new Set<(error: Error) => void>()
   private closed = false
   private shuttingDown = false
 
@@ -292,11 +293,35 @@ export default class Amqp {
         throw new Error('AMQP vhost switch cancelled during shutdown')
       this.vhostOverride = newVhost
       this.closed = false
-      const connection = await this.connect()
-      await connection.waitForConnect()
+      await this.waitForVhostReady()
     } catch (e) {
       this.node.error(`Could not switch vhost: ${e}`)
       throw e
+    }
+  }
+
+  private async waitForVhostReady(): Promise<void> {
+    let timeout: NodeJS.Timeout
+    let cancel: (error: Error) => void
+    const deadline = new Promise<never>((_, reject) => {
+      cancel = reject
+      this.vhostWaits.add(cancel)
+      timeout = setTimeout(() => {
+        reject(
+          new Error(
+            `Timed out waiting for AMQP vhost readiness after ${VHOST_READY_TIMEOUT_MS}ms`,
+          ),
+        )
+      }, VHOST_READY_TIMEOUT_MS)
+    })
+    try {
+      await Promise.race([
+        this.connect().then(connection => connection.waitForConnect()),
+        deadline,
+      ])
+    } finally {
+      clearTimeout(timeout)
+      this.vhostWaits.delete(cancel)
     }
   }
 
@@ -579,6 +604,9 @@ export default class Amqp {
 
   public async close(permanent = true): Promise<void> {
     if (permanent) this.shuttingDown = true
+    for (const cancel of this.vhostWaits) {
+      cancel(new Error('AMQP vhost readiness wait cancelled'))
+    }
     if (this.closed) {
       return
     }
