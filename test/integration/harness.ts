@@ -8,7 +8,6 @@ const helper = require('node-red-node-test-helper')
 helper.init(require.resolve('node-red'))
 const modules = ['amqp-broker', 'amqp-in', 'amqp-in-manual-ack', 'amqp-out']
   .map(name => require(`../../build/src/nodes/${name}`))
-modules.push(require('@node-red/nodes/core/common/24-complete.js'))
 
 // A patch-pinned management image allows broker-side queue/consumer assertions.
 const IMAGE = 'rabbitmq:4.3.6-management'
@@ -78,10 +77,16 @@ class Harness {
 
   async load(nodes) {
     await new Promise((resolve, reject) => helper.startServer(err => err ? reject(err) : resolve(undefined)))
-    await helper.load(modules, [{ id: 'flow', type: 'tab', label: 'Integration' }, {
-      id: 'broker', type: 'amqp-broker', host: this.container.getHost(),
+    const brokerIds = [...new Set(nodes.map(node => node.broker).filter(Boolean))]
+    const brokers = brokerIds.map(id => ({
+      id, type: 'amqp-broker', host: this.container.getHost(),
       port: this.container.getMappedPort(5672), vhost: '/',
-    }, ...nodes.map(node => ({ z: 'flow', ...node }))], { broker: { username: 'integration', password: 'integration' } })
+    }))
+    const credentials = Object.fromEntries(brokerIds.map(id => [id, {
+      username: 'integration', password: 'integration',
+    }]))
+    await helper.load(modules, [{ id: 'flow', type: 'tab', label: 'Integration' },
+      ...brokers, ...nodes.map(node => ({ z: 'flow', ...node }))], credentials)
     await until('all runtime nodes connected', async () => {
       const response = await helper.request().get('/amqp-broker/health')
       return response.status === 200

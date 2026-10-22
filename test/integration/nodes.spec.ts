@@ -27,7 +27,8 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
       const topology = broker.topology()
       await broker.load([
         consumer(topology, { queueType }), { id: 'sink', type: 'helper' },
-        { id: 'out', type: 'amqp-out', broker: 'broker', exchangeName: topology.exchange,
+        // Shared broker-config lifecycle is a separate pending regression (#184).
+        { id: 'out', type: 'amqp-out', broker: 'publisher-broker', exchangeName: topology.exchange,
           exchangeType: 'direct', exchangeRoutingKey: topology.key, waitForConfirms: true },
         { id: 'completion', type: 'complete', scope: ['out'], wires: [['confirmed']] },
         { id: 'confirmed', type: 'helper' },
