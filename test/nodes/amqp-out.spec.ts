@@ -1,13 +1,12 @@
-export {}
-const { expect } = require('chai')
-const sinon = require('sinon')
-const Amqp = require('../../src/Amqp').default
-const { NodeType } = require('../../src/types')
-const { amqpOutFlowFixture, credentialsFixture } = require('../doubles')
-
-const helper = require('node-red-node-test-helper')
-const amqpOut = require('../../src/nodes/amqp-out')
-const amqpBroker = require('../../src/nodes/amqp-broker')
+import { expect } from 'chai'
+import sinon from 'sinon'
+import Amqp from '../../src/Amqp'
+import { NodeType } from '../../src/types'
+import { amqpOutFlowFixture, credentialsFixture } from '../doubles'
+import helper from 'node-red-node-test-helper'
+import amqpOut from '../../src/nodes/amqp-out'
+import amqpBroker from '../../src/nodes/amqp-broker'
+import RED from 'node-red'
 
 helper.init(require.resolve('node-red'))
 
@@ -224,7 +223,7 @@ describe('amqp-out Node', () => {
 
   it('calls done with error when routing key evaluation path throws', async function () {
     const evaluateStub = sinon
-      .stub(require('node-red').util, 'evaluateNodeProperty')
+      .stub(RED.util, 'evaluateNodeProperty')
       .throws(new Error('routing key evaluation failed'));
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() };

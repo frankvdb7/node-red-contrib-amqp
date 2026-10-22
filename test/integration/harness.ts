@@ -1,13 +1,15 @@
-export {}
-const { RabbitMQContainer } = require('@testcontainers/rabbitmq')
-const { connect } = require('amqplib')
-const { randomUUID } = require('node:crypto')
-const { setTimeout: delay } = require('node:timers/promises')
-const helper = require('node-red-node-test-helper')
+import { RabbitMQContainer } from '@testcontainers/rabbitmq'
+import { connect } from 'amqplib'
+import { randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
+import helper from 'node-red-node-test-helper'
+import amqpIn from '../../build/src/nodes/amqp-in'
+import amqpOut from '../../build/src/nodes/amqp-out'
+import amqpBroker from '../../build/src/nodes/amqp-broker'
+import amqpInManualAck from '../../build/src/nodes/amqp-in-manual-ack'
 
 helper.init(require.resolve('node-red'))
-const modules = ['amqp-broker', 'amqp-in', 'amqp-in-manual-ack', 'amqp-out']
-  .map(name => require(`../../build/src/nodes/${name}`))
+const modules = [amqpBroker, amqpIn, amqpInManualAck, amqpOut]
 
 // A patch-pinned management image allows broker-side queue/consumer assertions.
 const IMAGE = 'rabbitmq:4.3.6-management'
@@ -185,4 +187,4 @@ function consumer({ queue, exchange, key }, overrides = {}) {
   }
 }
 
-module.exports = { Harness, consumer, helper, nextMessage, until }
+export { Harness, consumer, helper, nextMessage, until }

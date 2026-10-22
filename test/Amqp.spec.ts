@@ -1,15 +1,14 @@
-export {}
-const { expect } = require('chai')
-const { NODE_STATUS } = require('../src/constants')
-const sinon = require('sinon')
-const amqplib = require('amqplib')
-const Amqp = require('../src/Amqp').default
-const {
+import { expect } from 'chai'
+import { NODE_STATUS } from '../src/constants'
+import sinon from 'sinon'
+import amqplib from 'amqplib'
+import Amqp from '../src/Amqp'
+import {
   nodeConfigFixture,
   nodeFixture,
   brokerConfigFixture,
-} = require('./doubles')
-const { ExchangeType, DefaultExchangeName } = require('../src/types')
+} from './doubles'
+import { ExchangeType, DefaultExchangeName } from '../src/types'
 import type { GenericJsonObject, BrokerConfig } from '../src/types'
 
 let RED: any

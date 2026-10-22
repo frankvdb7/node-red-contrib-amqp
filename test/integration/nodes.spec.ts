@@ -1,6 +1,5 @@
-export {}
-const { expect } = require('chai')
-const { Harness, consumer, helper, nextMessage, until } = require('./harness')
+import { expect } from 'chai'
+import { Harness, consumer, helper, nextMessage, until } from './harness'
 
 describe('compiled AMQP nodes against RabbitMQ', function () {
   this.timeout(30000)

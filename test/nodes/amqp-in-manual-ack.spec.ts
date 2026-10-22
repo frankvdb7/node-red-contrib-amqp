@@ -1,15 +1,14 @@
-export {}
-const { expect } = require('chai')
-const sinon = require('sinon')
-const Amqp = require('../../src/Amqp').default
-const { ManualAckType, NodeType } = require('../../src/types')
-const {
+import { expect } from 'chai'
+import sinon from 'sinon'
+import Amqp from '../../src/Amqp'
+import { ManualAckType, NodeType } from '../../src/types'
+import {
   amqpInManualAckFlowFixture,
   credentialsFixture,
-} = require('../doubles')
-const helper = require('node-red-node-test-helper')
-const amqpInManualAck = require('../../src/nodes/amqp-in-manual-ack')
-const amqpBroker = require('../../src/nodes/amqp-broker')
+} from '../doubles'
+import helper from 'node-red-node-test-helper'
+import amqpInManualAck from '../../src/nodes/amqp-in-manual-ack'
+import amqpBroker from '../../src/nodes/amqp-broker'
 
 helper.init(require.resolve('node-red'))
 

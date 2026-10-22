@@ -1,11 +1,10 @@
-export {}
-const { expect } = require('chai')
-const sinon = require('sinon')
-const { EventEmitter } = require('node:events')
-const amqplib = require('amqplib')
-const Amqp = require('../src/Amqp').default
-const SharedConnection = require('../src/shared-connection').default
-const { nodeConfigFixture, brokerConfigFixture } = require('./doubles')
+import { expect } from 'chai'
+import sinon from 'sinon'
+import { EventEmitter } from 'node:events'
+import amqplib from 'amqplib'
+import Amqp from '../src/Amqp'
+import SharedConnection from '../src/shared-connection'
+import { nodeConfigFixture, brokerConfigFixture } from './doubles'
 
 describe('native recovery ownership', () => {
   let wrapper, options, connect, broker, clients

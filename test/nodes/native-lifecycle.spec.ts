@@ -1,11 +1,14 @@
-export {}
-const { expect } = require('chai')
-const sinon = require('sinon')
-const { EventEmitter } = require('node:events')
-const amqplib = require('amqplib')
-const helper = require('node-red-node-test-helper')
-const modules = ['amqp-broker', 'amqp-in', 'amqp-in-manual-ack', 'amqp-out']
-  .map(name => require(`../../src/nodes/${name}`))
+import { expect } from 'chai'
+import sinon from 'sinon'
+import { EventEmitter, once } from 'node:events'
+import amqplib from 'amqplib'
+import helper from 'node-red-node-test-helper'
+import Amqp from '../../src/Amqp'
+import amqpBroker from '../../src/nodes/amqp-broker'
+import amqpIn from '../../src/nodes/amqp-in'
+import amqpInManualAck from '../../src/nodes/amqp-in-manual-ack'
+import amqpOut from '../../src/nodes/amqp-out'
+const modules = [amqpBroker, amqpIn, amqpInManualAck, amqpOut]
 helper.init(require.resolve('node-red'))
 
 describe('Node-RED native recovery lifecycle', () => {
@@ -27,6 +30,8 @@ describe('Node-RED native recovery lifecycle', () => {
     await helper.load(modules, [
       { id: 'broker', type: 'amqp-broker', host: 'localhost', port: 5672, vhost: '/' },
       { id: 'node', type, broker: 'broker', queueName: 'test', reconnectOnError: legacy },
+      { id: 'completion', type: 'complete', scope: ['node'], wires: [['completed']] },
+      { id: 'completed', type: 'helper' },
     ], { broker: { username: 'user', password: 'pass' } })
   }
   function rawModel() {
@@ -56,6 +61,17 @@ describe('Node-RED native recovery lifecycle', () => {
     }
   }
   for (const type of ['amqp-in', 'amqp-in-manual-ack']) {
+    it(`${type} completes a successful reconnect control message`, async () => {
+      await load(type, false)
+      const raw = rawModel()
+      await options.setup(raw)
+      wrapper.emit('connect', raw)
+      await new Promise(resolve => setImmediate(resolve))
+      const completed = once(helper.getNode('completed'), 'input', { signal: AbortSignal.timeout(1000) })
+      helper.getNode('node').receive({ payload: { reconnectCall: true } })
+      expect((await completed)[0].payload.reconnectCall).to.equal(true)
+      expect(raw.close.calledOnce).to.equal(true)
+    })
     it(`${type} treats reconnectCall as control and reports its failure through done`, async () => {
       await load(type, false)
       const raw = rawModel()
@@ -68,6 +84,33 @@ describe('Node-RED native recovery lifecycle', () => {
       node.receive({ payload: { reconnectCall: true }, manualAck: { ackMode: 'ack' } })
       await new Promise(resolve => setTimeout(resolve, 20))
       expect(errors.some(error => /manual close failed/.test(String(error)))).to.equal(true)
+    })
+  }
+  it('completes ordinary amqp-in inputs without restarting the connection', async () => {
+    await load('amqp-in', false)
+    const raw = rawModel()
+    await options.setup(raw)
+    wrapper.emit('connect', raw)
+    for (const message of [{}, { payload: { reconnectCall: false } }]) {
+      const completed = once(helper.getNode('completed'), 'input', { signal: AbortSignal.timeout(1000) })
+      helper.getNode('node').receive(message)
+      await completed
+    }
+    expect(raw.close.called).to.equal(false)
+  })
+  for (const closing of [false, true]) {
+    it(`${closing ? 'ignores' : 'reports'} startup failure ${closing ? 'after node close' : 'while active'}`, async () => {
+      let failStartup
+      sinon.stub(Amqp.prototype, 'connect').returns(new Promise((_, reject) => { failStartup = reject }))
+      await load('amqp-out', false)
+      const node = helper.getNode('node'), errors = [], statuses = []
+      node.on('call:error', call => errors.push(call.args[0]))
+      node.on('call:status', call => statuses.push(call.args[0]))
+      if (closing) await node.close()
+      failStartup(new Error('startup failed'))
+      await new Promise(resolve => setImmediate(resolve))
+      expect(errors.some(error => /Could not initialize AMQP:.*startup failed/.test(String(error)))).to.equal(!closing)
+      expect(statuses.some(status => status.text === 'Error')).to.equal(!closing)
     })
   }
   it('reports an interrupted peer publisher confirmation when a channel failure restarts the shared transport', async () => {
@@ -125,7 +168,7 @@ describe('Node-RED native recovery lifecycle', () => {
     await options.setup(raw)
     wrapper.emit('connect', raw)
     await new Promise(resolve => setImmediate(resolve))
-    const publish = sinon.stub(require('../../src/Amqp').default.prototype, 'publish').resolves()
+    const publish = sinon.stub(Amqp.prototype, 'publish').resolves()
     const node = helper.getNode('node'), errors = []
     node.on('call:error', call => errors.push(call.args[0]))
     const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })

@@ -8,7 +8,7 @@ import {
   NodeType,
 } from '../types'
 
-module.exports = (RED: NodeAPI): void => {
+export = (RED: NodeAPI): void => {
   function AmqpInManualAck(this: Node, config: AmqpNodeConfig): void {
     const amqp = createAmqpNode(RED, this, config)
     const inputListener = async (

@@ -2,7 +2,7 @@ import type { Node, NodeAPI, NodeMessageInFlow } from 'node-red'
 import { createAmqpNode, toError } from '../node-lifecycle'
 import { type AmqpNodeConfig, NodeType } from '../types'
 
-module.exports = (RED: NodeAPI): void => {
+export = (RED: NodeAPI): void => {
   function AmqpIn(this: Node, config: AmqpNodeConfig): void {
     const amqp = createAmqpNode(RED, this, config)
     const inputListener = async (

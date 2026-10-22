@@ -180,7 +180,10 @@ To contribute to the development of these nodes, please follow these steps:
 - `npm test`: Run the fast unit suite without Docker.
 - `npm run test:integration`: Build and run the compiled nodes against an ephemeral RabbitMQ container.
 - `npm run test:watch`: Run tests in watch mode.
-- `npm run test:cov`: Generate a test coverage report.
+- `npm run test:cov`: Generate a source coverage report and enforce at least 80%
+  statements, branches, functions and lines in every file under `src/`, in addition
+  to the existing global thresholds. Test files and generated build copies are not
+  part of the source coverage totals.
 
 ## Testing Notes
 

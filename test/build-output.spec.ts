@@ -1,7 +1,6 @@
-export {}
-const { expect } = require('chai')
-const fs = require('fs')
-const path = require('path')
+import { expect } from 'chai'
+import fs from 'node:fs'
+import path from 'node:path'
 
 describe('build output', () => {
   const base = path.join(__dirname, '..', 'build')

@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-require('@swc/register')({ module: { type: 'commonjs' } });
-
-require('source-map-support/register');
-const Mocha = require('mocha');
-const glob = require('glob');
+import './register-tests.cjs';
+import 'source-map-support/register.js';
+import Mocha from 'mocha';
+import glob from 'glob';
 
 const mocha = new Mocha();
 const integration = process.argv.includes('--integration');

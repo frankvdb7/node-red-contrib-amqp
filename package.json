@@ -12,10 +12,10 @@
     "lint": "biome check src",
     "fallow": "fallow",
     "fallow:audit": "fallow audit",
-    "test": "npm run build && node scripts/run-tests.js",
+    "test": "npm run build && node scripts/run-tests.mjs",
     "test:watch": "mocha -w",
-    "test:cov": "npm run build && nyc node scripts/run-tests.js",
-    "test:integration": "npm run build && node scripts/run-tests.js --integration"
+    "test:cov": "npm run build && nyc node scripts/run-tests.mjs && nyc check-coverage --per-file --statements 80 --branches 80 --functions 80 --lines 80",
+    "test:integration": "npm run build && node scripts/run-tests.mjs --integration"
   },
   "keywords": [
     "node-red",

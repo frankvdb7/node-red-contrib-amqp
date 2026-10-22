@@ -1,7 +1,9 @@
 {
   "extends": "@istanbuljs/nyc-config-typescript",
+  "require": ["./scripts/register-tests.cjs"],
   "temp-directory": "./coverage/.nyc_output",
   "all": true,
+  "include": ["src/**/*.ts"],
   "extension": [".ts", ".tsx", ".html"],
   "reporter": ["lcov", "text"],
   "cache": true,

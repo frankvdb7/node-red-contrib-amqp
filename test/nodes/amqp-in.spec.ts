@@ -1,11 +1,9 @@
-export {}
-const { expect } = require('chai')
-const sinon = require('sinon')
-const Amqp = require('../../src/Amqp').default
-const { NodeType } = require('../../src/types')
-
-const helper = require('node-red-node-test-helper')
-const amqpIn = require('../../src/nodes/amqp-in')
+import { expect } from 'chai'
+import sinon from 'sinon'
+import Amqp from '../../src/Amqp'
+import { NodeType } from '../../src/types'
+import helper from 'node-red-node-test-helper'
+import amqpIn from '../../src/nodes/amqp-in'
 
 helper.init(require.resolve('node-red'))
 

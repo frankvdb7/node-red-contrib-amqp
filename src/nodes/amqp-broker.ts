@@ -6,7 +6,7 @@ import {
   NodeType,
 } from '../types'
 
-module.exports = (RED: NodeAPI): void => {
+export = (RED: NodeAPI): void => {
   const brokerNodes: AmqpBrokerNode[] = []
   const amqpNodeTypes = new Set<string>([
     NodeType.AmqpIn,
