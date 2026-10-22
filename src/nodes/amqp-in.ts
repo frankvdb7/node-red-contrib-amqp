@@ -3,24 +3,12 @@ import type {
   NodeMessageInFlow,
   NodeRedApp,
 } from 'node-red'
-import Amqp from '../Amqp'
-import { startNode, toError } from '../node-lifecycle'
-import {
-  type AmqpInNodeDefaults,
-  type AmqpOutNodeDefaults,
-  NodeType,
-} from '../types'
+import { createAmqpNode, toError } from '../node-lifecycle'
+import { NodeType } from '../types'
 
 module.exports = (RED: NodeRedApp): void => {
   function AmqpIn(config: EditorNodeProperties): void {
-    // @ts-expect-error Node-RED supplies the runtime node instance.
-    RED.nodes.createNode(this, config)
-    const amqp = new Amqp(
-      RED,
-      this,
-      config as AmqpInNodeDefaults & AmqpOutNodeDefaults,
-    )
-    startNode(this, amqp)
+    const amqp = createAmqpNode(RED, this, config)
     const inputListener = async (
       msg: NodeMessageInFlow & { payload?: { reconnectCall?: boolean } },
       _: unknown,

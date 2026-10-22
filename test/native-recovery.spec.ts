@@ -60,17 +60,17 @@ describe('native recovery ownership', () => {
     expect(broker.nodeStates.out).not.to.equal('connected')
     const first = await recover()
     expect(first.createConfirmChannel.callCount).to.equal(1)
-    expect(input.amqp.getChannel().consume.callCount).to.equal(1)
+    expect(input.amqp.channel.consume.callCount).to.equal(1)
     wrapper.emit('disconnect', new Error('outage'))
     expect(broker.nodeStates).to.deep.equal({ out: 'disconnected', in: 'disconnected' })
     wrapper.emit('connect-failed', new Error('still unavailable'))
     expect(broker.nodeStates.out).to.equal('errored')
     const second = await recover()
     expect(second.createConfirmChannel.callCount).to.equal(1)
-    expect(input.amqp.getChannel().bindQueue.callCount).to.equal(1)
-    expect(input.amqp.getChannel().consume.callCount).to.equal(1)
+    expect(input.amqp.channel.bindQueue.callCount).to.equal(1)
+    expect(input.amqp.channel.consume.callCount).to.equal(1)
     await out.amqp.publish('after recovery')
-    expect(out.amqp.getChannel().waitForConfirms.callCount).to.equal(1)
+    expect(out.amqp.channel.waitForConfirms.callCount).to.equal(1)
     expect(broker.nodeStates).to.deep.equal({ out: 'connected', in: 'connected' })
     expect(broker.lastError).to.deep.equal({})
   })
@@ -91,7 +91,7 @@ describe('native recovery ownership', () => {
     await amqp.connect()
     await recover()
     let finish
-    amqp.getChannel().close.callsFake(() => new Promise(resolve => { finish = resolve }))
+    amqp.channel.close.callsFake(() => new Promise(resolve => { finish = resolve }))
     const closing = amqp.close()
     await new Promise(resolve => setImmediate(resolve))
     expect(wrapper.close.called).to.equal(false)
@@ -104,7 +104,7 @@ describe('native recovery ownership', () => {
     await Promise.all([first.connect(), last.connect()])
     await recover()
     let finish
-    first.getChannel().close.callsFake(() => new Promise(resolve => { finish = resolve }))
+    first.channel.close.callsFake(() => new Promise(resolve => { finish = resolve }))
     const closing = Promise.all([first.close(), last.close()])
     await new Promise(resolve => setImmediate(resolve))
     expect(wrapper.close.called).to.equal(false)
@@ -144,18 +144,18 @@ describe('native recovery ownership', () => {
       expect(raw.close.called).to.equal(false)
       expect(wrapper.close.called).to.equal(false)
       await out.publish('healthy publisher')
-      expect(out.getChannel().publish.callCount).to.equal(1)
+      expect(out.channel.publish.callCount).to.equal(1)
       wrapper.emit('disconnect', new Error('transport lost'))
       await recover()
       expect(broker.nodeStates).to.deep.equal({ out: 'connected', in: 'connected' })
-      expect(input.getChannel().consume.callCount).to.equal(1)
+      expect(input.channel.consume.callCount).to.equal(1)
     })
   }
   it('rejects publishes during disconnection and surfaces uncertain confirms without replay', async () => {
     const { amqp } = client('out', { waitForConfirms: true })
     await amqp.connect()
     await recover()
-    const old = amqp.getChannel()
+    const old = amqp.channel
     old.waitForConfirms.rejects(new Error('channel closed before confirmation'))
     try { await amqp.publish('uncertain'); expect.fail() } catch (error) {
       expect(error.message).to.include('before confirmation')
@@ -165,7 +165,7 @@ describe('native recovery ownership', () => {
       expect(error.message).to.include('not ready')
     }
     await recover()
-    expect(amqp.getChannel().publish.called).to.equal(false)
+    expect(amqp.channel.publish.called).to.equal(false)
   })
   it('restores owners joining an already connected pool without reopening the transport', async () => {
     await client('first').amqp.connect()
@@ -174,7 +174,7 @@ describe('native recovery ownership', () => {
     await late.amqp.connect()
     expect(connect.callCount).to.equal(1)
     expect(raw.createChannel.callCount).to.equal(2)
-    expect(late.amqp.getChannel().consume.callCount).to.equal(1)
+    expect(late.amqp.channel.consume.callCount).to.equal(1)
     expect(broker.nodeStates.late).to.equal('connected')
   })
   it('includes a new owner while another owner is setting up', async () => {
@@ -233,7 +233,7 @@ describe('native recovery ownership', () => {
     const { amqp } = client('one')
     await amqp.connect()
     const raw = await recover()
-    amqp.getChannel().emit('close')
+    amqp.channel.emit('close')
     await amqp.reconnect()
     expect(raw.close.callCount).to.equal(1)
     expect(connect.callCount).to.equal(1)
@@ -277,7 +277,7 @@ describe('native recovery ownership', () => {
     await new Promise(resolve => setImmediate(resolve))
     await amqp.setVhost('replacement')
     await recover()
-    const replacement = amqp.getChannel()
+    const replacement = amqp.channel
     finish(pending)
     await setup
     expect(pending.close.callCount).to.equal(1)

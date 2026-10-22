@@ -105,21 +105,7 @@ export default class Amqp {
   public async connect(): Promise<RecoveringChannelModel> {
     const { broker } = this.config
 
-    // wtf happened to the types?
-    // @ts-expect-error
-    this.broker = this.RED.nodes.getNode(broker)
-
-    if (!this.broker) {
-      const err = new Error(`AMQP broker node not found: ${broker}`)
-      this.node.error(err.message)
-      throw err
-    }
-
-    const brokerConfig: BrokerConfig = {
-      ...(this.broker as unknown as BrokerConfig),
-      vhost:
-        this.vhostOverride ?? (this.broker as unknown as BrokerConfig).vhost,
-    }
+    const brokerConfig = this.getBrokerConfig()
 
     const brokerUrl = this.getBrokerUrl(brokerConfig)
     const { host, port, vhost } = brokerConfig
@@ -139,44 +125,66 @@ export default class Amqp {
     this.poolEntry = entry
     this.poolKey = key
     const generation = this.generation
+    const isCurrentAttempt = () =>
+      !this.closed && generation === this.generation
     try {
       const connection = await entry.add(this.recoveryOwner)
-      if (!this.closed && generation === this.generation)
-        this.connection = connection
+      if (isCurrentAttempt()) this.connection = connection
       return connection
     } catch (error) {
       if (this.poolEntry === entry) {
         await this.releaseConnection().catch(() => undefined)
       }
-      if (!this.closed && generation === this.generation) {
+      if (isCurrentAttempt()) {
         this.setBrokerNodeState('errored', error)
       }
       throw error
     }
   }
 
+  private getBrokerConfig(): BrokerConfig {
+    // wtf happened to the types?
+    // @ts-expect-error
+    this.broker = this.RED.nodes.getNode(this.config.broker)
+
+    if (!this.broker) {
+      const err = new Error(`AMQP broker node not found: ${this.config.broker}`)
+      this.node.error(err.message)
+      throw err
+    }
+
+    return {
+      ...(this.broker as unknown as BrokerConfig),
+      vhost:
+        this.vhostOverride ?? (this.broker as unknown as BrokerConfig).vhost,
+    }
+  }
+
   private async restore(model: ChannelModel): Promise<void> {
     if (this.closed) return
     const generation = this.generation
+    const cancelled = () => this.closed || generation !== this.generation
+    const ownsSetup = () =>
+      generation === this.generation && this.channelModel === model
     this.ready = false
     this.setupFailure = undefined
     this.clearRpcTimeouts()
     await this.closeChannel()
-    if (this.closed || generation !== this.generation) return
+    if (cancelled()) return
     this.channelModel = model
     this.settingUp = true
     try {
       await this.initialize()
-      if (this.closed || generation !== this.generation) return
+      if (cancelled()) return
       if (this.node.type !== NodeType.AmqpOut) await this.consume()
       if (this.setupFailure) throw this.setupFailure
     } catch (error) {
-      if (generation === this.generation && this.channelModel === model) {
+      if (ownsSetup()) {
         await this.closeChannel()
       }
       throw error
     } finally {
-      if (generation === this.generation && this.channelModel === model) {
+      if (ownsSetup()) {
         this.settingUp = false
       }
     }
@@ -293,14 +301,6 @@ export default class Amqp {
       this.node.error(`Could not switch vhost: ${e}`)
       throw e
     }
-  }
-
-  public getConnection(): RecoveringChannelModel {
-    return this.connection
-  }
-
-  public getChannel(): Channel {
-    return this.channel
   }
 
   public ack(msg: AssembledMessage): void {

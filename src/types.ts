@@ -114,13 +114,6 @@ export enum ManualAckType {
   Reject = 'reject',
 }
 
-export enum ErrorType {
-  InvalidLogin = 'EACCES',
-  ConnectionRefused = 'ECONNREFUSED',
-  DnsResolve = 'EAI_AGAIN',
-  HostNotFound = 'ENOTFOUND',
-}
-
 export enum NodeType {
   AmqpIn = 'amqp-in',
   AmqpOut = 'amqp-out',
@@ -139,10 +132,4 @@ export enum DefaultExchangeName {
   Fanout = 'amq.fanout',
   Topic = 'amq.topic',
   Headers = 'amq.headers',
-}
-
-export enum ErrorLocationEnum {
-  ConnectError = 'ConnectError',
-  ConnectionErrorEvent = 'ConnectionErrorEvent',
-  ChannelErrorEvent = 'ChannelErrorEvent',
 }

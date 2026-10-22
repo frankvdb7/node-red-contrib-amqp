@@ -1,11 +1,12 @@
-import type { Node } from 'node-red'
-import type Amqp from './Amqp'
+import type { EditorNodeProperties, Node, NodeRedApp } from 'node-red'
+import Amqp from './Amqp'
 import { NODE_STATUS } from './constants'
+import type { AmqpInNodeDefaults, AmqpOutNodeDefaults } from './types'
 
 export const toError = (value: unknown): Error =>
   value instanceof Error ? value : new Error(String(value))
 
-export function startNode(node: Node, amqp: Amqp): void {
+function startNode(node: Node, amqp: Amqp): void {
   let closing = false
   node.status(NODE_STATUS.Disconnected)
   node.on('close', async (removed: boolean, done: (error?: Error) => void) => {
@@ -25,4 +26,20 @@ export function startNode(node: Node, amqp: Amqp): void {
       node.error(`Could not initialize AMQP: ${error}`)
     }
   })
+}
+
+export function createAmqpNode(
+  RED: NodeRedApp,
+  node: Node,
+  config: EditorNodeProperties,
+): Amqp {
+  // @ts-expect-error Node-RED supplies the runtime node instance.
+  RED.nodes.createNode(node, config)
+  const amqp = new Amqp(
+    RED,
+    node,
+    config as AmqpInNodeDefaults & AmqpOutNodeDefaults,
+  )
+  startNode(node, amqp)
+  return amqp
 }
