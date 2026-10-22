@@ -196,9 +196,25 @@ The initial suite covers real publish/consume, publisher confirms, classic and
 quorum declarations, consume-only topology, manual ack and nack/requeue, health
 and consumer shutdown. Delivery, publisher confirmation and acknowledgement are
 separate assertions; these tests do not promise exactly-once processing. Known
-reliability regressions are explicitly pending with issue references. RPC,
-dead-letter rejection and outage/recovery scenarios remain follow-up coverage
-under #192.
+reliability regressions are explicitly pending with issue references. Startup and
+sustained broker outages are covered; RPC and dead-letter rejection remain
+follow-up coverage under #192.
+
+The integration suite reports these seven known risks as pending, separately from
+passing tests. They remain unresolved until their dedicated fixes land.
+
+| Issue | Pending reliability behavior |
+| --- | --- |
+| [#183](https://github.com/frankvdb7/node-red-contrib-amqp/issues/183) | Isolate concurrent `msg.vhost` routing. |
+| [#184](https://github.com/frankvdb7/node-red-contrib-amqp/issues/184) | Keep shared connections alive when one node closes. |
+| [#185](https://github.com/frankvdb7/node-red-contrib-amqp/issues/185) | Reject stale manual acknowledgements after channel replacement. |
+| [#186](https://github.com/frankvdb7/node-red-contrib-amqp/issues/186) | Validate invalid quorum declarations. |
+| [#187](https://github.com/frankvdb7/node-red-contrib-amqp/issues/187) | Preserve non-RPC `correlationId` and `replyTo`. |
+| [#188](https://github.com/frankvdb7/node-red-contrib-amqp/issues/188) | Report mandatory publisher returns. |
+| [#189](https://github.com/frankvdb7/node-red-contrib-amqp/issues/189) | Handle publisher backpressure and closed channels. |
+
+In particular, recovery coverage does not establish that manual acknowledgements
+from an earlier channel are safe after replacement. That remains tracked by #185.
 
 - The test suite currently has known pre-existing failures.
 - Changes should not add new test failures.
