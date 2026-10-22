@@ -135,12 +135,13 @@ export default class SharedConnection {
   private async attach(owner: ConnectionOwner): Promise<void> {
     const model = this.model
     if (!model || !this.owners.has(owner)) return
-    const succeeded = await this.setupOwner(owner, model)
+    const setup = this.setupOwner(owner, model)
+    const succeeded = await setup
     if (
       succeeded &&
       this.ready &&
       this.model === model &&
-      this.owners.has(owner)
+      this.owners.get(owner) === setup
     )
       owner.connected()
   }
@@ -155,7 +156,8 @@ export default class SharedConnection {
         () => true,
         error => {
           // A topology error belongs to this node, not to the shared transport.
-          if (this.owners.has(owner)) owner.failed(error)
+          if (this.model === model && this.owners.get(owner) === setup)
+            owner.failed(error)
           return false
         },
       )

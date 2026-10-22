@@ -328,6 +328,53 @@ describe('native recovery ownership', () => {
     expect(broker.nodeStates).to.deep.equal({ first: 'connected', late: 'connected' })
     expect(raw.createConfirmChannel.callCount).to.equal(1)
   })
+  for (const [phase, outcome] of [['channel', 'reject'], ['channel', 'resolve'], ['prefetch', 'reject'], ['prefetch', 'resolve'], ['queue', 'resolve'], ['binding', 'resolve']]) {
+    it(`ignores stale late-owner ${phase} ${outcome} after a replacement connection recovers`, async () => {
+      await client('peer').amqp.connect()
+      const previous = await recover(), oldChannel = channel()
+      let finish
+      const pending = () => new Promise((resolve, reject) => {
+        finish = () => outcome === 'reject'
+          ? reject(new Error('stale setup failed'))
+          : resolve(phase === 'channel' ? oldChannel : { queue: 'stale-queue' })
+      })
+      if (phase === 'channel') previous.createConfirmChannel.callsFake(pending)
+      else if (phase === 'prefetch') {
+        oldChannel.prefetch.callsFake(pending)
+        previous.createConfirmChannel.resolves(oldChannel)
+      } else {
+        if (phase === 'queue') oldChannel.assertQueue.callsFake(pending)
+        else oldChannel.bindQueue.callsFake(pending)
+        previous.createChannel.resolves(oldChannel)
+      }
+      const consuming = phase === 'queue' || phase === 'binding'
+      const late = client('late', { type: consuming ? 'amqp-in' : 'amqp-out',
+        waitForConfirms: !consuming, autoCreateQueue: true, autoCreateExchangeBindings: true })
+      const joining = late.amqp.connect()
+      await new Promise(resolve => setImmediate(resolve))
+      wrapper.emit('disconnect', new Error('transport lost during late setup'))
+      await recover()
+      await new Promise(resolve => setImmediate(resolve))
+      const replacement = late.amqp.channel
+      expect(broker.nodeStates.late).to.equal('connected')
+      late.node.warn.resetHistory()
+      finish()
+      await joining
+      expect(broker.nodeStates.late).to.equal('connected')
+      expect(late.node.warn.called).to.equal(false)
+      expect(late.amqp.channel).to.equal(replacement)
+      expect(replacement.close.called).to.equal(false)
+      expect(replacement.assertExchange.calledOnce).to.equal(true)
+      if (consuming) {
+        expect(late.amqp.q.queue).to.equal('generated')
+        expect(replacement.bindQueue.calledOnce).to.equal(true)
+        expect(replacement.consume.calledOnce).to.equal(true)
+      } else {
+        await late.amqp.publish('replacement still operational')
+        expect(replacement.waitForConfirms.calledOnce).to.equal(true)
+      }
+    })
+  }
   for (const type of ['amqp-out', 'amqp-in']) {
     it(`rejects shared setup when a restored ${type} channel closes while a peer is still initializing`, async () => {
       const first = client('first', { type, queueName: 'first', waitForConfirms: type === 'amqp-out' })

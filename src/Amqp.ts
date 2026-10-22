@@ -40,6 +40,7 @@ export default class Amqp {
   private channelModel?: ChannelModel
   private ready = false
   private generation = 0
+  private restoreGeneration = 0
   private setupFailure?: Error
   private settingUp = false
   private readonly recoveryOwner: ConnectionOwner = {
@@ -162,9 +163,12 @@ export default class Amqp {
   private async restore(model: ChannelModel): Promise<void> {
     if (this.closed) return
     const generation = this.generation
-    const cancelled = () => this.closed || generation !== this.generation
-    const ownsSetup = () =>
-      generation === this.generation && this.channelModel === model
+    const restoreGeneration = ++this.restoreGeneration
+    const cancelled = () =>
+      this.closed ||
+      generation !== this.generation ||
+      restoreGeneration !== this.restoreGeneration
+    const ownsSetup = () => !cancelled() && this.channelModel === model
     this.ready = false
     this.setupFailure = undefined
     this.clearRpcTimeouts()
@@ -228,11 +232,11 @@ export default class Amqp {
   }
 
   public async initialize(): Promise<Channel> {
-    await this.createChannel()
+    const channel = await this.createChannel()
     if (this.shouldAutoCreateExchangeBindings()) {
-      await this.assertExchange()
+      await this.assertExchange(channel)
     }
-    return this.channel
+    return channel
   }
 
   public async consume(): Promise<void> {
@@ -248,7 +252,8 @@ export default class Amqp {
       if (this.shouldAutoCreateExchangeBindings()) {
         await this.bindQueue()
       }
-      await this.channel.consume(
+      this.assertCurrentChannel(channel)
+      await channel.consume(
         this.q.queue,
         amqpMessage => {
           if (this.closed || this.channel !== channel) return
@@ -694,10 +699,15 @@ export default class Amqp {
 
     const model = this.channelModel || this.connection
     const generation = this.generation
+    const restoreGeneration = this.restoreGeneration
     const channel = await (waitForConfirms
       ? model.createConfirmChannel()
       : model.createChannel())
-    if (this.closed || generation !== this.generation) {
+    if (
+      this.closed ||
+      generation !== this.generation ||
+      restoreGeneration !== this.restoreGeneration
+    ) {
       await channel.close()
       throw new Error('AMQP channel setup cancelled')
     }
@@ -730,15 +740,21 @@ export default class Amqp {
     this.channel.on('error', this.channelErrorHandler)
     this.channel.on('close', this.channelCloseHandler)
     this.channel.on('return', this.channelReturnHandler)
-    await this.channel.prefetch(Number(prefetch))
+    await channel.prefetch(Number(prefetch))
+    this.assertCurrentChannel(channel)
 
-    return this.channel
+    return channel
   }
 
-  private async assertExchange(): Promise<void> {
+  private assertCurrentChannel(channel: Channel): void {
+    if (this.channel !== channel)
+      throw new Error('AMQP channel setup cancelled')
+  }
+
+  private async assertExchange(channel = this.channel): Promise<void> {
     const { name, type, durable } = this.config.exchange
     if (name) {
-      await this.channel.assertExchange(name, type, {
+      await channel.assertExchange(name, type, {
         durable,
       })
     }
@@ -749,7 +765,8 @@ export default class Amqp {
     const { name, exclusive, durable, autoDelete, queueType, queueArguments } =
       queue
 
-    this.q = await this.channel.assertQueue(name, {
+    const channel = this.channel
+    const queueResult = await channel.assertQueue(name, {
       exclusive,
       durable,
       autoDelete,
@@ -758,6 +775,8 @@ export default class Amqp {
         ...(queueArguments || {}),
       },
     })
+    this.assertCurrentChannel(channel)
+    this.q = queueResult
 
     return name
   }
