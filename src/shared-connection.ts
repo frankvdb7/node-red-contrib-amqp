@@ -111,9 +111,9 @@ export default class SharedConnection {
     if (this.stopped) return
     this.model = model
     this.ready = false
-    // Recovery attaches its raw-model error listener only after setup completes.
+    // Forward setup errors ourselves; native recovery forwards them once connected.
     model.on('error', error => {
-      if (this.model === model) this.notify('failed', error)
+      if (this.model === model && !this.ready) this.notify('failed', error)
     })
     model.once('close', () => {
       if (this.model === model) this.invalidate()

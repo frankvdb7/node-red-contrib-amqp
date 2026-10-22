@@ -53,6 +53,44 @@ describe('native recovery ownership', () => {
     expect(options.jitter).to.be.greaterThan(0)
     expect(connect.firstCall.args[0]).to.equal('amqp://username:password@host:222/')
   })
+  it('reports an established raw connection error once per shared owner through native forwarding', async () => {
+    const owners = [client('one'), client('two')]
+    await Promise.all(owners.map(({ amqp }) => amqp.connect()))
+    const raw = await recover()
+    await new Promise(resolve => setImmediate(resolve))
+    // amqplib installs this forwarding listener after its setup callback resolves.
+    raw.on('error', error => wrapper.emit('error', error))
+    const error = new Error('established transport error')
+    for (const { node } of owners) {
+      node.warn.resetHistory()
+      node.status.resetHistory()
+    }
+    raw.emit('error', error)
+    for (const { node } of owners) {
+      expect(node.warn.args).to.deep.equal([['AMQP recovery: established transport error']])
+      expect(node.status.callCount).to.equal(2)
+      expect(node.status.calledWithMatch({ text: 'Error' })).to.equal(true)
+      expect(broker.lastError[node.id].message).to.equal(error.message)
+    }
+  })
+  it('forwards raw connection errors during setup before native forwarding is attached', async () => {
+    const owners = [client('one'), client('two')]
+    await Promise.all(owners.map(({ amqp }) => amqp.connect()))
+    const raw = model()
+    let finish
+    raw.createChannel.callsFake(() => new Promise(resolve => { finish = resolve }))
+    raw.createChannel.onSecondCall().resolves(channel())
+    const setup = options.setup(raw)
+    await new Promise(resolve => setImmediate(resolve))
+    const error = new Error('setup transport error')
+    raw.emit('error', error)
+    finish(channel())
+    await setup
+    for (const { node } of owners) {
+      expect(node.warn.args).to.deep.equal([['AMQP recovery: setup transport error']])
+      expect(broker.lastError[node.id].message).to.equal(error.message)
+    }
+  })
   it('shares concurrent startup and restores every owner including confirm channels and consumers', async () => {
     const out = client('out', { waitForConfirms: true })
     const input = client('in', { type: 'amqp-in', autoCreateQueue: true, autoCreateExchangeBindings: true })
