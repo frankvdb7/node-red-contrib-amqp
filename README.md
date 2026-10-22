@@ -89,7 +89,7 @@ Example response:
 
 - Reconnect loops:
   - Verify host/port/TLS/vhost values and broker reachability.
-  - Check whether `reconnectOnError` is enabled when desired.
+  - Recovery is always enabled, including when the broker is unavailable at startup.
 - Login or permission errors:
   - Confirm credentials and vhost access rights on the broker.
 - Queue type mismatch:
@@ -98,11 +98,35 @@ Example response:
   - Verify consumer sends replies using `replyTo` and `correlationId`.
   - Increase `rpcTimeoutMilliseconds` for slower consumers.
 
+### Automatic recovery
+
+The nodes use amqplib native recovery with unlimited retries and exponential backoff
+from 1 second to 30 seconds with 20% jitter. Each successful connection recreates
+channels, topology and consumers before reporting Connected or healthy. Nodes sharing
+a broker and vhost share one recovering connection. Closing a node releases only its
+resources; the last node closing cancels native recovery.
+
+A topology setup failure marks only the affected node as errored. Healthy nodes on
+the shared connection remain usable. Failed setup is attempted again on the next
+native connection recovery or a manual reconnect request.
+
+Publishing while disconnected fails through the node's error/completion path. Recovery
+does not replay messages or guarantee delivery of a publish whose confirmation was
+interrupted. Applications must handle such uncertain outcomes themselves.
+
+Inbound `msg.payload.reconnectCall` remains a manual recovery request. While connected,
+it closes the shared transport to trigger native recovery for its broker/vhost. During
+an outage it leaves the existing native retry schedule running. Completion acknowledges
+the request, not broker readiness.
+
+Older flows with the removed reconnect checkbox still load; the saved property is
+ignored. Recovery is now always enabled.
+
 ### Migration Notes
 
 When importing older flows, ensure node configs include current fields:
 
-- `amqp-out`: `exchangeRoutingKeyType`, `waitForConfirms`, `reconnectOnError`
+- `amqp-out`: `exchangeRoutingKeyType`, `waitForConfirms`
 - `amqp-in` and `amqp-in-manual-ack`: `queueType`, `queueArguments`
 - JSON fields such as `headers` should be valid JSON strings (for example `"{}"`).
 

@@ -30,7 +30,6 @@ export interface AmqpConfig {
   name?: string
   broker: string
   prefetch: number
-  reconnectOnError?: boolean
   noAck: boolean
   waitForConfirms?: boolean
   exchange: {
@@ -59,7 +58,6 @@ export interface AmqpInNodeDefaults {
   name?: string
   broker?: string
   prefetch?: number
-  reconnectOnError?: boolean
   noAck?: boolean
   exchangeName?: string
   exchangeType?: ExchangeType

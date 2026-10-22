@@ -26,7 +26,6 @@
         "6d2ea4fe.b5731c"
       ]
     ],
-    "reconnectOnError": false,
     "exchangeRoutingKeyType": "str",
     "waitForConfirms": false
   },
@@ -37,7 +36,6 @@
     "name": "Listening for RPC",
     "broker": "3efe01c6.16a3de",
     "prefetch": 0,
-    "reconnectOnError": false,
     "noAck": true,
     "exchangeName": "amq.direct",
     "exchangeType": "direct",
@@ -99,7 +97,6 @@
     "x": 600,
     "y": 280,
     "wires": [],
-    "reconnectOnError": false,
     "exchangeRoutingKeyType": "str",
     "waitForConfirms": false
   },
