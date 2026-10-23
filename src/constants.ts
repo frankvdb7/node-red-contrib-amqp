@@ -7,4 +7,9 @@ export const NODE_STATUS: { [index: string]: NodeStatus } = Object.freeze({
   Disconnected: { fill: 'grey', shape: 'ring', text: 'Disconnected' },
   Error: { fill: 'red', shape: 'dot', text: 'Error' },
   Invalid: { fill: 'red', shape: 'ring', text: 'Unable to connect' },
+  PublishingBlocked: {
+    fill: 'yellow',
+    shape: 'ring',
+    text: 'Publishing blocked',
+  },
 })

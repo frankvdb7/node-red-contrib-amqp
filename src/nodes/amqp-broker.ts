@@ -24,6 +24,7 @@ export = (RED: NodeAPI): void => {
     this.credsFromSettings = n.credsFromSettings
     this.nodeStates = n.nodeStates || {}
     this.lastError = n.lastError || {}
+    this.publishBlocked = {}
     brokerNodes.push(this)
 
     this.on('close', () => {
@@ -58,6 +59,7 @@ export = (RED: NodeAPI): void => {
         name: string
         status: BrokerNodeState
         lastError?: AmqpBrokerNode['lastError']
+        publishBlocked?: AmqpBrokerNode['publishBlocked']
       } = {
         id: brokerNode.id,
         name: brokerNode.name,
@@ -70,16 +72,29 @@ export = (RED: NodeAPI): void => {
         brokerStatus.lastError = activeLastError
       }
 
+      const publishBlocked = getEffectivePublishBlocks(brokerNode)
+      if (Object.keys(publishBlocked).length > 0) {
+        brokerStatus.publishBlocked = publishBlocked
+      }
+
       return brokerStatus
     })
 
     const hasBrokers = brokerStatuses.length > 0
     const allConnected =
       hasBrokers && brokerStatuses.every(b => b.status === 'connected')
+    const hasBlockedPublishers = brokerStatuses.some(
+      broker => Object.keys(broker.publishBlocked || {}).length > 0,
+    )
 
-    const statusCode = allConnected ? 200 : 503
+    const healthy = allConnected && !hasBlockedPublishers
+    const statusCode = healthy ? 200 : 503
     const response = {
-      overallStatus: allConnected ? 'healthy' : 'unhealthy',
+      overallStatus: healthy
+        ? 'healthy'
+        : allConnected && hasBlockedPublishers
+          ? 'degraded'
+          : 'unhealthy',
       brokers: brokerStatuses,
     }
 
@@ -117,5 +132,22 @@ export = (RED: NodeAPI): void => {
     })
 
     return filtered
+  }
+
+  function getEffectivePublishBlocks(
+    brokerNode: AmqpBrokerNode,
+  ): AmqpBrokerNode['publishBlocked'] {
+    const blocked: AmqpBrokerNode['publishBlocked'] = {}
+    RED.nodes.eachNode(node => {
+      if (
+        node.type === NodeType.AmqpOut &&
+        'broker' in node &&
+        node.broker === brokerNode.id
+      ) {
+        const reason = brokerNode.publishBlocked?.[node.id]
+        if (reason !== undefined) blocked[node.id] = reason
+      }
+    })
+    return blocked
   }
 }

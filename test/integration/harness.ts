@@ -70,6 +70,19 @@ class Harness {
     await this.observe()
   }
 
+  async setMemoryAlarm(active) {
+    const result = await this.container.exec([
+      'rabbitmqctl', 'set_vm_memory_high_watermark', active ? '0' : '0.6',
+    ])
+    if (result.exitCode !== 0) throw new Error(result.output)
+  }
+
+  async hasMemoryAlarm() {
+    const result = await this.container.exec(['rabbitmq-diagnostics', '-q', 'alarms'])
+    if (result.exitCode !== 0) throw new Error(result.output)
+    return result.output.includes('Memory alarm on node')
+  }
+
   async stop() {
     try {
       await this.connection?.close()

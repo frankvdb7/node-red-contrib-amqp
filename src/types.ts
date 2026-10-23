@@ -27,6 +27,7 @@ export interface BrokerConfig
 export interface AmqpBrokerNode extends BrokerConfig {
   nodeStates: Record<string, BrokerNodeState>
   lastError: Record<string, BrokerNodeError>
+  publishBlocked: Record<string, string>
 }
 
 export type AmqpBrokerNodeDef = NodeDef &

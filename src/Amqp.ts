@@ -42,6 +42,7 @@ export default class Amqp {
   private restoreGeneration = 0
   private setupFailure?: Error
   private settingUp = false
+  private publishingBlockedReason?: string
   private readonly recoveryOwner: ConnectionOwner = {
     queueName: () => {
       if (this.node.type === NodeType.AmqpOut) return undefined
@@ -52,6 +53,8 @@ export default class Amqp {
       if (!this.closed) this.markConnected()
     },
     disconnected: error => this.disconnected(error),
+    blocked: reason => this.publishingBlocked(reason),
+    unblocked: () => this.publishingUnblocked(),
     failed: error => {
       this.disconnected(error)
       this.setBrokerNodeState('errored', error)
@@ -173,6 +176,7 @@ export default class Amqp {
       restoreGeneration !== this.restoreGeneration
     const ownsSetup = () => !cancelled() && this.channelModel === model
     this.ready = false
+    this.clearPublishingBlock()
     this.setupFailure = undefined
     this.clearRpcTimeouts()
     await this.closeChannel()
@@ -199,6 +203,7 @@ export default class Amqp {
   private disconnected(error: unknown): void {
     if (this.closed) return
     this.ready = false
+    this.clearPublishingBlock()
     if (this.rpcTimeouts.size) {
       this.node.error(
         'AMQP connection lost before RPC replies; pending requests cancelled',
@@ -232,6 +237,7 @@ export default class Amqp {
     if (this.broker.lastError) {
       delete this.broker.lastError[this.node.id]
     }
+    this.clearPublishingBlock()
   }
 
   public async initialize(): Promise<Channel> {
@@ -694,6 +700,7 @@ export default class Amqp {
     const key = this.poolKey
     this.poolEntry = undefined
     this.poolKey = undefined
+    this.clearPublishingBlock()
     this.setBrokerNodeState('disconnected')
     this.node.status(NODE_STATUS.Disconnected)
     if (!entry) {
@@ -929,6 +936,39 @@ export default class Amqp {
       this.broker.lastError[this.node.id] = this.toBrokerNodeError(error)
     } else if (state === 'connected') {
       delete this.broker.lastError[this.node.id]
+    }
+  }
+
+  private publishingBlocked(reason: string): void {
+    if (
+      this.closed ||
+      !this.ready ||
+      this.node.type !== NodeType.AmqpOut ||
+      this.publishingBlockedReason === reason
+    ) {
+      return
+    }
+
+    this.publishingBlockedReason = reason
+    if (!this.broker.publishBlocked) this.broker.publishBlocked = {}
+    this.broker.publishBlocked[this.node.id] = reason
+    this.node.status(NODE_STATUS.PublishingBlocked)
+    this.node.warn(`AMQP publishing blocked: ${reason}`)
+  }
+
+  private publishingUnblocked(): void {
+    if (this.node.type !== NodeType.AmqpOut) return
+    const wasBlocked = this.publishingBlockedReason !== undefined
+    this.clearPublishingBlock()
+    if (wasBlocked && !this.closed && this.ready) {
+      this.node.status(NODE_STATUS.Connected)
+    }
+  }
+
+  private clearPublishingBlock(): void {
+    this.publishingBlockedReason = undefined
+    if (this.broker?.publishBlocked) {
+      delete this.broker.publishBlocked[this.node.id]
     }
   }
 

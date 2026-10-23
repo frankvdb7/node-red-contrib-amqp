@@ -67,10 +67,32 @@ Sample flows are provided in [`examples/`](./examples):
 
 The broker config node exposes `/amqp-broker/health` from Node-RED admin HTTP:
 
-- Returns HTTP `200` when all known brokers are connected.
-- Returns HTTP `503` when one or more brokers are not connected.
+- Returns HTTP `200` when all known brokers are connected and no publisher is blocked.
+- Returns HTTP `503` when a broker is not connected or a publisher is blocked.
 
-Example response:
+`status: "connected"` describes the transport and node setup. When RabbitMQ blocks
+publishing, the broker remains connected, `overallStatus` becomes `"degraded"`, and
+`publishBlocked` lists the affected publisher node IDs and the broker-provided reason:
+
+A blocked response looks like this:
+
+```json
+{
+  "overallStatus": "degraded",
+  "brokers": [
+    {
+      "id": "broker-node-id",
+      "name": "Primary RabbitMQ",
+      "status": "connected",
+      "publishBlocked": {
+        "publisher-node-id": "low on memory"
+      }
+    }
+  ]
+}
+```
+
+A healthy response looks like this:
 
 ```json
 {

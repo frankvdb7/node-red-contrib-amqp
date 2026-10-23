@@ -60,6 +60,97 @@ describe('Node-RED native recovery lifecycle', () => {
       })
     }
   }
+  it('reports shared publisher blocking while consumers remain connected', async () => {
+    await helper.load(modules, [
+      { id: 'broker', type: 'amqp-broker', name: 'RabbitMQ', host: 'localhost', port: 5672, vhost: '/' },
+      { id: 'publisher1', type: 'amqp-out', broker: 'broker' },
+      { id: 'publisher2', type: 'amqp-out', broker: 'broker' },
+      { id: 'consumer', type: 'amqp-in', broker: 'broker', queueName: 'test' },
+    ], { broker: { username: 'user', password: 'pass' } })
+    const publishers = ['publisher1', 'publisher2'].map(id => helper.getNode(id))
+    const publisherStatuses = publishers.map(() => [])
+    const publisherWarnings = publishers.map(() => [])
+    publishers.forEach((node, index) => {
+      node.on('call:status', call => publisherStatuses[index].push(call.args[0]))
+      node.on('call:warn', call => publisherWarnings[index].push(call.args[0]))
+    })
+    const consumerStatuses = []
+    helper.getNode('consumer').on('call:status', call => consumerStatuses.push(call.args[0]))
+
+    const raw = rawModel()
+    await options.setup(raw)
+    wrapper.emit('connect', raw)
+    await new Promise(resolve => setImmediate(resolve))
+    expect((await helper.request().get('/amqp-broker/health')).status).to.equal(200)
+    expect(wrapper.listenerCount('blocked')).to.equal(1)
+    expect(wrapper.listenerCount('unblocked')).to.equal(1)
+
+    wrapper.emit('blocked', 'low on memory')
+    wrapper.emit('blocked', 'low on memory')
+    const blocked = await helper.request().get('/amqp-broker/health')
+    expect(blocked.status).to.equal(503)
+    expect(blocked.body).to.deep.equal({
+      overallStatus: 'degraded',
+      brokers: [{
+        id: 'broker',
+        name: 'RabbitMQ',
+        status: 'connected',
+        publishBlocked: { publisher1: 'low on memory', publisher2: 'low on memory' },
+      }],
+    })
+    expect(publisherStatuses.map(statuses => statuses.at(-1).text)).to.deep.equal([
+      'Publishing blocked', 'Publishing blocked',
+    ])
+    expect(publisherWarnings.map(warnings => warnings)).to.deep.equal([
+      ['AMQP publishing blocked: low on memory'],
+      ['AMQP publishing blocked: low on memory'],
+    ])
+    expect(consumerStatuses.some(status => status.text === 'Connected')).to.equal(true)
+    expect(consumerStatuses.some(status => status.text === 'Publishing blocked')).to.equal(false)
+
+    wrapper.emit('unblocked')
+    expect((await helper.request().get('/amqp-broker/health')).status).to.equal(200)
+    expect(publisherStatuses.map(statuses => statuses.at(-1).text)).to.deep.equal([
+      'Connected', 'Connected',
+    ])
+
+    await helper.unload()
+    expect(wrapper.listenerCount('blocked')).to.equal(0)
+    expect(wrapper.listenerCount('unblocked')).to.equal(0)
+  })
+  it('clears blocked publisher state on disconnect and does not restore health before recovery', async () => {
+    await load('amqp-out', false)
+    const publisher = helper.getNode('node'), statuses = []
+    publisher.on('call:status', call => statuses.push(call.args[0]))
+    const first = rawModel()
+    await options.setup(first)
+    wrapper.emit('connect', first)
+    await new Promise(resolve => setImmediate(resolve))
+
+    wrapper.emit('blocked', 'disk alarm')
+    expect((await helper.request().get('/amqp-broker/health')).body.overallStatus).to.equal('degraded')
+    wrapper.emit('disconnect', new Error('connection lost'))
+    const disconnected = await helper.request().get('/amqp-broker/health')
+    expect(disconnected.status).to.equal(503)
+    expect(disconnected.body.overallStatus).to.equal('unhealthy')
+    expect(disconnected.body.brokers[0].status).to.equal('disconnected')
+    expect(disconnected.body.brokers[0]).not.to.have.property('publishBlocked')
+    expect(disconnected.body.brokers[0].lastError.node.message).to.equal('connection lost')
+    expect(statuses.at(-1).text).to.equal('Disconnected')
+    wrapper.emit('unblocked')
+    expect((await helper.request().get('/amqp-broker/health')).status).to.equal(503)
+
+    const recovered = rawModel()
+    await options.setup(recovered)
+    wrapper.emit('connect', recovered)
+    await new Promise(resolve => setImmediate(resolve))
+    const recoveredHealth = await helper.request().get('/amqp-broker/health')
+    expect(recoveredHealth.status).to.equal(200)
+    expect(recoveredHealth.body.overallStatus).to.equal('healthy')
+    expect(recoveredHealth.body.brokers[0].status).to.equal('connected')
+    expect(recoveredHealth.body.brokers[0]).not.to.have.property('publishBlocked')
+    expect(statuses.at(-1).text).to.equal('Connected')
+  })
   for (const type of ['amqp-in', 'amqp-in-manual-ack']) {
     it(`${type} completes a successful reconnect control message`, async () => {
       await load(type, false)

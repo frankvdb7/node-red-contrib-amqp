@@ -69,12 +69,81 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
     await broker.channel.waitForConfirms()
     expect((await receive()).payload).to.deep.equal({ existing: true })
     expect((await broker.channel.checkQueue(topology.queue)).consumerCount).to.equal(1)
+    const healthy = await helper.request().get('/amqp-broker/health')
+    expect(healthy.status).to.equal(200)
+    expect(healthy.body.overallStatus).to.equal('healthy')
+    expect(healthy.body.brokers).to.have.length(1)
+    expect(healthy.body.brokers[0]).to.include({ id: 'broker', status: 'connected' })
     const closingAt = Date.now()
     await helper.unload()
     expect(Date.now() - closingAt).to.be.lessThan(5000)
     await until('consumer removed after unload', async () =>
       (await broker.channel.checkQueue(topology.queue)).consumerCount === 0)
-    expect((await helper.request().get('/amqp-broker/health')).status).to.equal(503)
+    const unloaded = await helper.request().get('/amqp-broker/health')
+    expect(unloaded.status).to.equal(503)
+    expect(unloaded.body).to.deep.equal({ overallStatus: 'unhealthy', brokers: [] })
+  })
+
+  it('reports a real publisher block and recovery when RabbitMQ raises and clears a memory alarm', async function () {
+    this.timeout(45000)
+    const topology = broker.topology()
+    await broker.channel.assertExchange(topology.exchange, 'direct', { durable: true })
+    await broker.channel.assertQueue(topology.queue, { durable: true })
+    await broker.channel.bindQueue(topology.queue, topology.exchange, topology.key)
+    await broker.load([
+      { id: 'out', type: 'amqp-out', broker: 'broker', exchangeName: topology.exchange,
+        exchangeType: 'direct', exchangeRoutingKey: topology.key, waitForConfirms: true },
+      { id: 'completion', type: 'complete', scope: ['out'], wires: [['confirmed']] },
+      { id: 'confirmed', type: 'helper' },
+    ])
+
+    const publisher = helper.getNode('out')
+    const statuses = []
+    const warnings = []
+    publisher.on('call:status', call => statuses.push(call.args[0]))
+    publisher.on('call:warn', call => warnings.push(call.args[0]))
+    const confirmed = nextMessage(helper.getNode('confirmed'))
+    publisher.receive({ payload: 'publisher connection initialized' })
+    await confirmed()
+    const message = await broker.channel.get(topology.queue, { noAck: true })
+    expect(message?.content.toString()).to.equal('publisher connection initialized')
+
+    let alarmActive = false
+    try {
+      await broker.setMemoryAlarm(true)
+      alarmActive = true
+      await until('RabbitMQ reports its memory alarm', () => broker.hasMemoryAlarm())
+      const underAlarmConfirmed = confirmed()
+      publisher.receive({ payload: 'publisher message during memory alarm' })
+      const blocked = await until('publisher receives RabbitMQ connection.blocked', async () => {
+        const response = await helper.request().get('/amqp-broker/health')
+        return response.body.brokers?.[0]?.publishBlocked?.out
+          ? response
+          : false
+      })
+      expect(blocked.status).to.equal(503)
+      expect(blocked.body.overallStatus).to.equal('degraded')
+      expect(blocked.body.brokers[0].status).to.equal('connected')
+      expect(blocked.body.brokers[0].publishBlocked.out).to.match(/memory/i)
+      expect(statuses.at(-1).text).to.equal('Publishing blocked')
+      expect(warnings).to.have.length(1)
+      expect(warnings[0]).to.match(/AMQP publishing blocked: .*memory/i)
+
+      await broker.setMemoryAlarm(false)
+      alarmActive = false
+      await underAlarmConfirmed
+      const resumedMessage = await broker.channel.get(topology.queue, { noAck: true })
+      expect(resumedMessage?.content.toString()).to.equal('publisher message during memory alarm')
+      const recovered = await until('publisher receives RabbitMQ connection.unblocked', async () => {
+        const response = await helper.request().get('/amqp-broker/health')
+        return response.status === 200 ? response : false
+      })
+      expect(recovered.body.overallStatus).to.equal('healthy')
+      expect(recovered.body.brokers[0]).not.to.have.property('publishBlocked')
+      expect(statuses.at(-1).text).to.equal('Connected')
+    } finally {
+      if (alarmActive) await broker.setMemoryAlarm(false)
+    }
   })
 
   it('keeps a shared auto-delete queue bound until its last consumer closes', async () => {
@@ -219,7 +288,12 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
       helper.getNode('out').receive({ payload: failure })
       expect((await receive()).payload).to.equal(failure)
       expect((await confirmed()).payload).to.equal(failure)
-      expect((await helper.request().get('/amqp-broker/health')).status).to.equal(503)
+      const health = await helper.request().get('/amqp-broker/health')
+      expect(health.status).to.equal(503)
+      expect(health.body.overallStatus).to.equal('unhealthy')
+      const brokerHealth = health.body.brokers.find(status => status.id === 'broker')
+      expect(brokerHealth.status).to.equal('errored')
+      expect(brokerHealth.lastError).to.have.property('broken')
       expect((await broker.channel.checkQueue(healthy.queue)).consumerCount).to.equal(1)
     })
   }
@@ -270,17 +344,29 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
         if (!unavailableAtStartup) {
           await broker.pause(); paused = true
         }
-        await until('broker health becomes unavailable', async () =>
-          (await helper.request().get('/amqp-broker/health')).status === 503)
+        const unavailable = await until('broker health becomes unavailable', async () => {
+          const response = await helper.request().get('/amqp-broker/health')
+          return response.status === 503 ? response : false
+        })
+        expect(unavailable.body.overallStatus).to.equal('unhealthy')
+        expect(unavailable.body.brokers).to.have.length(1)
+        expect(unavailable.body.brokers[0].status).not.to.equal('connected')
         const failed = nextMessage(helper.getNode('failed'))
         helper.getNode('out').receive({ payload: 'offline' })
         expect((await failed()).error.message).to.include('not ready')
         // Exceed the first three native retry intervals, including jitter.
         await new Promise(resolve => setTimeout(resolve, 10000))
-        expect((await helper.request().get('/amqp-broker/health')).status).to.equal(503)
+        const stillUnavailable = await helper.request().get('/amqp-broker/health')
+        expect(stillUnavailable.status).to.equal(503)
+        expect(stillUnavailable.body.overallStatus).to.equal('unhealthy')
         expect(helper.getNode('broker').lastError.out.message).to.match(/AMQP retry [3-9]/)
         await broker.resume(); paused = false
         await broker.ready()
+        const recoveredHealth = await helper.request().get('/amqp-broker/health')
+        expect(recoveredHealth.status).to.equal(200)
+        expect(recoveredHealth.body.overallStatus).to.equal('healthy')
+        expect(recoveredHealth.body.brokers).to.have.length(1)
+        expect(recoveredHealth.body.brokers[0].status).to.equal('connected')
         const receive = nextMessage(helper.getNode('sink'))
         const confirmed = nextMessage(helper.getNode('confirmed'))
         for (const id of ['out', 'confirmed-out']) {

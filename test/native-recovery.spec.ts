@@ -67,6 +67,88 @@ describe('native recovery ownership', () => {
     await shared.remove(owner, async () => {})
     expect(wrapper.close.calledOnce).to.equal(true)
   })
+  it('retains a broker block received during owner setup until the connection is ready', async () => {
+    const { amqp } = client('startup')
+    await amqp.connect()
+    const raw = model()
+    const setup = options.setup(raw)
+    raw.emit('blocked', 'memory alarm')
+    await setup
+
+    expect(broker.publishBlocked).to.equal(undefined)
+    expect(raw.listenerCount('blocked')).to.equal(1)
+    wrapper.emit('connect', raw)
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(broker.publishBlocked).to.deep.equal({ startup: 'memory alarm' })
+    expect(raw.listenerCount('blocked')).to.equal(0)
+    wrapper.emit('unblocked')
+    expect(broker.publishBlocked).to.deep.equal({})
+  })
+  it('clears only the closing publisher block and removes shared listeners at final release', async () => {
+    const first = client('first').amqp, second = client('second').amqp
+    await Promise.all([first.connect(), second.connect()])
+    const raw = await recover()
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(wrapper.listenerCount('blocked')).to.equal(1)
+    expect(wrapper.listenerCount('unblocked')).to.equal(1)
+    wrapper.emit('blocked', 'memory alarm')
+    expect(broker.publishBlocked).to.deep.equal({
+      first: 'memory alarm',
+      second: 'memory alarm',
+    })
+
+    await first.close()
+    expect(broker.publishBlocked).to.deep.equal({ second: 'memory alarm' })
+    expect(wrapper.listenerCount('blocked')).to.equal(1)
+
+    await second.close()
+    expect(broker.publishBlocked).to.deep.equal({})
+    for (const event of [
+      'error',
+      'connect-failed',
+      'disconnect',
+      'reconnect-scheduled',
+      'connect',
+      'blocked',
+      'unblocked',
+    ]) {
+      expect(wrapper.listenerCount(event), `${event} listeners`).to.equal(0)
+    }
+    expect(raw.listenerCount('error')).to.equal(0)
+    expect(raw.listenerCount('close')).to.equal(0)
+  })
+  it('clears the old publisher block during a vhost switch', async () => {
+    const nextWrapper = Object.assign(new EventEmitter(), { close: sinon.stub().resolves() })
+    const recoveries = []
+    connect.callsFake(async (_url, opts) => {
+      recoveries.push(opts.recovery)
+      return recoveries.length === 1 ? wrapper : nextWrapper
+    })
+    const { amqp } = client('switching')
+    await amqp.connect()
+    const first = model()
+    await recoveries[0].setup(first)
+    wrapper.emit('connect', first)
+    await new Promise(resolve => setImmediate(resolve))
+    wrapper.emit('blocked', 'memory alarm')
+    expect(broker.publishBlocked).to.deep.equal({ switching: 'memory alarm' })
+
+    const switching = amqp.setVhost('alternate')
+    await new Promise(resolve => setImmediate(resolve))
+    expect(recoveries).to.have.length(2)
+    const second = model()
+    await recoveries[1].setup(second)
+    nextWrapper.emit('connect', second)
+    await switching
+
+    expect(broker.publishBlocked).to.deep.equal({})
+    expect(wrapper.listenerCount('blocked')).to.equal(0)
+    expect(nextWrapper.listenerCount('blocked')).to.equal(1)
+    await amqp.close()
+    expect(nextWrapper.listenerCount('blocked')).to.equal(0)
+  })
   it('reports an established raw connection error once per shared owner through native forwarding', async () => {
     const owners = [client('one'), client('two')]
     await Promise.all(owners.map(({ amqp }) => amqp.connect()))
