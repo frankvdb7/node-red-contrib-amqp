@@ -10,7 +10,34 @@ export interface ConnectionOwner {
   connected(): void
   disconnected(error: unknown): void
   failed(error: unknown): void
+  blocked?(reason: string): void
+  unblocked?(): void
 }
+
+interface ConnectionListeners {
+  connection: RecoveringChannelModel
+  error: (error: Error) => void
+  connectFailed: (error: Error) => void
+  disconnect: (error: Error) => void
+  reconnectScheduled: (info: {
+    attempt: number
+    delay: number
+    error: Error
+  }) => void
+  connect: (model: ChannelModel) => void
+  blocked: (reason: string) => void
+  unblocked: () => void
+}
+
+interface ModelListeners {
+  model: ChannelModel
+  error: (error: Error) => void
+  close: () => void
+  blocked: (reason: string) => void
+  unblocked: () => void
+}
+
+type OwnerCleanup = (transportClosed?: boolean) => Promise<void>
 
 // One native recovery loop per broker/vhost. Channels belong to individual nodes.
 export default class SharedConnection {
@@ -18,9 +45,14 @@ export default class SharedConnection {
   private model?: ChannelModel
   private ready = false
   private stopped = false
+  private blockedReason?: string
   private restarting?: Promise<void>
   private cleanup = Promise.resolve()
+  private deferredCleanups: OwnerCleanup[] = []
+  private blockedWaiters = new Set<() => void>()
   private connection?: Promise<RecoveringChannelModel>
+  private connectionListeners?: ConnectionListeners
+  private modelListeners?: ModelListeners
 
   constructor(private readonly url: string) {}
 
@@ -37,28 +69,44 @@ export default class SharedConnection {
         setup: model => this.setup(model),
       },
     }).then(connection => {
-      connection.on('error', error => this.notify('failed', error))
-      connection.on('connect-failed', error => {
-        this.invalidate()
-        this.notify('failed', error)
-      })
-      connection.on('disconnect', error => {
-        this.invalidate()
-        this.notify('disconnected', error)
-      })
-      connection.on('reconnect-scheduled', ({ attempt, delay, error }) => {
-        this.notify(
-          'failed',
-          new Error(`AMQP retry ${attempt} in ${delay}ms: ${error.message}`),
-        )
-      })
-      connection.on('connect', model => {
-        if (this.stopped || this.model !== model) return
-        this.ready = true
-        for (const owner of this.owners.keys()) {
-          void this.attach(owner).catch(error => owner.failed(error))
-        }
-      })
+      const listeners: ConnectionListeners = {
+        connection,
+        error: error => this.notify('failed', error),
+        connectFailed: error => {
+          this.invalidate()
+          this.flushDeferredCleanups(true)
+          this.notify('failed', error)
+        },
+        disconnect: error => {
+          this.invalidate()
+          this.flushDeferredCleanups(true)
+          this.notify('disconnected', error)
+        },
+        reconnectScheduled: ({ attempt, delay, error }) => {
+          this.notify(
+            'failed',
+            new Error(`AMQP retry ${attempt} in ${delay}ms: ${error.message}`),
+          )
+        },
+        connect: model => {
+          if (this.stopped || this.model !== model) return
+          this.detachModelBlockedListeners(model)
+          this.ready = true
+          for (const owner of this.owners.keys()) {
+            void this.attach(owner).catch(error => owner.failed(error))
+          }
+        },
+        blocked: reason => this.handleBlocked(reason),
+        unblocked: () => this.handleUnblocked(),
+      }
+      this.connectionListeners = listeners
+      connection.on('error', listeners.error)
+      connection.on('connect-failed', listeners.connectFailed)
+      connection.on('disconnect', listeners.disconnect)
+      connection.on('reconnect-scheduled', listeners.reconnectScheduled)
+      connection.on('connect', listeners.connect)
+      connection.on('blocked', listeners.blocked)
+      connection.on('unblocked', listeners.unblocked)
       return connection
     })
     return this.connection
@@ -83,22 +131,97 @@ export default class SharedConnection {
     )
   }
 
-  async remove(
-    owner: ConnectionOwner,
-    cleanup: () => Promise<void>,
-  ): Promise<void> {
+  async remove(owner: ConnectionOwner, cleanup: OwnerCleanup): Promise<void> {
+    const wasBlocked = this.blockedReason !== undefined
     this.owners.delete(owner)
     const lastOwner = this.owners.size === 0
     if (lastOwner) {
       this.stopped = true
       this.invalidate()
     }
-    const cleaning = this.cleanup.then(cleanup)
-    this.cleanup = cleaning.catch(() => undefined)
+
+    if (wasBlocked && !lastOwner) {
+      this.deferredCleanups.push(cleanup)
+      return
+    }
+
+    const connection = this.connection
+    if (lastOwner && wasBlocked && connection) {
+      await this.closeBlockedFinalOwner(cleanup, connection)
+      return
+    }
+
+    await this.runRemovalCleanup(cleanup, lastOwner)
+  }
+
+  private async closeBlockedFinalOwner(
+    cleanup: OwnerCleanup,
+    connection: Promise<RecoveringChannelModel>,
+  ): Promise<void> {
+    const cleanups = [...this.deferredCleanups.splice(0), cleanup]
+    let closeError: unknown
     try {
-      await cleaning
+      // During a resource alarm RabbitMQ may not acknowledge channel.close().
+      // Closing the blocked transport first means channel cleanup must be local.
+      await (await connection).close()
+    } catch (error) {
+      closeError = error
     } finally {
-      if (lastOwner && this.connection) await (await this.connection).close()
+      this.detachConnectionListeners()
+      this.detachModelListeners()
+      await Promise.all(cleanups.map(item => item(true).catch(() => undefined)))
+    }
+    if (closeError) throw closeError
+  }
+
+  private async runRemovalCleanup(
+    cleanup: OwnerCleanup,
+    lastOwner: boolean,
+  ): Promise<void> {
+    const cleanups = [...this.deferredCleanups.splice(0), cleanup]
+    const cleaning = this.cleanup.then(async () => {
+      for (const item of cleanups) await item(false)
+    })
+    this.cleanup = cleaning.catch(() => undefined)
+
+    if (lastOwner) {
+      await this.finishFinalOwnerCleanup(cleaning)
+      return
+    }
+
+    const blocked = this.waitForBlocked()
+    try {
+      // A block can arrive after channel cleanup starts. Stop waiting for that
+      // RPC so the removed owner can finish shutdown while its peer stays live.
+      await Promise.race([cleaning, blocked.promise])
+    } finally {
+      blocked.cancel()
+    }
+  }
+
+  private async finishFinalOwnerCleanup(
+    cleaning: Promise<void>,
+  ): Promise<void> {
+    const blocked = this.waitForBlocked()
+    let transportCloseStarted = false
+    try {
+      // If blocking starts during cleanup, close the transport to release the
+      // channel RPC instead of waiting for an acknowledgement RabbitMQ cannot send.
+      const cleanupFinished = await Promise.race([
+        cleaning.then(() => true),
+        blocked.promise.then(() => false),
+      ])
+      if (!cleanupFinished && this.connection) {
+        transportCloseStarted = true
+        await (await this.connection).close()
+      }
+    } finally {
+      blocked.cancel()
+      if (this.connection) {
+        this.detachConnectionListeners()
+        this.detachModelListeners()
+        if (!transportCloseStarted) await (await this.connection).close()
+      }
     }
   }
 
@@ -119,15 +242,31 @@ export default class SharedConnection {
 
   private async setup(model: ChannelModel): Promise<void> {
     if (this.stopped) return
+    this.detachModelListeners()
     this.model = model
     this.ready = false
+    this.blockedReason = undefined
     // Forward setup errors ourselves; native recovery forwards them once connected.
-    model.on('error', error => {
-      if (this.model === model && !this.ready) this.notify('failed', error)
-    })
-    model.once('close', () => {
-      if (this.model === model) this.invalidate()
-    })
+    const listeners: ModelListeners = {
+      model,
+      error: error => {
+        if (this.model === model && !this.ready) this.notify('failed', error)
+      },
+      close: () => {
+        this.detachModelListeners(model)
+        if (this.model === model) {
+          this.invalidate()
+          this.flushDeferredCleanups(true)
+        }
+      },
+      blocked: reason => this.handleBlocked(reason),
+      unblocked: () => this.handleUnblocked(),
+    }
+    this.modelListeners = listeners
+    model.on('error', listeners.error)
+    model.once('close', listeners.close)
+    model.on('blocked', listeners.blocked)
+    model.on('unblocked', listeners.unblocked)
     for (const owner of this.owners.keys()) this.owners.set(owner, undefined)
     // Include owners added while another owner's asynchronous setup was running.
     while (!this.stopped && this.model === model) {
@@ -149,8 +288,12 @@ export default class SharedConnection {
       this.ready &&
       this.model === model &&
       this.owners.get(owner) === setup
-    )
+    ) {
       owner.connected()
+      if (this.blockedReason !== undefined) {
+        owner.blocked?.(this.blockedReason)
+      }
+    }
   }
 
   private setupOwner(
@@ -175,8 +318,95 @@ export default class SharedConnection {
 
   private invalidate(): void {
     this.ready = false
+    this.blockedReason = undefined
+    this.detachModelListeners()
     this.model = undefined
     for (const owner of this.owners.keys()) this.owners.set(owner, undefined)
+  }
+
+  private handleBlocked(reason: string): void {
+    // Shutdown may have stopped owner notifications while cleanup still waits
+    // on a channel RPC that the broker will no longer process.
+    this.notifyBlockedWaiters()
+    if (this.stopped || this.blockedReason === reason) return
+    this.blockedReason = reason
+    for (const owner of this.owners.keys()) owner.blocked?.(reason)
+  }
+
+  private waitForBlocked(): { promise: Promise<void>; cancel: () => void } {
+    let resolve: () => void = () => {}
+    const listener = () => resolve()
+    const promise = new Promise<void>(done => {
+      resolve = done
+    })
+    this.blockedWaiters.add(listener)
+    return {
+      promise,
+      cancel: () => this.blockedWaiters.delete(listener),
+    }
+  }
+
+  private notifyBlockedWaiters(): void {
+    for (const resolve of this.blockedWaiters) resolve()
+    this.blockedWaiters.clear()
+  }
+
+  private handleUnblocked(): void {
+    if (this.stopped || this.blockedReason === undefined) return
+    this.blockedReason = undefined
+    for (const owner of this.owners.keys()) owner.unblocked?.()
+    this.flushDeferredCleanups(false)
+  }
+
+  private flushDeferredCleanups(transportClosed: boolean): void {
+    const cleanups = this.deferredCleanups.splice(0)
+    if (!cleanups.length) return
+
+    if (transportClosed) {
+      void Promise.all(
+        cleanups.map(cleanup => cleanup(true).catch(() => undefined)),
+      )
+      return
+    }
+
+    const cleaning = this.cleanup.then(async () => {
+      for (const cleanup of cleanups) await cleanup(false)
+    })
+    this.cleanup = cleaning.catch(() => undefined)
+    void cleaning.catch(() => undefined)
+  }
+
+  private detachConnectionListeners(): void {
+    const listeners = this.connectionListeners
+    if (!listeners) return
+    const { connection } = listeners
+    connection.removeListener('error', listeners.error)
+    connection.removeListener('connect-failed', listeners.connectFailed)
+    connection.removeListener('disconnect', listeners.disconnect)
+    connection.removeListener(
+      'reconnect-scheduled',
+      listeners.reconnectScheduled,
+    )
+    connection.removeListener('connect', listeners.connect)
+    connection.removeListener('blocked', listeners.blocked)
+    connection.removeListener('unblocked', listeners.unblocked)
+    this.connectionListeners = undefined
+  }
+
+  private detachModelListeners(model?: ChannelModel): void {
+    const listeners = this.modelListeners
+    if (!listeners || (model && listeners.model !== model)) return
+    this.detachModelBlockedListeners(model)
+    listeners.model.removeListener('error', listeners.error)
+    listeners.model.removeListener('close', listeners.close)
+    this.modelListeners = undefined
+  }
+
+  private detachModelBlockedListeners(model?: ChannelModel): void {
+    const listeners = this.modelListeners
+    if (!listeners || (model && listeners.model !== model)) return
+    listeners.model.removeListener('blocked', listeners.blocked)
+    listeners.model.removeListener('unblocked', listeners.unblocked)
   }
 
   private notify(event: 'failed' | 'disconnected', error: unknown): void {
