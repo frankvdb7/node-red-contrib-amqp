@@ -146,6 +146,156 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
     }
   })
 
+  it('blocks a publisher on its first publish after reconnecting during a memory alarm', async function () {
+    this.timeout(90000)
+    const topology = broker.topology()
+    await broker.channel.assertExchange(topology.exchange, 'direct', { durable: true })
+    await broker.channel.assertQueue(topology.queue, { durable: true })
+    await broker.channel.bindQueue(topology.queue, topology.exchange, topology.key)
+
+    const existingConnections = await until('RabbitMQ exposes the harness observer connection', async () => {
+      const connections = await broker.connections()
+      return connections.length > 0 ? connections : false
+    })
+    const existingConnectionNames = new Set(existingConnections.map(connection => connection.name))
+    await broker.load([
+      { id: 'out', type: 'amqp-out', broker: 'broker', exchangeName: topology.exchange,
+        exchangeType: 'direct', exchangeRoutingKey: topology.key },
+      { id: 'completion', type: 'complete', scope: ['out'], wires: [['confirmed']] },
+      { id: 'confirmed', type: 'helper' },
+    ])
+
+    const publisher = helper.getNode('out')
+    const statuses = []
+    const warnings = []
+    publisher.on('call:status', call => statuses.push(call.args[0]))
+    publisher.on('call:warn', call => warnings.push(call.args[0]))
+    const completed = nextMessage(helper.getNode('confirmed'))
+    const initialPublication = completed()
+    publisher.receive({ payload: 'before memory alarm' })
+    expect((await initialPublication).payload).to.equal('before memory alarm')
+    const initialMessage = await until('initial publisher message reaches RabbitMQ', async () =>
+      await broker.channel.get(topology.queue, { noAck: true }),
+    )
+    expect(initialMessage.content.toString()).to.equal('before memory alarm')
+
+    const originalConnection = await until('Node-RED publisher connection is visible', async () =>
+      (await broker.connections()).find(connection =>
+        !existingConnectionNames.has(connection.name),
+      ),
+    )
+    let alarmActive = false
+    try {
+      await broker.setMemoryAlarm(true)
+      alarmActive = true
+      await until('RabbitMQ reports its memory alarm', () => broker.hasMemoryAlarm())
+
+      const blockedPublication = completed()
+      publisher.receive({ payload: 'publish before reconnect' })
+      await blockedPublication
+      const blocked = await until('publisher receives connection.blocked', async () => {
+        const response = await helper.request().get('/amqp-broker/health')
+        return response.body.brokers?.[0]?.publishBlocked?.out
+          ? response
+          : false
+      })
+      expect(blocked.body.brokers[0].publishBlocked.out).to.match(/memory/i)
+
+      const managementUrl = `http://${broker.container.getHost()}:${broker.container.getMappedPort(15672)}`
+      const closed = await fetch(
+        `${managementUrl}/api/connections/${encodeURIComponent(originalConnection.name)}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Basic ${Buffer.from('integration:integration').toString('base64')}`,
+          },
+          signal: AbortSignal.timeout(5000),
+        },
+      )
+      expect(closed.ok).to.equal(true)
+      await until('RabbitMQ closes the blocked publisher connection', async () =>
+        !(await broker.connections()).some(connection =>
+          connection.name === originalConnection.name,
+        ),
+      )
+      expect(await broker.hasMemoryAlarm()).to.equal(true)
+
+      const replacementConnection = await until(
+        'publisher reconnects with a new RabbitMQ connection',
+        async () => (await broker.connections()).find(connection =>
+          !existingConnectionNames.has(connection.name) &&
+          connection.name !== originalConnection.name,
+        ),
+        45000,
+      )
+      expect(replacementConnection).to.exist
+
+      const reconnected = await until(
+        'Node-RED health reports a connected, unblocked publisher during the memory alarm',
+        async () => {
+          const response = await helper.request().get('/amqp-broker/health')
+          const publisherHealth = response.body.brokers?.[0]
+          return response.status === 200 &&
+            publisherHealth?.status === 'connected' &&
+            !publisherHealth.publishBlocked?.out
+            ? response
+            : false
+        },
+        45000,
+      )
+      expect(await broker.hasMemoryAlarm()).to.equal(true)
+      expect(reconnected.body.brokers[0]).not.to.have.property('publishBlocked')
+
+      // Give any delayed connection.blocked notification on reconnect time to arrive.
+      await new Promise(resolve => setTimeout(resolve, 500))
+      const beforePublish = await helper.request().get('/amqp-broker/health')
+      expect(beforePublish.status).to.equal(200)
+      expect(beforePublish.body.brokers[0]).not.to.have.property('publishBlocked')
+      expect(statuses.at(-1).text).to.equal('Connected')
+
+      const recoveredPublication = completed()
+      publisher.receive({ payload: 'publish after reconnect' })
+      await recoveredPublication
+      const reblocked = await until('publisher blocks after publishing on the new connection', async () => {
+        const response = await helper.request().get('/amqp-broker/health')
+        return response.body.brokers?.[0]?.publishBlocked?.out
+          ? response
+          : false
+      })
+      expect(reblocked.status).to.equal(503)
+      expect(reblocked.body.brokers[0].publishBlocked.out).to.match(/memory/i)
+      expect(statuses.at(-1).text).to.equal('Publishing blocked')
+      expect(warnings.at(-1)).to.match(/AMQP publishing blocked: .*memory/i)
+
+      await broker.setMemoryAlarm(false)
+      await until('RabbitMQ clears its memory alarm', async () =>
+        !(await broker.hasMemoryAlarm()),
+      )
+      alarmActive = false
+      const unblocked = await until('publisher recovers after the memory alarm clears', async () => {
+        const response = await helper.request().get('/amqp-broker/health')
+        return response.status === 200 ? response : false
+      })
+      expect(unblocked.body.brokers[0]).not.to.have.property('publishBlocked')
+      expect(statuses.at(-1).text).to.equal('Connected')
+
+      const deliveredAfterReconnect = await until(
+        'publish from the reconnected publisher reaches RabbitMQ after the alarm clears',
+        async () => {
+          let message = await broker.channel.get(topology.queue, { noAck: true })
+          while (message) {
+            if (message.content.toString() === 'publish after reconnect') return message
+            message = await broker.channel.get(topology.queue, { noAck: true })
+          }
+          return false
+        },
+      )
+      expect(deliveredAfterReconnect.content.toString()).to.equal('publish after reconnect')
+    } finally {
+      if (alarmActive) await broker.setMemoryAlarm(false)
+    }
+  })
+
   it('keeps a shared auto-delete queue bound until its last consumer closes', async () => {
     const topology = broker.topology()
     const options = { queueAutoDelete: true }
