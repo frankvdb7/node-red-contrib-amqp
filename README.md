@@ -108,10 +108,12 @@ resources; the last node closing cancels native recovery.
 
 On shutdown or a vhost switch, a node removes its configured exchange bindings
 for non-auto-delete temporary queues it manages, including exclusive queues that
-remain alive on a shared connection. Auto-delete queue bindings remain intact so
-other consumers can keep receiving messages; RabbitMQ deletes these queues after
-their last consumer closes. Bindings for named, non-exclusive queues are preserved.
-Automatic recovery does not unbind queues.
+remain alive on a shared connection. If another node on the same broker and vhost
+still consumes from that queue, its bindings stay until the last consumer closes.
+Auto-delete queue bindings remain intact so other consumers can keep receiving
+messages; RabbitMQ deletes these queues after their last consumer closes. Bindings
+for named, non-exclusive queues are preserved. Automatic recovery does not unbind
+queues.
 
 A topology setup failure marks only the affected node as errored. Healthy nodes on
 the shared connection remain usable. Failed setup is attempted again on the next

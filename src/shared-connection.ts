@@ -5,6 +5,7 @@ import {
 } from 'amqplib'
 
 export interface ConnectionOwner {
+  queueName?(): string | undefined
   setup(model: ChannelModel): Promise<void>
   connected(): void
   disconnected(error: unknown): void
@@ -74,6 +75,12 @@ export default class SharedConnection {
 
   get size(): number {
     return this.owners.size
+  }
+
+  hasQueueConsumer(queueName: string): boolean {
+    return [...this.owners.keys()].some(
+      owner => owner.queueName?.() === queueName,
+    )
   }
 
   async remove(

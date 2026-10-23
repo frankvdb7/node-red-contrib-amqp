@@ -43,6 +43,10 @@ export default class Amqp {
   private setupFailure?: Error
   private settingUp = false
   private readonly recoveryOwner: ConnectionOwner = {
+    queueName: () => {
+      if (this.node.type === NodeType.AmqpOut) return undefined
+      return this.config.queue.name || this.q?.queue
+    },
     setup: model => this.restore(model),
     connected: () => {
       if (!this.closed) this.markConnected()
@@ -661,14 +665,19 @@ export default class Amqp {
     }
   }
 
-  private async closeChannel(cleanupBindings = false): Promise<void> {
+  private async closeChannel(
+    cleanupBindings = false,
+    canUnbindQueue: (queueName: string) => boolean = () => true,
+  ): Promise<void> {
     if (this.channel) {
       const channel = this.channel
       const { channelErrorHandler, channelCloseHandler, channelReturnHandler } =
         this
       this.channel = undefined
       try {
-        if (cleanupBindings) await this.unbindQueues(channel)
+        if (cleanupBindings && this.q && canUnbindQueue(this.q.queue)) {
+          await this.unbindQueues(channel)
+        }
         await channel.close()
       } catch (e) {
         this.node.error(`Error closing AMQP channel: ${e}`)
@@ -692,7 +701,7 @@ export default class Amqp {
       return
     }
     const release = entry.remove(this.recoveryOwner, () =>
-      this.closeChannel(true),
+      this.closeChannel(true, queue => !entry.hasQueueConsumer(queue)),
     )
     if (!entry.size && Amqp.connectionPool.get(key) === entry) {
       Amqp.connectionPool.delete(key)

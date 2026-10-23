@@ -107,6 +107,44 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
     })
   })
 
+  it('keeps a named exclusive queue bound while another shared consumer remains', async () => {
+    const topology = broker.topology()
+    const keepalive = broker.topology()
+    const options = { queueExclusive: true, queueDurable: false, queueAutoDelete: false }
+    await broker.load([
+      consumer(topology, { ...options, id: 'exclusive-first' }),
+      consumer(topology, { ...options, id: 'exclusive-second' }),
+      consumer(keepalive, { id: 'keepalive' }),
+      { id: 'sink', type: 'helper' },
+    ])
+    const activeConsumers = await until('two consumers on the shared exclusive queue', async () => {
+      const queue = await broker.queue(topology.queue)
+      return queue.consumer_details.length === 2 ? queue : false
+    })
+    const sharedConnection = activeConsumers.consumer_details[0].channel_details.connection_name
+    expect(activeConsumers.consumer_details[1].channel_details.connection_name).to.equal(sharedConnection)
+    await helper.getNode('exclusive-first').close()
+    const remaining = await until('one shared exclusive queue consumer remains', async () => {
+      const queue = await broker.queue(topology.queue)
+      return queue.consumer_details.length === 1 ? queue : false
+    })
+    expect(remaining.consumer_details[0].channel_details.connection_name).to.equal(sharedConnection)
+    expect((await broker.bindings(topology.queue)).some(binding =>
+      binding.source === topology.exchange && binding.routing_key === topology.key)).to.equal(true)
+    const receive = nextMessage(helper.getNode('sink'))
+    broker.channel.publish(topology.exchange, topology.key, Buffer.from('"surviving exclusive consumer"'))
+    await broker.channel.waitForConfirms()
+    expect((await receive()).payload).to.equal('surviving exclusive consumer')
+    await helper.getNode('exclusive-second').close()
+    await until('last shared queue consumer removed', async () => {
+      const queue = await broker.queue(topology.queue)
+      return queue.consumer_details.length === 0 ? queue : false
+    })
+    expect((await broker.bindings(topology.queue)).some(binding =>
+      binding.source === topology.exchange && binding.routing_key === topology.key)).to.equal(false)
+    await helper.getNode('keepalive').close()
+  })
+
   it('unbinds an exclusive non-auto-delete queue on node close while retaining the shared transport and durable bindings', async () => {
     const exclusive = broker.topology(), durable = broker.topology()
     await broker.load([
