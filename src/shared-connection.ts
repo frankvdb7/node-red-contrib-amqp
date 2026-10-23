@@ -49,6 +49,7 @@ export default class SharedConnection {
   private restarting?: Promise<void>
   private cleanup = Promise.resolve()
   private deferredCleanups: OwnerCleanup[] = []
+  private blockedWaiters = new Set<() => void>()
   private connection?: Promise<RecoveringChannelModel>
   private connectionListeners?: ConnectionListeners
   private modelListeners?: ModelListeners
@@ -169,14 +170,28 @@ export default class SharedConnection {
       for (const item of cleanups) await item(false)
     })
     this.cleanup = cleaning.catch(() => undefined)
+    const blocked = this.waitForBlocked()
+    let transportCloseStarted = false
 
     try {
-      await cleaning
+      // A block can arrive after channel cleanup starts. Do not wait on that RPC
+      // for a removed owner, and close the transport if it was the final owner.
+      const blockedDuringCleanup = await Promise.race([
+        cleaning.then(() => false),
+        blocked.promise.then(() => true),
+      ])
+      if (blockedDuringCleanup && lastOwner && this.connection) {
+        transportCloseStarted = true
+        await (await this.connection).close()
+      } else if (!blockedDuringCleanup) {
+        await cleaning
+      }
     } finally {
+      blocked.cancel()
       if (lastOwner && this.connection) {
         this.detachConnectionListeners()
         this.detachModelListeners()
-        await (await this.connection).close()
+        if (!transportCloseStarted) await (await this.connection).close()
       }
     }
   }
@@ -281,9 +296,30 @@ export default class SharedConnection {
   }
 
   private handleBlocked(reason: string): void {
+    // Shutdown may have stopped owner notifications while cleanup still waits
+    // on a channel RPC that the broker will no longer process.
+    this.notifyBlockedWaiters()
     if (this.stopped || this.blockedReason === reason) return
     this.blockedReason = reason
     for (const owner of this.owners.keys()) owner.blocked?.(reason)
+  }
+
+  private waitForBlocked(): { promise: Promise<void>; cancel: () => void } {
+    let resolve: () => void = () => {}
+    const listener = () => resolve()
+    const promise = new Promise<void>(done => {
+      resolve = done
+    })
+    this.blockedWaiters.add(listener)
+    return {
+      promise,
+      cancel: () => this.blockedWaiters.delete(listener),
+    }
+  }
+
+  private notifyBlockedWaiters(): void {
+    for (const resolve of this.blockedWaiters) resolve()
+    this.blockedWaiters.clear()
   }
 
   private handleUnblocked(): void {

@@ -46,6 +46,17 @@ describe('native recovery ownership', () => {
     wrapper.emit('connect', raw)
     return raw
   }
+  async function completesWithin(promise, milliseconds = 200) {
+    let timer
+    const completed = await Promise.race([
+      promise.then(() => true, () => false),
+      new Promise(resolve => {
+        timer = setTimeout(() => resolve(false), milliseconds)
+      }),
+    ])
+    clearTimeout(timer)
+    return completed
+  }
   it('enables cancellable startup, unlimited retries, exponential backoff and jitter', async () => {
     await client('one').amqp.connect()
     expect(options).to.include({ waitForConnect: false, maxRetries: Infinity, factor: 2 })
@@ -158,6 +169,56 @@ describe('native recovery ownership', () => {
     expect(cleanups).to.deep.equal([false])
     expect(wrapper.close.called).to.equal(false)
     await shared.remove(owners[1], async () => {})
+  })
+  it('closes the final publisher transport when blocking begins during cleanup', async () => {
+    const { amqp } = client('closing', { waitForConfirms: true })
+    await amqp.connect()
+    await recover()
+    const closingChannel = amqp.channel
+    let finishClose
+    closingChannel.close.callsFake(() => new Promise(resolve => {
+      finishClose = resolve
+    }))
+    wrapper.close.callsFake(async () => { finishClose?.() })
+
+    const closing = amqp.close()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(closingChannel.close.calledOnce).to.equal(true)
+    wrapper.emit('blocked', 'memory alarm')
+
+    const completed = await completesWithin(closing)
+    if (!completed) finishClose?.()
+    await closing
+    expect(completed).to.equal(true)
+    expect(wrapper.close.calledOnce).to.equal(true)
+    expect(closingChannel.close.calledOnce).to.equal(true)
+  })
+  it('does not hang a publisher shutdown when blocking begins with a shared owner', async () => {
+    const closing = client('closing', { waitForConfirms: true })
+    const surviving = client('surviving', { waitForConfirms: true })
+    await Promise.all([closing.amqp.connect(), surviving.amqp.connect()])
+    await recover()
+    const closingChannel = closing.amqp.channel
+    let finishClose
+    closingChannel.close.callsFake(() => new Promise(resolve => {
+      finishClose = resolve
+    }))
+
+    const shuttingDown = closing.amqp.close()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(closingChannel.close.calledOnce).to.equal(true)
+    wrapper.emit('blocked', 'memory alarm')
+    const completed = await completesWithin(shuttingDown)
+
+    wrapper.emit('unblocked')
+    finishClose?.()
+    await shuttingDown
+    await new Promise(resolve => setImmediate(resolve))
+    expect(completed).to.equal(true)
+    expect(wrapper.close.called).to.equal(false)
+    expect(surviving.amqp.channel.close.called).to.equal(false)
+    await surviving.amqp.publish('after unblocking')
+    expect(surviving.amqp.channel.waitForConfirms.calledOnce).to.equal(true)
   })
   it('flushes deferred publisher cleanup once after transport loss and recovers its peer', async () => {
     const closing = client('closing', { waitForConfirms: true })
