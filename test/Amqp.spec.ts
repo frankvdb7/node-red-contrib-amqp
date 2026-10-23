@@ -279,6 +279,33 @@ describe('Amqp Class', () => {
     expect(assertExchangeStub.calledOnce).to.equal(false)
   })
 
+  it('nack() defaults to requeuing only the selected message', () => {
+    const msg = { fields: { deliveryTag: 5 } }
+    const nack = sinon.stub()
+    amqp.channel = { nack }
+    amqp.nack(msg)
+    sinon.assert.calledOnceWithExactly(nack, msg, false, true)
+  })
+
+  it('nack() forwards explicit bulk and discard flags', () => {
+    const msg = {
+      fields: { deliveryTag: 5 },
+      manualAck: { allUpTo: true, requeue: false },
+    }
+    const nack = sinon.stub()
+    amqp.channel = { nack }
+    amqp.nack(msg)
+    sinon.assert.calledOnceWithExactly(nack, msg, true, false)
+  })
+
+  it('nack() reports a channel failure without throwing', () => {
+    const error = sinon.stub()
+    amqp.node = { ...nodeFixture, error }
+    amqp.channel = { nack: sinon.stub().throws(new Error('channel closed')) }
+    expect(() => amqp.nack({ fields: { deliveryTag: 5 } })).not.to.throw()
+    sinon.assert.calledOnceWithExactly(error, 'Could not nack message: Error: channel closed')
+  })
+
   it('nackAll() logs and delegates to channel', () => {
     const msg = { content: 'foo', manualAck: { requeue: true } }
     const nackAllStub = sinon.stub()
