@@ -960,21 +960,21 @@ describe('Amqp Class', () => {
     expect(amqp.q.queue).to.equal('existing.queue')
   })
 
-  it('bindQueue() topic exchange', () => {
+  it('bindQueue() topic exchange', async () => {
     const queue = 'queueName'
     const bindQueueStub = sinon.stub()
     amqp.channel = { bindQueue: bindQueueStub }
     amqp.q = { queue }
     const { exchangeName, exchangeRoutingKey } = nodeConfigFixture
 
-    amqp.bindQueue()
+    await amqp.bindQueue()
     expect(bindQueueStub.calledOnce).to.equal(true)
     expect(
       bindQueueStub.calledWith(queue, exchangeName, exchangeRoutingKey),
     ).to.equal(true)
   })
 
-  it('bindQueue() direct exchange', () => {
+  it('bindQueue() direct exchange', async () => {
     const config = {
       ...nodeConfigFixture,
       exchangeType: ExchangeType.Direct,
@@ -988,14 +988,14 @@ describe('Amqp Class', () => {
     amqp.q = { queue }
     const { exchangeName, exchangeRoutingKey } = config
 
-    amqp.bindQueue()
-    // expect(bindQueueStub.calledOnce).to.equal(true)
+    await amqp.bindQueue()
+    expect(bindQueueStub.calledOnce).to.equal(true)
     expect(
       bindQueueStub.calledWith(queue, exchangeName, exchangeRoutingKey),
     ).to.equal(true)
   })
 
-  it('bindQueue() fanout exchange', () => {
+  it('bindQueue() fanout exchange', async () => {
     const config = {
       ...nodeConfigFixture,
       exchangeType: ExchangeType.Fanout,
@@ -1009,12 +1009,12 @@ describe('Amqp Class', () => {
     amqp.q = { queue }
     const { exchangeName } = config
 
-    amqp.bindQueue()
+    await amqp.bindQueue()
     expect(bindQueueStub.calledOnce).to.equal(true)
     expect(bindQueueStub.calledWith(queue, exchangeName, '')).to.equal(true)
   })
 
-  it('bindQueue() headers exchange', () => {
+  it('bindQueue() headers exchange', async () => {
     const config = {
       ...nodeConfigFixture,
       exchangeType: ExchangeType.Headers,
@@ -1029,7 +1029,7 @@ describe('Amqp Class', () => {
     amqp.q = { queue }
     const { exchangeName, headers } = config
 
-    amqp.bindQueue()
+    await amqp.bindQueue()
     expect(bindQueueStub.calledOnce).to.equal(true)
     expect(bindQueueStub.calledWith(queue, exchangeName, '', headers)).to.equal(
       true,

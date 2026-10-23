@@ -627,12 +627,12 @@ export default class Amqp {
     await this.releaseConnection()
   }
 
-  private shouldAutoCreateExchangeBindings(configParams?: AmqpConfig): boolean {
-    return (configParams || this.config).exchange.autoCreate
+  private shouldAutoCreateExchangeBindings(): boolean {
+    return this.config.exchange.autoCreate
   }
 
-  private shouldAutoCreateQueue(configParams?: AmqpConfig): boolean {
-    return (configParams || this.config).queue.autoCreate
+  private shouldAutoCreateQueue(): boolean {
+    return this.config.queue.autoCreate
   }
 
   private shouldUnbindQueueOnClose(): boolean {
@@ -801,10 +801,9 @@ export default class Amqp {
     return name
   }
 
-  private async bindQueue(configParams?: AmqpConfig): Promise<void> {
-    const { name, type, routingKey } =
-      configParams?.exchange || this.config.exchange
-    const { headers } = configParams?.amqpProperties || this.config
+  private async bindQueue(): Promise<void> {
+    const { name, type, routingKey } = this.config.exchange
+    const { headers } = this.config
 
     if (this.canHaveRoutingKey(type) && name) {
       const promises = this.parseRoutingKeys(routingKey).map(key =>
