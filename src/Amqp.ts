@@ -693,9 +693,6 @@ export default class Amqp {
       const { channelErrorHandler, channelCloseHandler, channelReturnHandler } =
         this
       this.channel = undefined
-      channel.off?.('error', channelErrorHandler)
-      channel.off?.('close', channelCloseHandler)
-      channel.off?.('return', channelReturnHandler)
       return async (transportClosed = false) => {
         try {
           if (transportClosed) return
@@ -705,6 +702,10 @@ export default class Amqp {
           await channel.close()
         } catch (e) {
           this.node.error(`Error closing AMQP channel: ${e}`)
+        } finally {
+          channel.off?.('error', channelErrorHandler)
+          channel.off?.('close', channelCloseHandler)
+          channel.off?.('return', channelReturnHandler)
         }
       }
     }

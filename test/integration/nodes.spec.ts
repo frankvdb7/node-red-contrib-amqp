@@ -153,7 +153,10 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
     await broker.channel.assertQueue(topology.queue, { durable: true })
     await broker.channel.bindQueue(topology.queue, topology.exchange, topology.key)
 
-    const existingConnections = await broker.connections()
+    const existingConnections = await until('RabbitMQ exposes the harness observer connection', async () => {
+      const connections = await broker.connections()
+      return connections.length > 0 ? connections : false
+    })
     const existingConnectionNames = new Set(existingConnections.map(connection => connection.name))
     await broker.load([
       consumer(topology, { type: 'amqp-in-manual-ack' }),
@@ -193,11 +196,10 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
         const response = await helper.request().get('/amqp-broker/health')
         return response.body.brokers?.[0]?.publishBlocked?.out
       })
-
       helper.getNode('in').receive({ ...delivery, manualAck: { ackMode: 'ack' } })
       await until('consumer acknowledgement reaches RabbitMQ during the alarm', async () =>
         (await broker.queue(topology.queue)).messages_unacknowledged === 0,
-        5000,
+        15000,
       )
       expect(await broker.hasMemoryAlarm()).to.equal(true)
       expect((await helper.request().get('/amqp-broker/health')).status).to.equal(503)

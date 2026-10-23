@@ -432,6 +432,60 @@ describe('native recovery ownership', () => {
       expect(old.close.calledOnce).to.equal(true)
     })
   }
+  it('retains channel error handling throughout deferred cleanup', async () => {
+    const { amqp, node } = client('closing', { type: 'amqp-in', autoCreateQueue: true,
+      autoCreateExchangeBindings: true, exchangeRoutingKey: 'first' })
+    const peer = client('peer', { type: 'amqp-in', queueName: 'peer' }).amqp
+    await Promise.all([amqp.connect(), peer.connect()])
+    await recover()
+    const old = amqp.channel
+    let finishUnbind, finishClose
+    old.unbindQueue.callsFake(() => new Promise(resolve => { finishUnbind = resolve }))
+    old.close.callsFake(() => new Promise(resolve => { finishClose = resolve }))
+
+    wrapper.emit('blocked', 'resource alarm')
+    await amqp.close()
+    expect(old.unbindQueue.called).to.equal(false)
+
+    let deferredError, deferredListenerCount
+    await new Promise(resolve => setImmediate(() => {
+      deferredListenerCount = old.listenerCount('error')
+      try { old.emit('error', new Error('channel error during deferred cleanup')) }
+      catch (error) { deferredError = error }
+      resolve()
+    }))
+    expect(deferredListenerCount).to.equal(1)
+    expect(deferredError).to.equal(undefined)
+    expect(node.error.called).to.equal(false)
+
+    wrapper.emit('unblocked')
+    await new Promise(resolve => setImmediate(resolve))
+    expect(old.unbindQueue.calledOnce).to.equal(true)
+
+    let unbindError, unbindListenerCount
+    await new Promise(resolve => setImmediate(() => {
+      unbindListenerCount = old.listenerCount('error')
+      try { old.emit('error', new Error('channel error while unbinding')) }
+      catch (error) { unbindError = error }
+      resolve()
+    }))
+    expect(unbindListenerCount).to.equal(1)
+    expect(unbindError).to.equal(undefined)
+    finishUnbind()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(old.close.calledOnce).to.equal(true)
+    expect(old.listenerCount('error')).to.equal(1)
+
+    finishClose()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(old.listenerCount('error')).to.equal(0)
+    expect(old.listenerCount('close')).to.equal(0)
+    expect(old.listenerCount('return')).to.equal(0)
+    expect(node.error.called).to.equal(false)
+    expect(broker.lastError).not.to.have.property('closing')
+    expect(broker.nodeStates.peer).to.equal('connected')
+    expect(peer.channel.close.called).to.equal(false)
+  })
   it('finishes shutdown after an unbind error without restarting the shared transport', async () => {
     const { amqp, node } = client('closing', { type: 'amqp-in', autoCreateQueue: true,
       autoCreateExchangeBindings: true, exchangeRoutingKey: 'first,second' })
