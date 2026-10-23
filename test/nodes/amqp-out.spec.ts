@@ -123,6 +123,25 @@ describe('amqp-out Node', () => {
     expect(publishStub.notCalled).to.be.true;
   });
 
+  it('coerces a JSONata routing key before switching vhost and publishing merged properties', async () => {
+    sinon.stub(Amqp.prototype, 'connect').resolves()
+    const publish = sinon.stub(Amqp.prototype, 'publish').resolves()
+    const setVhost = sinon.stub(Amqp.prototype, 'setVhost').resolves()
+    const flow = JSON.parse(JSON.stringify(amqpOutFlowFixture))
+    flow[0].exchangeRoutingKeyType = 'jsonata'
+    flow[0].exchangeRoutingKey = 'payload.route'
+    flow[0].amqpProperties = '{"persistent":true,"contentType":"text/plain"}'
+    await helper.load([amqpOut, amqpBroker], flow, credentialsFixture)
+    const node = helper.getNode('n1'), warnings = []
+    node.on('call:warn', call => warnings.push(call.args[0]))
+    node.receive({ payload: { route: 42 }, vhost: 'customer', properties: { persistent: false } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(publish.calledOnceWithExactly({ route: 42 }, { persistent: false, contentType: 'text/plain' }, '42')).to.equal(true)
+    expect(setVhost.calledOnceWithExactly('customer')).to.equal(true)
+    expect(setVhost.calledBefore(publish)).to.equal(true)
+    expect(warnings).to.deep.equal(['Routing key JSONata expression returned number; coercing to string'])
+  })
+
   it('calls done with error when JSONata expression evaluation fails', async function () {
     const publishStub = sinon.stub(Amqp.prototype, 'publish');
     const connectionMock = { on: sinon.stub(), off: sinon.stub(), close: sinon.stub() }

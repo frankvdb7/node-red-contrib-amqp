@@ -14,7 +14,54 @@ export = (RED: NodeAPI): void => {
   ): void {
     const amqp = createAmqpNode(RED, this, config)
 
-    // handle input event
+    const resolveRoutingKey = async (
+      msg: NodeMessageInFlow & { routingKey?: string },
+    ): Promise<string | undefined> => {
+      const { exchangeRoutingKey, exchangeRoutingKeyType } = config
+      try {
+        switch (exchangeRoutingKeyType) {
+          case 'msg':
+          case 'flow':
+          case 'global':
+            return RED.util.evaluateNodeProperty(
+              exchangeRoutingKey,
+              exchangeRoutingKeyType,
+              this,
+              msg,
+            )
+          case 'jsonata': {
+            const expr = RED.util.prepareJSONataExpression(
+              exchangeRoutingKey,
+              this,
+            )
+            const result = await new Promise<unknown>((resolve, reject) => {
+              RED.util.evaluateJSONataExpression(expr, msg, (err, value) => {
+                if (err) reject(err)
+                else resolve(value)
+              })
+            })
+            if (typeof result !== 'string') {
+              this.warn(
+                `Routing key JSONata expression returned ${typeof result}; coercing to string`,
+              )
+            }
+            return String(result)
+          }
+          case 'str':
+          default:
+            // Preserve the per-message override; Amqp.publish applies the configured default.
+            return msg.routingKey || undefined
+        }
+      } catch (err) {
+        const expression =
+          exchangeRoutingKeyType === 'jsonata'
+            ? 'JSONata expression'
+            : 'routing key'
+        this.error(`Failed to evaluate ${expression}: ${err}`)
+        throw err
+      }
+    }
+
     const inputListener = async (
       msg: NodeMessageInFlow & {
         routingKey?: string
@@ -24,9 +71,8 @@ export = (RED: NodeAPI): void => {
       _: unknown,
       done?: (err?: Error) => void,
     ) => {
-      const { payload, routingKey, vhost, properties: msgProperties } = msg
-      const { exchangeRoutingKey, exchangeRoutingKeyType, amqpProperties } =
-        config
+      const { payload, vhost, properties: msgProperties } = msg
+      const { amqpProperties } = config
 
       // message properties override config properties
       let properties: Options.Publish
@@ -40,64 +86,11 @@ export = (RED: NodeAPI): void => {
       }
 
       let effectiveRoutingKey: string | undefined
-      switch (exchangeRoutingKeyType) {
-        case 'msg':
-        case 'flow':
-        case 'global':
-          try {
-            effectiveRoutingKey = RED.util.evaluateNodeProperty(
-              exchangeRoutingKey,
-              exchangeRoutingKeyType,
-              this,
-              msg,
-            )
-          } catch (err) {
-            this.error(`Failed to evaluate routing key: ${err}`)
-            done && done(toError(err))
-            return
-          }
-          break
-        case 'jsonata': {
-          try {
-            const expr = RED.util.prepareJSONataExpression(
-              exchangeRoutingKey,
-              this,
-            )
-            const result = await new Promise<unknown>((resolve, reject) => {
-              RED.util.evaluateJSONataExpression(expr, msg, (err, value) => {
-                if (err) {
-                  reject(err)
-                } else {
-                  resolve(value)
-                }
-              })
-            })
-
-            if (typeof result !== 'string') {
-              this.warn(
-                `Routing key JSONata expression returned ${typeof result}; coercing to string`,
-              )
-            }
-
-            effectiveRoutingKey = String(result)
-          } catch (err) {
-            this.error(`Failed to evaluate JSONata expression: ${err}`)
-            done && done(toError(err))
-            return
-          }
-          break
-        }
-        case 'str':
-        default:
-          if (routingKey) {
-            // if incoming payload contains a routingKey value
-            // override our string value with it.
-
-            // Superfluous (and possibly confusing) at this point
-            // but keeping it to retain backwards compatibility
-            effectiveRoutingKey = routingKey
-          }
-          break
+      try {
+        effectiveRoutingKey = await resolveRoutingKey(msg)
+      } catch (err) {
+        done && done(toError(err))
+        return
       }
 
       if (vhost) {
