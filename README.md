@@ -70,6 +70,14 @@ The broker config node exposes `/amqp-broker/health` from Node-RED admin HTTP:
 - Returns HTTP `200` when all known brokers are connected and no publisher is blocked.
 - Returns HTTP `503` when a broker is not connected or a publisher is blocked.
 
+This endpoint reports connection health observed by Node-RED; it does not query
+RabbitMQ's broker-wide memory or disk alarm state. A publisher that reconnects
+during an active resource alarm may still appear healthy until it attempts to
+publish. RabbitMQ can then block the connection and the endpoint will report
+`503`. Monitor [RabbitMQ resource alarms](https://www.rabbitmq.com/docs/alarms)
+and [RabbitMQ metrics](https://www.rabbitmq.com/docs/monitoring) separately for
+memory and disk alarm state.
+
 `status: "connected"` describes the transport and node setup. When RabbitMQ blocks
 publishing, the broker remains connected, `overallStatus` becomes `"degraded"`, and
 `publishBlocked` lists the affected publisher node IDs and the broker-provided reason:
