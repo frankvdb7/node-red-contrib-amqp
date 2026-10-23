@@ -544,6 +544,32 @@ describe('Amqp Class', () => {
   })
 
   describe('publish()', () => {
+    it('applies configured properties and message overrides without leaking them to the next publish', async () => {
+      amqp = new Amqp(RED, nodeFixture, {
+        ...nodeConfigFixture,
+        amqpProperties: '{"persistent":true,"contentType":"text/plain"}',
+      })
+      const publish = sinon.stub()
+      amqp.channel = { publish }
+      amqp.ready = true
+      const overrides = { persistent: false, expiration: '1000' }
+
+      await amqp.publish('first', overrides)
+      await amqp.publish('second')
+
+      expect(publish.firstCall.args[3]).to.deep.equal({
+        persistent: false, contentType: 'text/plain', expiration: '1000',
+        correlationId: '', replyTo: '',
+      })
+      expect(publish.secondCall.args[3]).to.deep.equal({
+        persistent: true, contentType: 'text/plain', correlationId: '', replyTo: '',
+      })
+      expect(overrides).to.deep.equal({ persistent: false, expiration: '1000' })
+      expect(amqp.config.amqpProperties).to.deep.equal({
+        persistent: true, contentType: 'text/plain',
+      })
+    })
+
     for (const queue of ['', 'fallback.queue']) {
       it(`falls back to ${queue || 'an empty key'} for an empty routing override`, async () => {
         amqp.config.exchange.routingKey = 'payload.route'

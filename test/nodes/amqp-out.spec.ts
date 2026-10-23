@@ -123,7 +123,7 @@ describe('amqp-out Node', () => {
     expect(publishStub.notCalled).to.be.true;
   });
 
-  it('coerces a JSONata routing key before switching vhost and publishing merged properties', async () => {
+  it('coerces a JSONata routing key before switching vhost and forwarding message properties', async () => {
     sinon.stub(Amqp.prototype, 'connect').resolves()
     const publish = sinon.stub(Amqp.prototype, 'publish').resolves()
     const setVhost = sinon.stub(Amqp.prototype, 'setVhost').resolves()
@@ -136,7 +136,7 @@ describe('amqp-out Node', () => {
     node.on('call:warn', call => warnings.push(call.args[0]))
     node.receive({ payload: { route: 42 }, vhost: 'customer', properties: { persistent: false } })
     await new Promise(resolve => setTimeout(resolve, 20))
-    expect(publish.calledOnceWithExactly({ route: 42 }, { persistent: false, contentType: 'text/plain' }, '42')).to.equal(true)
+    expect(publish.calledOnceWithExactly({ route: 42 }, { persistent: false }, '42')).to.equal(true)
     expect(setVhost.calledOnceWithExactly('customer')).to.equal(true)
     expect(setVhost.calledBefore(publish)).to.equal(true)
     expect(warnings).to.deep.equal(['Routing key JSONata expression returned number; coercing to string'])

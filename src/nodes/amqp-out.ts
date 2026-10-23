@@ -72,19 +72,6 @@ export = (RED: NodeAPI): void => {
       done?: (err?: Error) => void,
     ) => {
       const { payload, vhost, properties: msgProperties } = msg
-      const { amqpProperties } = config
-
-      // message properties override config properties
-      let properties: Options.Publish
-      try {
-        properties = {
-          ...JSON.parse(amqpProperties),
-          ...msgProperties,
-        }
-      } catch {
-        properties = msgProperties
-      }
-
       let effectiveRoutingKey: string | undefined
       try {
         effectiveRoutingKey = await resolveRoutingKey(msg)
@@ -104,7 +91,7 @@ export = (RED: NodeAPI): void => {
       }
 
       try {
-        await amqp.publish(payload, properties, effectiveRoutingKey)
+        await amqp.publish(payload, msgProperties, effectiveRoutingKey)
       } catch (e) {
         done && done(toError(e))
         return
