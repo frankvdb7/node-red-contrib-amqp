@@ -145,50 +145,79 @@ export default class SharedConnection {
       return
     }
 
-    if (lastOwner && wasBlocked && this.connection) {
-      const cleanups = [...this.deferredCleanups.splice(0), cleanup]
-      let closeError: unknown
-      try {
-        // During a resource alarm RabbitMQ may not acknowledge channel.close().
-        // Closing the blocked transport first means channel cleanup must be local.
-        await (await this.connection).close()
-      } catch (error) {
-        closeError = error
-      } finally {
-        this.detachConnectionListeners()
-        this.detachModelListeners()
-        await Promise.all(
-          cleanups.map(item => item(true).catch(() => undefined)),
-        )
-      }
-      if (closeError) throw closeError
+    const connection = this.connection
+    if (lastOwner && wasBlocked && connection) {
+      await this.closeBlockedFinalOwner(cleanup, connection)
       return
     }
 
+    await this.runRemovalCleanup(cleanup, lastOwner)
+  }
+
+  private async closeBlockedFinalOwner(
+    cleanup: OwnerCleanup,
+    connection: Promise<RecoveringChannelModel>,
+  ): Promise<void> {
+    const cleanups = [...this.deferredCleanups.splice(0), cleanup]
+    let closeError: unknown
+    try {
+      // During a resource alarm RabbitMQ may not acknowledge channel.close().
+      // Closing the blocked transport first means channel cleanup must be local.
+      await (await connection).close()
+    } catch (error) {
+      closeError = error
+    } finally {
+      this.detachConnectionListeners()
+      this.detachModelListeners()
+      await Promise.all(cleanups.map(item => item(true).catch(() => undefined)))
+    }
+    if (closeError) throw closeError
+  }
+
+  private async runRemovalCleanup(
+    cleanup: OwnerCleanup,
+    lastOwner: boolean,
+  ): Promise<void> {
     const cleanups = [...this.deferredCleanups.splice(0), cleanup]
     const cleaning = this.cleanup.then(async () => {
       for (const item of cleanups) await item(false)
     })
     this.cleanup = cleaning.catch(() => undefined)
+
+    if (lastOwner) {
+      await this.finishFinalOwnerCleanup(cleaning)
+      return
+    }
+
+    const blocked = this.waitForBlocked()
+    try {
+      // A block can arrive after channel cleanup starts. Stop waiting for that
+      // RPC so the removed owner can finish shutdown while its peer stays live.
+      await Promise.race([cleaning, blocked.promise])
+    } finally {
+      blocked.cancel()
+    }
+  }
+
+  private async finishFinalOwnerCleanup(
+    cleaning: Promise<void>,
+  ): Promise<void> {
     const blocked = this.waitForBlocked()
     let transportCloseStarted = false
-
     try {
-      // A block can arrive after channel cleanup starts. Do not wait on that RPC
-      // for a removed owner, and close the transport if it was the final owner.
-      const blockedDuringCleanup = await Promise.race([
-        cleaning.then(() => false),
-        blocked.promise.then(() => true),
+      // If blocking starts during cleanup, close the transport to release the
+      // channel RPC instead of waiting for an acknowledgement RabbitMQ cannot send.
+      const cleanupFinished = await Promise.race([
+        cleaning.then(() => true),
+        blocked.promise.then(() => false),
       ])
-      if (blockedDuringCleanup && lastOwner && this.connection) {
+      if (!cleanupFinished && this.connection) {
         transportCloseStarted = true
         await (await this.connection).close()
-      } else if (!blockedDuringCleanup) {
-        await cleaning
       }
     } finally {
       blocked.cancel()
-      if (lastOwner && this.connection) {
+      if (this.connection) {
         this.detachConnectionListeners()
         this.detachModelListeners()
         if (!transportCloseStarted) await (await this.connection).close()
