@@ -309,21 +309,37 @@ describe('native recovery ownership', () => {
       expect(broker.lastError[node.id].message).to.equal(error.message)
     }
   })
-  it('shares concurrent startup and restores every owner including confirm channels and consumers', async () => {
+  it('isolates publisher and consumer recovery while restoring each role', async () => {
     const out = client('out', { waitForConfirms: true })
     const input = client('in', { type: 'amqp-in', autoCreateQueue: true, autoCreateExchangeBindings: true })
+    const publisherWrapper = Object.assign(new EventEmitter(), { close: sinon.stub().resolves() })
+    const consumerWrapper = Object.assign(new EventEmitter(), { close: sinon.stub().resolves() })
+    const recoveries = []
+    connect.callsFake(async (_url, opts) => {
+      recoveries.push(opts.recovery)
+      return recoveries.length === 1 ? publisherWrapper : consumerWrapper
+    })
     await Promise.all([out.amqp.connect(), input.amqp.connect()])
-    expect(connect.callCount).to.equal(1)
+    expect(connect.callCount).to.equal(2)
     expect(broker.nodeStates.out).not.to.equal('connected')
-    const first = await recover()
-    expect(first.createConfirmChannel.callCount).to.equal(1)
+    const publisherRaw = model(), consumerRaw = model()
+    await recoveries[0].setup(publisherRaw)
+    publisherWrapper.emit('connect', publisherRaw)
+    await recoveries[1].setup(consumerRaw)
+    consumerWrapper.emit('connect', consumerRaw)
+    await new Promise(resolve => setImmediate(resolve))
+    expect(publisherRaw.createConfirmChannel.callCount).to.equal(1)
+    expect(consumerRaw.createChannel.callCount).to.equal(1)
     expect(input.amqp.channel.consume.callCount).to.equal(1)
-    wrapper.emit('disconnect', new Error('outage'))
-    expect(broker.nodeStates).to.deep.equal({ out: 'disconnected', in: 'disconnected' })
-    wrapper.emit('connect-failed', new Error('still unavailable'))
+    publisherWrapper.emit('disconnect', new Error('outage'))
+    expect(broker.nodeStates).to.deep.equal({ out: 'disconnected', in: 'connected' })
+    publisherWrapper.emit('connect-failed', new Error('still unavailable'))
     expect(broker.nodeStates.out).to.equal('errored')
-    const second = await recover()
-    expect(second.createConfirmChannel.callCount).to.equal(1)
+    const replacementPublisher = model()
+    await recoveries[0].setup(replacementPublisher)
+    publisherWrapper.emit('connect', replacementPublisher)
+    await new Promise(resolve => setImmediate(resolve))
+    expect(replacementPublisher.createConfirmChannel.callCount).to.equal(1)
     expect(input.amqp.channel.bindQueue.callCount).to.equal(1)
     expect(input.amqp.channel.consume.callCount).to.equal(1)
     await out.amqp.publish('after recovery')
@@ -419,7 +435,7 @@ describe('native recovery ownership', () => {
   it('finishes shutdown after an unbind error without restarting the shared transport', async () => {
     const { amqp, node } = client('closing', { type: 'amqp-in', autoCreateQueue: true,
       autoCreateExchangeBindings: true, exchangeRoutingKey: 'first,second' })
-    const peer = client('peer').amqp
+    const peer = client('peer', { type: 'amqp-in', queueName: 'peer' }).amqp
     await Promise.all([amqp.connect(), peer.connect()])
     const raw = await recover(), old = amqp.channel
     old.unbindQueue.onFirstCall().callsFake(async () => {
@@ -476,26 +492,39 @@ describe('native recovery ownership', () => {
     it(`isolates a failing consumer ${late ? 'joining a healthy connection' : 'during startup'}`, async () => {
       const out = client('out', { waitForConfirms: true }).amqp
       await out.connect()
-      const raw = model(), broken = channel()
+      const publisherRaw = model()
+      if (late) await recover(publisherRaw)
+      const consumerWrapper = Object.assign(new EventEmitter(), { close: sinon.stub().resolves() })
+      let consumerOptions
+      connect.callsFake(async (_url, opts) => {
+        consumerOptions = opts.recovery
+        return consumerWrapper
+      })
+      const broken = channel()
       broken.consume.callsFake(async () => {
         broken.emit('error', new Error('queue unavailable'))
         broken.emit('close')
         throw new Error('queue unavailable')
       })
-      if (late) await recover(raw)
-      raw.createChannel.resolves(broken)
       const input = client('in', { type: 'amqp-in', queueName: 'missing' }).amqp
       await input.connect()
-      if (!late) await recover(raw)
+      const consumerRaw = model()
+      consumerRaw.createChannel.resolves(broken)
+      await consumerOptions.setup(consumerRaw)
+      consumerWrapper.emit('connect', consumerRaw)
+      if (!late) await recover(publisherRaw)
       await new Promise(resolve => setImmediate(resolve))
       expect(broker.nodeStates).to.deep.equal({ out: 'connected', in: 'errored' })
       expect(broker.lastError.in.message).to.equal('queue unavailable')
-      expect(raw.close.called).to.equal(false)
+      expect(consumerRaw.close.called).to.equal(false)
       expect(wrapper.close.called).to.equal(false)
       await out.publish('healthy publisher')
       expect(out.channel.publish.callCount).to.equal(1)
-      wrapper.emit('disconnect', new Error('transport lost'))
-      await recover()
+      consumerWrapper.emit('disconnect', new Error('consumer transport lost'))
+      const consumerReplacement = model()
+      await consumerOptions.setup(consumerReplacement)
+      consumerWrapper.emit('connect', consumerReplacement)
+      await new Promise(resolve => setImmediate(resolve))
       expect(broker.nodeStates).to.deep.equal({ out: 'connected', in: 'connected' })
       expect(input.channel.consume.callCount).to.equal(1)
     })
@@ -517,7 +546,7 @@ describe('native recovery ownership', () => {
     expect(amqp.channel.publish.called).to.equal(false)
   })
   it('restores owners joining an already connected pool without reopening the transport', async () => {
-    await client('first').amqp.connect()
+    await client('first', { type: 'amqp-in', queueName: 'first' }).amqp.connect()
     const raw = await recover()
     const late = client('late', { type: 'amqp-in-manual-ack', autoCreateQueue: true })
     await late.amqp.connect()
@@ -579,7 +608,11 @@ describe('native recovery ownership', () => {
   })
   for (const [phase, outcome] of [['channel', 'reject'], ['channel', 'resolve'], ['prefetch', 'reject'], ['prefetch', 'resolve'], ['queue', 'resolve'], ['binding', 'resolve']]) {
     it(`ignores stale late-owner ${phase} ${outcome} after a replacement connection recovers`, async () => {
-      await client('peer').amqp.connect()
+      const consuming = phase === 'queue' || phase === 'binding'
+      await client('peer', {
+        type: consuming ? 'amqp-in' : 'amqp-out',
+        queueName: consuming ? 'peer' : '',
+      }).amqp.connect()
       const previous = await recover(), oldChannel = channel()
       let finish
       const pending = () => new Promise((resolve, reject) => {
@@ -596,7 +629,6 @@ describe('native recovery ownership', () => {
         else oldChannel.bindQueue.callsFake(pending)
         previous.createChannel.resolves(oldChannel)
       }
-      const consuming = phase === 'queue' || phase === 'binding'
       const late = client('late', { type: consuming ? 'amqp-in' : 'amqp-out',
         waitForConfirms: !consuming, autoCreateQueue: true, autoCreateExchangeBindings: true })
       const joining = late.amqp.connect()
@@ -627,7 +659,7 @@ describe('native recovery ownership', () => {
   for (const type of ['amqp-out', 'amqp-in']) {
     it(`rejects shared setup when a restored ${type} channel closes while a peer is still initializing`, async () => {
       const first = client('first', { type, queueName: 'first', waitForConfirms: type === 'amqp-out' })
-      const peer = client('peer').amqp
+      const peer = client('peer', { type, queueName: 'peer' }).amqp
       await Promise.all([first.amqp.connect(), peer.connect()])
       const raw = model(), restored = channel()
       let finishPeer

@@ -118,7 +118,9 @@ export default class Amqp {
     const { host, port, vhost } = brokerConfig
 
     const brokerInfo = `${host}:${port}${vhost ? `/${vhost}` : ''}`
-    const key = `${broker}:${vhost}`
+    const connectionRole =
+      this.node.type === NodeType.AmqpOut ? 'publisher' : 'consumer'
+    const key = `${broker}:${vhost}:${connectionRole}`
 
     if (this.closed) return this.connection
     if (this.poolEntry) return this.poolEntry.connect()

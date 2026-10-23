@@ -146,6 +146,70 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
     }
   })
 
+  it('keeps consumer acknowledgements flowing during a publisher memory alarm', async function () {
+    this.timeout(45000)
+    const topology = broker.topology()
+    await broker.channel.assertExchange(topology.exchange, 'direct', { durable: true })
+    await broker.channel.assertQueue(topology.queue, { durable: true })
+    await broker.channel.bindQueue(topology.queue, topology.exchange, topology.key)
+
+    const existingConnections = await broker.connections()
+    const existingConnectionNames = new Set(existingConnections.map(connection => connection.name))
+    await broker.load([
+      consumer(topology, { type: 'amqp-in-manual-ack' }),
+      { id: 'sink', type: 'helper' },
+      { id: 'out', type: 'amqp-out', broker: 'broker', exchangeName: topology.exchange,
+        exchangeType: 'direct', exchangeRoutingKey: `${topology.key}.alarm`, waitForConfirms: true },
+      { id: 'completion', type: 'complete', scope: ['out'], wires: [['confirmed']] },
+      { id: 'confirmed', type: 'helper' },
+    ])
+
+    const appConnections = await until('publisher and consumer use separate RabbitMQ connections', async () => {
+      const connections = (await broker.connections()).filter(connection =>
+        !existingConnectionNames.has(connection.name),
+      )
+      return connections.length === 2 ? connections : false
+    })
+    expect(appConnections).to.have.length(2)
+
+    const receive = nextMessage(helper.getNode('sink'))
+    broker.channel.publish(topology.exchange, topology.key, Buffer.from('{"manual":true}'))
+    await broker.channel.waitForConfirms()
+    const delivery = await receive()
+    await until('message is unacknowledged before the alarm', async () =>
+      (await broker.queue(topology.queue)).messages_unacknowledged === 1,
+    )
+
+    let alarmActive = false
+    let blockedConfirmation
+    try {
+      await broker.setMemoryAlarm(true)
+      alarmActive = true
+      await until('RabbitMQ reports its memory alarm', () => broker.hasMemoryAlarm())
+
+      blockedConfirmation = nextMessage(helper.getNode('confirmed'))
+      helper.getNode('out').receive({ payload: 'trigger publisher block' })
+      await until('publisher connection reports blocked', async () => {
+        const response = await helper.request().get('/amqp-broker/health')
+        return response.body.brokers?.[0]?.publishBlocked?.out
+      })
+
+      helper.getNode('in').receive({ ...delivery, manualAck: { ackMode: 'ack' } })
+      await until('consumer acknowledgement reaches RabbitMQ during the alarm', async () =>
+        (await broker.queue(topology.queue)).messages_unacknowledged === 0,
+        5000,
+      )
+      expect(await broker.hasMemoryAlarm()).to.equal(true)
+      expect((await helper.request().get('/amqp-broker/health')).status).to.equal(503)
+    } finally {
+      if (alarmActive) {
+        await broker.setMemoryAlarm(false)
+        alarmActive = false
+      }
+      if (blockedConfirmation) await blockedConfirmation()
+    }
+  })
+
   it('unloads a blocked publisher before RabbitMQ clears the memory alarm', async function () {
     this.timeout(30000)
     const topology = broker.topology()
@@ -601,7 +665,7 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
         helper.getNode('manual').receive(message)
         await until('recovered manual consumer acknowledges', async () =>
           (await broker.queue(manual.queue)).message_stats?.ack === 1)
-        // Closing one owner must leave the shared transport and consumers running.
+        // Closing one publisher must leave its peer and the consumers running.
         await helper.getNode('out').close()
         helper.getNode('confirmed-out').receive({ payload: 'surviving owner' })
         expect((await receive()).payload).to.equal('surviving owner')
