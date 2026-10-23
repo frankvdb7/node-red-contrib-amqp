@@ -1,5 +1,4 @@
 import {
-  ErrorType,
   ExchangeType,
   BrokerConfig,
   NodeType,
@@ -109,9 +108,8 @@ export const nodeFixture = {
   warn: (): null => null,
   error: (): null => null,
 }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const brokerConfigFixture: any & BrokerConfig = {
+  type: 'amqp-broker',
   host: 'host',
   port: 222,
   vhost: '',
@@ -121,17 +119,4 @@ export const brokerConfigFixture: any & BrokerConfig = {
   },
   nodeStates: {},
   lastError: {},
-}
-
-export class CustomError extends Error {
-  constructor(private readonly code: ErrorType, message?: string) {
-    super(message)
-
-    // Maintains proper stack trace for where our error was thrown (only available on V8)
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, CustomError)
-    }
-
-    this.name = 'CustomError'
-  }
 }

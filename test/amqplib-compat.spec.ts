@@ -1,9 +1,6 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-export {}
-
-const { expect } = require('chai')
-const net = require('node:net')
-const amqplib = require('amqplib')
+import { expect } from 'chai'
+import net from 'node:net'
+import amqplib from 'amqplib'
 
 const FRAME_END = 0xce
 const PROTOCOL_HEADER = Buffer.from('AMQP\0\0\x09\x01', 'binary')

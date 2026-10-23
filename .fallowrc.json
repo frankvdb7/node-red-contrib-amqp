@@ -8,6 +8,7 @@
     "src/nodes/amqp-broker.ts",
     "src/nodes/amqp-in-manual-ack.ts"
   ],
+  "ignoreDependencies": ["@istanbuljs/nyc-config-typescript"],
   "duplicates": {
     // Hide pair-only clones; focus on widespread copy-paste
     // worth refactoring. Lower to 2 to report every duplicate pair.

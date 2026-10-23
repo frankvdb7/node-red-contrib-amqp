@@ -1,20 +1,21 @@
-import {
-  type Channel,
-  type ChannelModel,
-  type ConfirmChannel,
-  type ConsumeMessage,
-  connect,
-  type MessageProperties,
-  type Replies,
+import type {
+  Channel,
+  ChannelModel,
+  ConfirmChannel,
+  ConsumeMessage,
+  Options,
+  RecoveringChannelModel,
+  Replies,
 } from 'amqplib'
-import cloneDeep from 'lodash.clonedeep'
-import type { Node, NodeMessage, NodeRedApp } from 'node-red'
-import { NODE_STATUS } from './constants'
+import type { Node, NodeAPI } from 'node-red'
+import { NODE_STATUS, VHOST_READY_TIMEOUT_MS } from './constants'
+import SharedConnection, { type ConnectionOwner } from './shared-connection'
 import {
   type AmqpBrokerNode,
   type AmqpConfig,
   type AmqpInNodeDefaults,
   type AmqpOutNodeDefaults,
+  type AmqpSettings,
   type AssembledMessage,
   type BrokerConfig,
   type BrokerNodeError,
@@ -28,24 +29,51 @@ import {
 export default class Amqp {
   private config: AmqpConfig
   private broker: AmqpBrokerNode
-  private connection: ChannelModel
+  private connection: RecoveringChannelModel
   private channel: Channel
   private q: Replies.AssertQueue
   private vhostOverride?: string
-  private static connectionPool: Map<
-    string,
-    { connection: ChannelModel; count: number }
-  > = new Map()
-  private connectionErrorHandler: (e: unknown) => void
-  private connectionCloseHandler: () => void
+  private static connectionPool = new Map<string, SharedConnection>()
+  private poolEntry?: SharedConnection
+  private poolKey?: string
+  private channelModel?: ChannelModel
+  private ready = false
+  private generation = 0
+  private restoreGeneration = 0
+  private setupFailure?: Error
+  private settingUp = false
+  private readonly recoveryOwner: ConnectionOwner = {
+    queueName: () => {
+      if (this.node.type === NodeType.AmqpOut) return undefined
+      return this.config.queue.name || this.q?.queue
+    },
+    setup: model => this.restore(model),
+    connected: () => {
+      if (!this.closed) this.markConnected()
+    },
+    disconnected: error => this.disconnected(error),
+    failed: error => {
+      this.disconnected(error)
+      this.setBrokerNodeState('errored', error)
+      const message = error instanceof Error ? error.message : String(error)
+      this.node.status(
+        /ACCESS_REFUSED|403/.test(message)
+          ? NODE_STATUS.Invalid
+          : NODE_STATUS.Error,
+      )
+      this.node.warn(`AMQP recovery: ${message}`)
+    },
+  }
   private channelErrorHandler: (e: unknown) => void
   private channelCloseHandler: () => void
   private channelReturnHandler: () => void
   private rpcTimeouts: Set<NodeJS.Timeout> = new Set()
+  private vhostWaits = new Map<() => void, (error: Error) => void>()
   private closed = false
+  private shuttingDown = false
 
   constructor(
-    private readonly RED: NodeRedApp,
+    private readonly RED: NodeAPI<AmqpSettings>,
     private readonly node: Node,
     config: AmqpInNodeDefaults & AmqpOutNodeDefaults,
   ) {
@@ -53,7 +81,6 @@ export default class Amqp {
       name: config.name,
       broker: config.broker,
       prefetch: config.prefetch,
-      reconnectOnError: config.reconnectOnError,
       noAck: config.noAck,
       waitForConfirms: config.waitForConfirms,
       exchange: {
@@ -72,33 +99,17 @@ export default class Amqp {
         queueType: config.queueType,
         queueArguments: this.parseJsonObject(config.queueArguments),
       },
-      amqpProperties: this.parseJsonObject(
-        config.amqpProperties,
-      ) as unknown as MessageProperties,
+      amqpProperties: this.parseJsonObject(config.amqpProperties),
       headers: this.parseJsonObject(config.headers),
       outputs: config.outputs,
       rpcTimeout: config.rpcTimeoutMilliseconds,
     }
   }
 
-  public async connect(): Promise<ChannelModel> {
+  public async connect(): Promise<RecoveringChannelModel> {
     const { broker } = this.config
 
-    // wtf happened to the types?
-    // @ts-expect-error
-    this.broker = this.RED.nodes.getNode(broker)
-
-    if (!this.broker) {
-      const err = new Error(`AMQP broker node not found: ${broker}`)
-      this.node.error(err.message)
-      throw err
-    }
-
-    const brokerConfig: BrokerConfig = {
-      ...(this.broker as unknown as BrokerConfig),
-      vhost:
-        this.vhostOverride ?? (this.broker as unknown as BrokerConfig).vhost,
-    }
+    const brokerConfig = this.getBrokerConfig()
 
     const brokerUrl = this.getBrokerUrl(brokerConfig)
     const { host, port, vhost } = brokerConfig
@@ -106,65 +117,107 @@ export default class Amqp {
     const brokerInfo = `${host}:${port}${vhost ? `/${vhost}` : ''}`
     const key = `${broker}:${vhost}`
 
+    if (this.closed) return this.connection
+    if (this.poolEntry) return this.poolEntry.connect()
+    this.setBrokerNodeState('disconnected')
     let entry = Amqp.connectionPool.get(key)
-    if (entry && !this.isConnectionOpen(entry.connection)) {
-      Amqp.connectionPool.delete(key)
-      entry = undefined
-    }
-
     if (!entry) {
       this.node.log(`Connecting to AMQP broker ${brokerInfo}`)
-      try {
-        const connection = await connect(brokerUrl)
-        this.node.log(`Connected to AMQP broker ${brokerInfo}`)
+      entry = new SharedConnection(brokerUrl)
+      Amqp.connectionPool.set(key, entry)
+    }
+    this.poolEntry = entry
+    this.poolKey = key
+    const generation = this.generation
+    const isCurrentAttempt = () =>
+      !this.closed && generation === this.generation
+    try {
+      const connection = await entry.add(this.recoveryOwner)
+      if (isCurrentAttempt()) this.connection = connection
+      return connection
+    } catch (error) {
+      if (this.poolEntry === entry) {
+        await this.releaseConnection().catch(() => undefined)
+      }
+      if (isCurrentAttempt()) {
+        this.setBrokerNodeState('errored', error)
+      }
+      throw error
+    }
+  }
 
-        connection.on('close', () => {
-          const current = Amqp.connectionPool.get(key)
-          if (current?.connection === connection) {
-            Amqp.connectionPool.delete(key)
-          }
-        })
+  private getBrokerConfig(): BrokerConfig {
+    const broker = this.RED.nodes.getNode(this.config.broker)
 
-        entry = { connection, count: 0 }
-        Amqp.connectionPool.set(key, entry)
-      } catch (err) {
-        this.setBrokerNodeState('errored', err)
-        this.node.warn(`Failed to connect to AMQP broker ${brokerInfo}: ${err}`)
-        throw err
+    if (!this.isBrokerNode(broker)) {
+      const err = new Error(`AMQP broker node not found: ${this.config.broker}`)
+      this.node.error(err.message)
+      throw err
+    }
+
+    this.broker = broker
+    return { ...broker, vhost: this.vhostOverride ?? broker.vhost }
+  }
+
+  private isBrokerNode(node: Node): node is AmqpBrokerNode {
+    return node?.type === 'amqp-broker'
+  }
+
+  private async restore(model: ChannelModel): Promise<void> {
+    if (this.closed) return
+    const generation = this.generation
+    const restoreGeneration = ++this.restoreGeneration
+    const cancelled = () =>
+      this.closed ||
+      generation !== this.generation ||
+      restoreGeneration !== this.restoreGeneration
+    const ownsSetup = () => !cancelled() && this.channelModel === model
+    this.ready = false
+    this.setupFailure = undefined
+    this.clearRpcTimeouts()
+    await this.closeChannel()
+    if (cancelled()) return
+    this.channelModel = model
+    this.settingUp = true
+    try {
+      await this.initialize()
+      if (cancelled()) return
+      if (this.node.type !== NodeType.AmqpOut) await this.consume()
+      if (this.setupFailure) throw this.setupFailure
+    } catch (error) {
+      if (ownsSetup()) {
+        await this.closeChannel()
+      }
+      throw error
+    } finally {
+      if (ownsSetup()) {
+        this.settingUp = false
       }
     }
+  }
 
-    entry.count += 1
-    this.connection = entry.connection
-
-    this.connectionErrorHandler = (e): void => {
-      /* istanbul ignore next */
-      this.setBrokerNodeState('errored', e)
-      this.node.status(NODE_STATUS.Disconnected)
-      this.node.warn(`AMQP connection error ${e}`)
-    }
-
-    this.connectionCloseHandler = (): void => {
-      /* istanbul ignore next */
-      this.setBrokerNodeState(
-        'disconnected',
-        new Error('AMQP connection closed'),
+  private disconnected(error: unknown): void {
+    if (this.closed) return
+    this.ready = false
+    if (this.rpcTimeouts.size) {
+      this.node.error(
+        'AMQP connection lost before RPC replies; pending requests cancelled',
       )
-      this.node.status(NODE_STATUS.Disconnected)
-      this.node.log(`AMQP Connection closed`)
     }
+    this.clearRpcTimeouts()
+    this.setBrokerNodeState('disconnected', error)
+    this.node.status(NODE_STATUS.Disconnected)
+  }
 
-    this.connection.on('error', this.connectionErrorHandler)
-    this.connection.on('close', this.connectionCloseHandler)
-
-    this.closed = false
-
-    return this.connection
+  public async reconnect(): Promise<void> {
+    if (!this.closed) await this.poolEntry?.restart()
   }
 
   public markConnected(): void {
+    this.ready = true
     this.setBrokerNodeState('connected')
     this.node.status(NODE_STATUS.Connected)
+    for (const complete of this.vhostWaits.keys()) complete()
   }
 
   public removeBrokerNodeState(): void {
@@ -182,15 +235,16 @@ export default class Amqp {
   }
 
   public async initialize(): Promise<Channel> {
-    await this.createChannel()
+    const channel = await this.createChannel()
     if (this.shouldAutoCreateExchangeBindings()) {
-      await this.assertExchange()
+      await this.assertExchange(channel)
     }
-    return this.channel
+    return channel
   }
 
   public async consume(): Promise<void> {
     try {
+      const channel = this.channel
       const { noAck } = this.config
       if (this.shouldAutoCreateQueue()) {
         await this.assertQueue()
@@ -201,24 +255,27 @@ export default class Amqp {
       if (this.shouldAutoCreateExchangeBindings()) {
         await this.bindQueue()
       }
-      await this.channel.consume(
+      this.assertCurrentChannel(channel)
+      await channel.consume(
         this.q.queue,
         amqpMessage => {
+          if (this.closed || this.channel !== channel) return
           if (!amqpMessage) {
             this.node.warn('AMQP consumer was cancelled')
-            this.node.status(NODE_STATUS.Disconnected)
-            const eventEmitterNode = this.node as unknown as {
-              emit?: (event: string) => void
+            this.setupFailure = new Error('AMQP consumer was cancelled')
+            this.disconnected(this.setupFailure)
+            if (!this.settingUp) {
+              void this.reconnect().catch(error =>
+                this.node.error(String(error)),
+              )
             }
-            eventEmitterNode.emit?.('amqp:consumer-cancelled')
             return
           }
           const msg = this.assembleMessage(amqpMessage)
           this.node.log(
             `Received message with deliveryTag: ${msg?.fields?.deliveryTag}`,
           )
-          this.node.send(msg as unknown as NodeMessage)
-          /* istanbul ignore else */
+          this.node.send(msg)
           if (!noAck && !this.isManualAck()) {
             this.ack(msg)
           }
@@ -232,7 +289,7 @@ export default class Amqp {
   }
 
   public async setVhost(newVhost: string): Promise<void> {
-    const broker = this.broker as unknown as BrokerConfig
+    const broker = this.broker
     const currentVhost = this.vhostOverride ?? broker?.vhost
 
     if (!broker || currentVhost === newVhost) {
@@ -240,23 +297,38 @@ export default class Amqp {
     }
 
     try {
-      await this.close()
+      await this.close(false)
+      if (this.shuttingDown)
+        throw new Error('AMQP vhost switch cancelled during shutdown')
       this.vhostOverride = newVhost
-      await this.connect()
-      await this.initialize()
-      this.markConnected()
+      this.closed = false
+      await this.waitForVhostReady()
     } catch (e) {
       this.node.error(`Could not switch vhost: ${e}`)
       throw e
     }
   }
 
-  public getConnection(): ChannelModel {
-    return this.connection
-  }
-
-  public getChannel(): Channel {
-    return this.channel
+  private async waitForVhostReady(): Promise<void> {
+    let timeout: NodeJS.Timeout
+    let complete: () => void
+    const readiness = new Promise<void>((resolve, reject) => {
+      complete = resolve
+      this.vhostWaits.set(complete, reject)
+      timeout = setTimeout(() => {
+        reject(
+          new Error(
+            `Timed out waiting for AMQP vhost readiness after ${VHOST_READY_TIMEOUT_MS}ms`,
+          ),
+        )
+      }, VHOST_READY_TIMEOUT_MS)
+    })
+    try {
+      await Promise.all([this.connect(), readiness])
+    } finally {
+      clearTimeout(timeout)
+      this.vhostWaits.delete(complete)
+    }
   }
 
   public ack(msg: AssembledMessage): void {
@@ -317,9 +389,12 @@ export default class Amqp {
 
   public async publish(
     msg: unknown,
-    properties?: MessageProperties,
+    properties?: Options.Publish,
     routingKey?: string,
   ): Promise<void> {
+    if (this.closed || !this.ready) {
+      throw new Error('AMQP channel is not ready; message was not published')
+    }
     const routingKeys = this.parseRoutingKeys(routingKey)
     await Promise.all(
       routingKeys.map(routingKey =>
@@ -331,7 +406,7 @@ export default class Amqp {
   private async handlePublish(
     config: AmqpConfig,
     msg: unknown,
-    properties?: MessageProperties,
+    properties?: Options.Publish,
     routingKey?: string,
   ) {
     const {
@@ -340,6 +415,7 @@ export default class Amqp {
     } = config
 
     let cancelRpcConsumer: (() => Promise<void>) | null = null
+    const channel = this.channel
 
     try {
       let correlationId = ''
@@ -368,10 +444,10 @@ export default class Amqp {
       }
       // when the name field is empty, publish just like the sendToQueue method;
       // see https://amqp-node.github.io/amqplib/channel_api.html#channel_publish
-      this.channel.publish(name, routingKey, this.toPublishBuffer(msg), options)
+      channel.publish(name, routingKey, this.toPublishBuffer(msg), options)
 
       if (config.waitForConfirms) {
-        await (this.channel as ConfirmChannel).waitForConfirms()
+        await (channel as ConfirmChannel).waitForConfirms()
       }
     } catch (e) {
       if (cancelRpcConsumer) {
@@ -383,21 +459,28 @@ export default class Amqp {
   }
 
   private getRpcConfig(replyTo: string): AmqpConfig {
-    const rpcConfig = cloneDeep(this.config)
-    rpcConfig.exchange.name = ''
-    rpcConfig.queue.name = replyTo
-    rpcConfig.queue.autoDelete = true
-    rpcConfig.queue.exclusive = true
-    rpcConfig.queue.durable = false
-    rpcConfig.noAck = true
-
-    return rpcConfig
+    return {
+      ...this.config,
+      noAck: true,
+      exchange: {
+        ...this.config.exchange,
+        name: '',
+      },
+      queue: {
+        ...this.config.queue,
+        name: replyTo,
+        autoDelete: true,
+        exclusive: true,
+        durable: false,
+      },
+    }
   }
 
   private async handleRemoteProcedureCall(
     correlationId: string,
     replyTo: string,
   ): Promise<() => Promise<void>> {
+    const channel = this.channel
     const rpcConfig = this.getRpcConfig(replyTo)
     let queueName = ''
 
@@ -436,18 +519,17 @@ export default class Amqp {
         if (!cleanupPromise) {
           cleanupPromise = (async () => {
             try {
-              await this.channel.deleteQueue(queueName)
+              await channel.deleteQueue(queueName)
               rpcQueueHasBeenDeleted = true
             } catch (deleteError) {
               this.node.error(
                 `Error trying to cancel RPC consumer: ${deleteError}`,
               )
 
-              const canCancelConsumer =
-                typeof this.channel.cancel === 'function'
+              const canCancelConsumer = typeof channel.cancel === 'function'
               if (canCancelConsumer && rpcConsumerTag) {
                 try {
-                  await this.channel.cancel(rpcConsumerTag)
+                  await channel.cancel(rpcConsumerTag)
                   rpcQueueHasBeenDeleted = true
                 } catch (cancelError) {
                   this.node.error(
@@ -474,14 +556,14 @@ export default class Amqp {
        ************************************/
       queueName = await this.assertQueue(rpcConfig)
 
-      const consumeResponse = await this.channel.consume(
+      const consumeResponse = await channel.consume(
         queueName,
         amqpMessage => {
-          if (amqpMessage) {
+          if (amqpMessage && !this.closed && this.channel === channel) {
             const msg = this.assembleMessage(amqpMessage)
             if (msg.properties.correlationId === correlationId) {
               if (finalizeRpcResponse()) {
-                this.node.send(msg as unknown as NodeMessage)
+                this.node.send(msg)
                 void cleanupRpcResources()
               }
             } else {
@@ -523,7 +605,7 @@ export default class Amqp {
     } catch (e) {
       // If setup failed after queue assertion, try to clean up the temporary RPC queue.
       if (queueName) {
-        await this.channel.deleteQueue(queueName).catch(deleteError => {
+        await channel.deleteQueue(queueName).catch(deleteError => {
           this.node.error(`Error trying to cancel RPC consumer: ${deleteError}`)
         })
       }
@@ -532,139 +614,162 @@ export default class Amqp {
     }
   }
 
-  public async close(): Promise<void> {
+  public async close(permanent = true): Promise<void> {
+    if (permanent) this.shuttingDown = true
+    for (const cancel of this.vhostWaits.values()) {
+      cancel(new Error('AMQP vhost readiness wait cancelled'))
+    }
     if (this.closed) {
       return
     }
     this.closed = true
+    this.ready = false
+    this.generation += 1
     this.clearRpcTimeouts()
 
-    await this.unbindQueues()
-    await this.closeChannel()
+    // Detach first so a node closing during setup cannot be restored again.
     await this.releaseConnection()
   }
 
-  private async unbindQueues(): Promise<void> {
-    const { name: exchangeName } = this.config.exchange
-    const queueName = this.q?.queue
+  private shouldAutoCreateExchangeBindings(): boolean {
+    return this.config.exchange.autoCreate
+  }
 
-    if (exchangeName && queueName && this.shouldUnbindQueueOnClose()) {
-      const routingKeys = this.parseRoutingKeys()
-      for (const routingKey of routingKeys) {
-        try {
-          await this.channel.unbindQueue(queueName, exchangeName, routingKey)
-        } catch (e) {
-          /* istanbul ignore next */
-          this.node.error(
-            `Error unbinding queue for routing key ${routingKey}: ${e.message}`,
-          )
-        }
-      }
-    }
+  private shouldAutoCreateQueue(): boolean {
+    return this.config.queue.autoCreate
   }
 
   private shouldUnbindQueueOnClose(): boolean {
     const { name, exclusive, autoDelete } = this.config.queue
-
-    // Keep bindings for long-lived queues so reconnects don't temporarily
-    // remove routes and drop unroutable messages in-flight.
     return (
       this.shouldAutoCreateExchangeBindings() &&
-      (!name || exclusive || autoDelete)
+      !autoDelete &&
+      (!name || exclusive)
     )
   }
 
-  private shouldAutoCreateExchangeBindings(configParams?: AmqpConfig): boolean {
-    return (configParams || this.config).exchange.autoCreate
-  }
-
-  private shouldAutoCreateQueue(configParams?: AmqpConfig): boolean {
-    return (configParams || this.config).queue.autoCreate
-  }
-
-  private async closeChannel(): Promise<void> {
-    if (this.channel) {
-      this.channel.off?.('error', this.channelErrorHandler)
-      this.channel.off?.('close', this.channelCloseHandler)
-      this.channel.off?.('return', this.channelReturnHandler)
+  private async unbindQueues(channel: Channel): Promise<void> {
+    const { name, type } = this.config.exchange
+    const queue = this.q?.queue
+    if (!name || !queue || !this.shouldUnbindQueueOnClose()) return
+    const keys = this.canHaveRoutingKey(type) ? this.parseRoutingKeys() : ['']
+    const args = type === ExchangeType.Headers ? this.config.headers : undefined
+    for (const key of keys) {
       try {
-        await this.channel.close()
+        await channel.unbindQueue(queue, name, key, args)
+      } catch (error) {
+        this.node.error(
+          `Error unbinding queue for routing key ${key}: ${error}`,
+        )
+      }
+    }
+  }
+
+  private async closeChannel(
+    cleanupBindings = false,
+    canUnbindQueue: (queueName: string) => boolean = () => true,
+  ): Promise<void> {
+    if (this.channel) {
+      const channel = this.channel
+      const { channelErrorHandler, channelCloseHandler, channelReturnHandler } =
+        this
+      this.channel = undefined
+      try {
+        if (cleanupBindings && this.q && canUnbindQueue(this.q.queue)) {
+          await this.unbindQueues(channel)
+        }
+        await channel.close()
       } catch (e) {
         this.node.error(`Error closing AMQP channel: ${e}`)
+      } finally {
+        channel.off?.('error', channelErrorHandler)
+        channel.off?.('close', channelCloseHandler)
+        channel.off?.('return', channelReturnHandler)
       }
     }
   }
 
   private async releaseConnection(): Promise<void> {
-    const brokerId = this.config.broker
-    const broker = this.broker as unknown as BrokerConfig
-    const vhost = this.vhostOverride ?? broker?.vhost
-    const key = `${brokerId}:${vhost}`
-
+    const entry = this.poolEntry
+    const key = this.poolKey
+    this.poolEntry = undefined
+    this.poolKey = undefined
     this.setBrokerNodeState('disconnected')
     this.node.status(NODE_STATUS.Disconnected)
-
-    if (this.connection) {
-      this.connection.off?.('error', this.connectionErrorHandler)
-      this.connection.off?.('close', this.connectionCloseHandler)
+    if (!entry) {
+      await this.closeChannel(true)
+      return
     }
-
-    const entry = Amqp.connectionPool.get(key)
-    if (entry) {
-      entry.count -= 1
-      if (entry.count <= 0) {
-        Amqp.connectionPool.delete(key)
-        try {
-          await entry.connection.close()
-        } catch (e) {
-          /* istanbul ignore next */
-          this.node.error(`Error closing AMQP connection: ${e}`)
-        }
-      }
+    const release = entry.remove(this.recoveryOwner, () =>
+      this.closeChannel(true, queue => !entry.hasQueueConsumer(queue)),
+    )
+    if (!entry.size && Amqp.connectionPool.get(key) === entry) {
+      Amqp.connectionPool.delete(key)
     }
+    await release
   }
 
   private async createChannel(): Promise<Channel> {
     const { prefetch, waitForConfirms } = this.config
 
-    this.channel = await (waitForConfirms
-      ? this.connection.createConfirmChannel()
-      : this.connection.createChannel())
-    this.channel.prefetch(Number(prefetch))
+    const model = this.channelModel || this.connection
+    const generation = this.generation
+    const restoreGeneration = this.restoreGeneration
+    const channel = await (waitForConfirms
+      ? model.createConfirmChannel()
+      : model.createChannel())
+    if (
+      this.closed ||
+      generation !== this.generation ||
+      restoreGeneration !== this.restoreGeneration
+    ) {
+      await channel.close()
+      throw new Error('AMQP channel setup cancelled')
+    }
+    this.channel = channel
 
     this.channelErrorHandler = (e): void => {
-      /* istanbul ignore next */
+      if (this.closed || this.channel !== channel) return
+      this.setupFailure = e instanceof Error ? e : new Error(String(e))
+      this.disconnected(e)
       this.setBrokerNodeState('errored', e)
-      this.node.status(NODE_STATUS.Disconnected)
       this.node.error(`AMQP Connection Error ${e}`, {
         payload: { error: e, source: 'Amqp' },
       })
     }
 
     this.channelCloseHandler = (): void => {
-      /* istanbul ignore next */
-      this.node.status(NODE_STATUS.Disconnected)
-      this.node.log('AMQP Channel closed')
+      if (this.closed || this.channel !== channel) return
+      this.channel = undefined
+      this.setupFailure = new Error('AMQP channel closed')
+      this.disconnected(this.setupFailure)
+      if (!this.settingUp) {
+        void this.reconnect().catch(error => this.node.error(String(error)))
+      }
     }
 
     this.channelReturnHandler = (): void => {
-      /* istanbul ignore next */
       this.node.warn('AMQP Message returned')
     }
 
     this.channel.on('error', this.channelErrorHandler)
     this.channel.on('close', this.channelCloseHandler)
     this.channel.on('return', this.channelReturnHandler)
+    await channel.prefetch(Number(prefetch))
+    this.assertCurrentChannel(channel)
 
-    return this.channel
+    return channel
   }
 
-  private async assertExchange(): Promise<void> {
-    const { name, type, durable } = this.config.exchange
+  private assertCurrentChannel(channel: Channel): void {
+    if (this.channel !== channel)
+      throw new Error('AMQP channel setup cancelled')
+  }
 
-    /* istanbul ignore else */
+  private async assertExchange(channel = this.channel): Promise<void> {
+    const { name, type, durable } = this.config.exchange
     if (name) {
-      await this.channel.assertExchange(name, type, {
+      await channel.assertExchange(name, type, {
         durable,
       })
     }
@@ -675,7 +780,8 @@ export default class Amqp {
     const { name, exclusive, durable, autoDelete, queueType, queueArguments } =
       queue
 
-    this.q = await this.channel.assertQueue(name, {
+    const channel = this.channel
+    const queueResult = await channel.assertQueue(name, {
       exclusive,
       durable,
       autoDelete,
@@ -684,6 +790,8 @@ export default class Amqp {
         ...(queueArguments || {}),
       },
     })
+    this.assertCurrentChannel(channel)
+    this.q = queueResult
 
     return name
   }
@@ -703,10 +811,9 @@ export default class Amqp {
     return name
   }
 
-  private async bindQueue(configParams?: AmqpConfig): Promise<void> {
-    const { name, type, routingKey } =
-      configParams?.exchange || this.config.exchange
-    const { headers } = configParams?.amqpProperties || this.config
+  private async bindQueue(): Promise<void> {
+    const { name, type, routingKey } = this.config.exchange
+    const { headers } = this.config
 
     if (this.canHaveRoutingKey(type) && name) {
       const promises = this.parseRoutingKeys(routingKey).map(key =>
@@ -738,7 +845,7 @@ export default class Amqp {
         ? this.getCredsFromSettings()
         : credentials
 
-      const protocol = tls ? /* istanbul ignore next */ 'amqps' : 'amqp'
+      const protocol = tls ? 'amqps' : 'amqp'
       const vhostPath = vhost ? `/${encodeURIComponent(vhost)}` : '/'
       url = `${protocol}://${encodeURIComponent(username)}:${encodeURIComponent(
         password,
@@ -753,9 +860,7 @@ export default class Amqp {
     password: string
   } {
     return {
-      // @ts-expect-error
       username: this.RED.settings.MW_CONTRIB_AMQP_USERNAME,
-      // @ts-expect-error
       password: this.RED.settings.MW_CONTRIB_AMQP_PASSWORD,
     }
   }
@@ -783,7 +888,6 @@ export default class Amqp {
       output = JSON.parse(jsonInput as string)
     } catch (e) {
       output = jsonInput
-      /* istanbul ignore next */
       if (logError) {
         this.node.error(`Invalid JSON payload: ${e}`)
       }
@@ -805,13 +909,6 @@ export default class Amqp {
       clearTimeout(timeout)
     }
     this.rpcTimeouts.clear()
-  }
-
-  private isConnectionOpen(connection: ChannelModel): boolean {
-    const stream = (
-      connection as { connection?: { stream?: { destroyed?: boolean } } }
-    ).connection?.stream
-    return stream?.destroyed !== true
   }
 
   private setBrokerNodeState(state: BrokerNodeState, error?: unknown): void {

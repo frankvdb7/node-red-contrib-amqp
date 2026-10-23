@@ -1,12 +1,9 @@
-/* eslint-disable @typescript-eslint/no-var-requires */
-/* eslint-disable @typescript-eslint/ban-ts-comment */
-export {}
-const { expect } = require('chai')
-const sinon = require('sinon')
-const helper = require('node-red-node-test-helper')
-const Amqp = require('../../src/Amqp').default
-const amqpBroker = require('../../src/nodes/amqp-broker')
-const amqpInManualAck = require('../../src/nodes/amqp-in-manual-ack')
+import { expect } from 'chai'
+import sinon from 'sinon'
+import helper from 'node-red-node-test-helper'
+import Amqp from '../../src/Amqp'
+import amqpBroker from '../../src/nodes/amqp-broker'
+import amqpInManualAck from '../../src/nodes/amqp-in-manual-ack'
 
 helper.init(require.resolve('node-red'))
 

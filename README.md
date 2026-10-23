@@ -89,7 +89,7 @@ Example response:
 
 - Reconnect loops:
   - Verify host/port/TLS/vhost values and broker reachability.
-  - Check whether `reconnectOnError` is enabled when desired.
+  - Recovery is always enabled, including when the broker is unavailable at startup.
 - Login or permission errors:
   - Confirm credentials and vhost access rights on the broker.
 - Queue type mismatch:
@@ -98,11 +98,57 @@ Example response:
   - Verify consumer sends replies using `replyTo` and `correlationId`.
   - Increase `rpcTimeoutMilliseconds` for slower consumers.
 
+### Automatic recovery
+
+The nodes use amqplib native recovery with unlimited retries and exponential backoff
+from 1 second to 30 seconds with 20% jitter. Each successful connection recreates
+channels, topology and consumers before reporting Connected or healthy. Nodes sharing
+a broker and vhost share one recovering connection. Closing a node releases only its
+resources; the last node closing cancels native recovery.
+
+On shutdown or a vhost switch, a node removes its configured exchange bindings
+for non-auto-delete temporary queues it manages, including exclusive queues that
+remain alive on a shared connection. If another node on the same broker and vhost
+still consumes from that queue, its bindings stay until the last consumer closes.
+Auto-delete queue bindings remain intact so other consumers can keep receiving
+messages; RabbitMQ deletes these queues after their last consumer closes. Bindings
+for named, non-exclusive queues are preserved. Automatic recovery does not unbind
+queues.
+
+A topology setup failure marks only the affected node as errored. Healthy nodes on
+the shared connection remain usable. Failed setup is attempted again on the next
+native connection recovery or a manual reconnect request.
+
+An unexpected channel closure after setup restarts the entire shared connection.
+All nodes using that broker and vhost temporarily lose their channels, including
+otherwise healthy publishers. With publisher confirms enabled, interrupted
+confirmations complete the affected inputs with an error; broker delivery may
+already have occurred. Recovery restores every owner's channels without replaying
+those messages.
+
+Publishing while disconnected fails through the node's error/completion path. Recovery
+does not replay messages or guarantee delivery of a publish whose confirmation was
+interrupted. Applications must handle such uncertain outcomes themselves.
+
+A runtime `msg.vhost` switch waits up to 10 seconds for that node's restored channel,
+including when it joins a shared connection that is already recovering. If the destination
+remains unavailable, the input completes with an error and the message is not
+published. Native recovery continues for the destination, and closing the node
+cancels its pending readiness waits.
+
+Inbound `msg.payload.reconnectCall` remains a manual recovery request. While connected,
+it closes the shared transport to trigger native recovery for its broker/vhost. During
+an outage it leaves the existing native retry schedule running. Completion acknowledges
+the request, not broker readiness.
+
+Older flows with the removed reconnect checkbox still load; the saved property is
+ignored. Recovery is now always enabled.
+
 ### Migration Notes
 
 When importing older flows, ensure node configs include current fields:
 
-- `amqp-out`: `exchangeRoutingKeyType`, `waitForConfirms`, `reconnectOnError`
+- `amqp-out`: `exchangeRoutingKeyType`, `waitForConfirms`
 - `amqp-in` and `amqp-in-manual-ack`: `queueType`, `queueArguments`
 - JSON fields such as `headers` should be valid JSON strings (for example `"{}"`).
 
@@ -138,7 +184,10 @@ To contribute to the development of these nodes, please follow these steps:
 - `npm test`: Run the fast unit suite without Docker.
 - `npm run test:integration`: Build and run the compiled nodes against an ephemeral RabbitMQ container.
 - `npm run test:watch`: Run tests in watch mode.
-- `npm run test:cov`: Generate a test coverage report.
+- `npm run test:cov`: Generate a source coverage report and enforce at least 80%
+  statements, branches, functions and lines in every file under `src/`, in addition
+  to the existing global thresholds. Test files and generated build copies are not
+  part of the source coverage totals.
 
 ## Testing Notes
 
@@ -160,9 +209,25 @@ The initial suite covers real publish/consume, publisher confirms, classic and
 quorum declarations, consume-only topology, manual ack and nack/requeue, health
 and consumer shutdown. Delivery, publisher confirmation and acknowledgement are
 separate assertions; these tests do not promise exactly-once processing. Known
-reliability regressions are explicitly pending with issue references. RPC,
-dead-letter rejection and outage/recovery scenarios remain follow-up coverage
-under #192.
+reliability regressions are explicitly pending with issue references. Startup and
+sustained broker outages are covered; RPC and dead-letter rejection remain
+follow-up coverage under #192.
+
+The integration suite reports these seven known risks as pending, separately from
+passing tests. They remain unresolved until their dedicated fixes land.
+
+| Issue | Pending reliability behavior |
+| --- | --- |
+| [#183](https://github.com/frankvdb7/node-red-contrib-amqp/issues/183) | Isolate concurrent `msg.vhost` routing. |
+| [#184](https://github.com/frankvdb7/node-red-contrib-amqp/issues/184) | Keep shared connections alive when one node closes. |
+| [#185](https://github.com/frankvdb7/node-red-contrib-amqp/issues/185) | Reject stale manual acknowledgements after channel replacement. |
+| [#186](https://github.com/frankvdb7/node-red-contrib-amqp/issues/186) | Validate invalid quorum declarations. |
+| [#187](https://github.com/frankvdb7/node-red-contrib-amqp/issues/187) | Preserve non-RPC `correlationId` and `replyTo`. |
+| [#188](https://github.com/frankvdb7/node-red-contrib-amqp/issues/188) | Report mandatory publisher returns. |
+| [#189](https://github.com/frankvdb7/node-red-contrib-amqp/issues/189) | Handle publisher backpressure and closed channels. |
+
+In particular, recovery coverage does not establish that manual acknowledgements
+from an earlier channel are safe after replacement. That remains tracked by #185.
 
 - The test suite currently has known pre-existing failures.
 - Changes should not add new test failures.

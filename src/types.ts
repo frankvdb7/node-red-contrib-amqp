@@ -1,7 +1,18 @@
-import type { ConsumeMessage, MessageProperties } from 'amqplib'
-import type { Node } from 'node-red'
+import type { ConsumeMessage, Options } from 'amqplib'
+import type {
+  Node,
+  NodeAPISettingsWithData,
+  NodeDef,
+  NodeMessage,
+} from 'node-red'
 
-export interface BrokerConfig extends Node {
+export interface AmqpSettings extends NodeAPISettingsWithData {
+  MW_CONTRIB_AMQP_USERNAME?: string
+  MW_CONTRIB_AMQP_PASSWORD?: string
+}
+
+export interface BrokerConfig
+  extends Node<{ username: string; password: string }> {
   host: string
   port: number
   vhost: string
@@ -18,6 +29,12 @@ export interface AmqpBrokerNode extends BrokerConfig {
   lastError: Record<string, BrokerNodeError>
 }
 
+export type AmqpBrokerNodeDef = NodeDef &
+  Pick<BrokerConfig, 'host' | 'port' | 'vhost' | 'tls' | 'credsFromSettings'> &
+  Partial<Pick<AmqpBrokerNode, 'nodeStates' | 'lastError'>>
+
+export type AmqpNodeConfig = NodeDef & AmqpInNodeDefaults & AmqpOutNodeDefaults
+
 export type BrokerNodeState = 'connected' | 'disconnected' | 'errored'
 
 export interface BrokerNodeError {
@@ -30,7 +47,6 @@ export interface AmqpConfig {
   name?: string
   broker: string
   prefetch: number
-  reconnectOnError?: boolean
   noAck: boolean
   waitForConfirms?: boolean
   exchange: {
@@ -49,7 +65,7 @@ export interface AmqpConfig {
     queueType: string
     queueArguments?: GenericJsonObject
   }
-  amqpProperties: MessageProperties
+  amqpProperties: Options.Publish
   headers: GenericJsonObject
   outputs?: number
   rpcTimeout?: number
@@ -59,7 +75,6 @@ export interface AmqpInNodeDefaults {
   name?: string
   broker?: string
   prefetch?: number
-  reconnectOnError?: boolean
   noAck?: boolean
   exchangeName?: string
   exchangeType?: ExchangeType
@@ -84,7 +99,7 @@ export interface AmqpOutNodeDefaults {
   exchangeRoutingKey?: string
   exchangeDurable?: boolean
   autoCreateExchangeBindings?: boolean
-  amqpProperties?: MessageProperties | JsonObject | string
+  amqpProperties?: Options.Publish | JsonObject | string
   outputs?: number
   rpcTimeoutMilliseconds?: number
   queueArguments?: JsonObject
@@ -97,10 +112,11 @@ export type JsonArray = JsonValue[]
 export type JsonObject = { [key: string]: JsonValue }
 export type GenericJsonObject = JsonObject
 
-export type AssembledMessage = ConsumeMessage & {
-  payload: JsonValue
-  manualAck?: ManualAckFields
-}
+export type AssembledMessage = ConsumeMessage &
+  NodeMessage & {
+    payload: JsonValue
+    manualAck?: ManualAckFields
+  }
 
 export interface ManualAckFields {
   ackMode: ManualAckType
@@ -114,13 +130,6 @@ export enum ManualAckType {
   Nack = 'nack',
   NackAll = 'nackAll',
   Reject = 'reject',
-}
-
-export enum ErrorType {
-  InvalidLogin = 'EACCES',
-  ConnectionRefused = 'ECONNREFUSED',
-  DnsResolve = 'EAI_AGAIN',
-  HostNotFound = 'ENOTFOUND',
 }
 
 export enum NodeType {
@@ -141,10 +150,4 @@ export enum DefaultExchangeName {
   Fanout = 'amq.fanout',
   Topic = 'amq.topic',
   Headers = 'amq.headers',
-}
-
-export enum ErrorLocationEnum {
-  ConnectError = 'ConnectError',
-  ConnectionErrorEvent = 'ConnectionErrorEvent',
-  ChannelErrorEvent = 'ChannelErrorEvent',
 }
