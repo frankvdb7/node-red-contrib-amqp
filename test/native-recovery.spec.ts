@@ -150,6 +150,63 @@ describe('native recovery ownership', () => {
     await amqp.close()
     expect(nextWrapper.listenerCount('blocked')).to.equal(0)
   })
+  it('isolates publisher blocking between vhosts on the same broker config', async () => {
+    const connections = new Map()
+    connect.callsFake(async (url, opts) => {
+      const connection = Object.assign(new EventEmitter(), {
+        close: sinon.stub().resolves(),
+      })
+      connections.set(url, { connection, recovery: opts.recovery })
+      return connection
+    })
+
+    const first = client('first')
+    await first.amqp.connect()
+    const firstEntry = connections.get('amqp://username:password@host:222/')
+    const firstRaw = model()
+    await firstEntry.recovery.setup(firstRaw)
+    firstEntry.connection.emit('connect', firstRaw)
+    await new Promise(resolve => setImmediate(resolve))
+
+    const second = client('second')
+    second.amqp.vhostOverride = 'alternate'
+    await second.amqp.connect()
+    const secondEntry = connections.get(
+      'amqp://username:password@host:222/alternate',
+    )
+    const secondRaw = model()
+    await secondEntry.recovery.setup(secondRaw)
+    secondEntry.connection.emit('connect', secondRaw)
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(connect.callCount).to.equal(2)
+    expect(firstEntry.connection).not.to.equal(secondEntry.connection)
+    expect(broker.nodeStates).to.deep.equal({
+      first: 'connected',
+      second: 'connected',
+    })
+
+    const reason = 'memory alarm'
+    firstEntry.connection.emit('blocked', reason)
+
+    expect(broker.publishBlocked).to.deep.equal({ first: reason })
+    expect(first.node.status.lastCall.args[0]).to.equal(
+      NODE_STATUS.PublishingBlocked,
+    )
+    expect(first.node.warn.lastCall.args[0]).to.equal(
+      `AMQP publishing blocked: ${reason}`,
+    )
+    expect(second.node.status.lastCall.args[0]).to.equal(NODE_STATUS.Connected)
+    expect(
+      second.node.warn.calledWith(`AMQP publishing blocked: ${reason}`),
+    ).to.equal(false)
+
+    firstEntry.connection.emit('unblocked')
+
+    expect(broker.publishBlocked).to.deep.equal({})
+    expect(first.node.status.lastCall.args[0]).to.equal(NODE_STATUS.Connected)
+    expect(second.node.status.lastCall.args[0]).to.equal(NODE_STATUS.Connected)
+  })
   it('reports an established raw connection error once per shared owner through native forwarding', async () => {
     const owners = [client('one'), client('two')]
     await Promise.all(owners.map(({ amqp }) => amqp.connect()))
