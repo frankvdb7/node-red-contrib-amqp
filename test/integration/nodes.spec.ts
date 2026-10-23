@@ -77,6 +77,36 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
     expect((await helper.request().get('/amqp-broker/health')).status).to.equal(503)
   })
 
+  it('keeps a shared auto-delete queue bound until its last consumer closes', async () => {
+    const topology = broker.topology()
+    const options = { queueAutoDelete: true }
+    await broker.load([
+      consumer(topology, { ...options, id: 'first', wires: [] }),
+      consumer(topology, { ...options, id: 'second' }),
+      { id: 'sink', type: 'helper' },
+    ])
+    const connectionNames = (await broker.connections()).map(connection => connection.name).sort()
+    expect((await broker.channel.checkQueue(topology.queue)).consumerCount).to.equal(2)
+    await helper.getNode('first').close()
+    await until('one shared queue consumer remains', async () =>
+      (await broker.channel.checkQueue(topology.queue)).consumerCount === 1)
+    expect((await broker.bindings(topology.queue)).some(binding =>
+      binding.source === topology.exchange && binding.routing_key === topology.key)).to.equal(true)
+    expect((await broker.connections()).map(connection => connection.name).sort()).to.deep.equal(connectionNames)
+    const receive = nextMessage(helper.getNode('sink'))
+    broker.channel.publish(topology.exchange, topology.key, Buffer.from('"surviving shared consumer"'))
+    await broker.channel.waitForConfirms()
+    expect((await receive()).payload).to.equal('surviving shared consumer')
+    await helper.getNode('second').close()
+    await until('auto-delete queue removed after its last consumer closes', async () => {
+      try { await broker.queue(topology.queue); return false }
+      catch (error) {
+        if (/HTTP 404/.test(String(error))) return true
+        throw error
+      }
+    })
+  })
+
   it('unbinds an exclusive non-auto-delete queue on node close while retaining the shared transport and durable bindings', async () => {
     const exclusive = broker.topology(), durable = broker.topology()
     await broker.load([

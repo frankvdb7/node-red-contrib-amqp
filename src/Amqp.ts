@@ -639,7 +639,8 @@ export default class Amqp {
     const { name, exclusive, autoDelete } = this.config.queue
     return (
       this.shouldAutoCreateExchangeBindings() &&
-      (!name || exclusive || autoDelete)
+      !autoDelete &&
+      (!name || exclusive)
     )
   }
 

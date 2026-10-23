@@ -181,7 +181,6 @@ describe('native recovery ownership', () => {
   })
   for (const config of [
     { queueName: '', queueExclusive: false },
-    { queueName: 'auto-delete', queueExclusive: false, queueAutoDelete: true },
     { exchangeType: 'fanout', exchangeRoutingKey: 'ignored' },
     { exchangeType: 'headers', exchangeRoutingKey: 'ignored', headers: '{"x-match":"all","kind":"test"}' },
   ]) {
@@ -198,6 +197,19 @@ describe('native recovery ownership', () => {
         ...old.bindQueue.firstCall.args.slice(0, 3),
         config.exchangeType === 'headers' ? { 'x-match': 'all', kind: 'test' } : undefined,
       ])
+    })
+  }
+  for (const queueExclusive of [false, true]) {
+    it(`leaves auto-delete bindings to the broker with exclusive=${queueExclusive}`, async () => {
+      const { amqp } = client('temporary', { type: 'amqp-in', queueName: 'shared',
+        autoCreateQueue: true, autoCreateExchangeBindings: true,
+        queueAutoDelete: true, queueExclusive })
+      await amqp.connect()
+      await recover()
+      const old = amqp.channel
+      await amqp.close()
+      expect(old.unbindQueue.called).to.equal(false)
+      expect(old.close.calledOnce).to.equal(true)
     })
   }
   it('finishes shutdown after an unbind error without restarting the shared transport', async () => {
