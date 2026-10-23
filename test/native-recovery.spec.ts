@@ -2,6 +2,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { EventEmitter } from 'node:events'
 import amqplib from 'amqplib'
+import { NODE_STATUS } from '../src/constants'
 import Amqp from '../src/Amqp'
 import SharedConnection from '../src/shared-connection'
 import { nodeConfigFixture, brokerConfigFixture } from './doubles'
@@ -403,6 +404,40 @@ describe('native recovery ownership', () => {
     expect(raw.createChannel.callCount).to.equal(2)
     expect(late.amqp.channel.consume.callCount).to.equal(1)
     expect(broker.nodeStates.late).to.equal('connected')
+  })
+  it('replays an existing block to a publisher joining the shared connection', async () => {
+    const first = client('first')
+    await first.amqp.connect()
+    await recover()
+    await new Promise(resolve => setImmediate(resolve))
+
+    const reason = 'memory alarm'
+    wrapper.emit('blocked', reason)
+    expect(broker.publishBlocked).to.deep.equal({ first: reason })
+
+    const late = client('late')
+    await late.amqp.connect()
+
+    expect(connect.calledOnce).to.equal(true)
+    expect(broker.publishBlocked).to.deep.equal({
+      first: reason,
+      late: reason,
+    })
+    expect(first.node.status.lastCall.args[0]).to.equal(
+      NODE_STATUS.PublishingBlocked,
+    )
+    expect(late.node.status.lastCall.args[0]).to.equal(
+      NODE_STATUS.PublishingBlocked,
+    )
+    expect(late.node.warn.lastCall.args[0]).to.equal(
+      `AMQP publishing blocked: ${reason}`,
+    )
+
+    wrapper.emit('unblocked')
+
+    expect(broker.publishBlocked).to.deep.equal({})
+    expect(first.node.status.lastCall.args[0]).to.equal(NODE_STATUS.Connected)
+    expect(late.node.status.lastCall.args[0]).to.equal(NODE_STATUS.Connected)
   })
   it('includes a new owner while another owner is setting up', async () => {
     const first = client('first').amqp
