@@ -7,7 +7,6 @@ import type {
   RecoveringChannelModel,
   Replies,
 } from 'amqplib'
-import cloneDeep from 'lodash.clonedeep'
 import type { Node, NodeAPI } from 'node-red'
 import { NODE_STATUS, VHOST_READY_TIMEOUT_MS } from './constants'
 import SharedConnection, { type ConnectionOwner } from './shared-connection'
@@ -456,15 +455,21 @@ export default class Amqp {
   }
 
   private getRpcConfig(replyTo: string): AmqpConfig {
-    const rpcConfig = cloneDeep(this.config)
-    rpcConfig.exchange.name = ''
-    rpcConfig.queue.name = replyTo
-    rpcConfig.queue.autoDelete = true
-    rpcConfig.queue.exclusive = true
-    rpcConfig.queue.durable = false
-    rpcConfig.noAck = true
-
-    return rpcConfig
+    return {
+      ...this.config,
+      noAck: true,
+      exchange: {
+        ...this.config.exchange,
+        name: '',
+      },
+      queue: {
+        ...this.config.queue,
+        name: replyTo,
+        autoDelete: true,
+        exclusive: true,
+        durable: false,
+      },
+    }
   }
 
   private async handleRemoteProcedureCall(

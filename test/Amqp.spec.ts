@@ -1144,6 +1144,31 @@ describe('Amqp Class', () => {
         clock.restore();
     });
 
+    it('keeps configured exchange and queue values intact across independent RPC replies', () => {
+      const original = amqp.config
+      Object.freeze(original.exchange)
+      Object.freeze(original.queue)
+      Object.freeze(original)
+
+      const first = amqp.getRpcConfig('first-reply')
+      const second = amqp.getRpcConfig('second-reply')
+      expect(amqp.config).to.equal(original)
+      expect(first).not.to.equal(original)
+      expect(first.exchange).not.to.equal(original.exchange)
+      expect(first.queue).not.to.equal(original.queue)
+      expect(first.exchange).to.deep.equal({ ...original.exchange, name: '' })
+      expect(first.queue).to.deep.equal({ ...original.queue, name: 'first-reply',
+        autoDelete: true, exclusive: true, durable: false })
+      expect(first.noAck).to.equal(true)
+      expect(second.queue.name).to.equal('second-reply')
+      first.exchange.name = 'changed-reply-exchange'
+      first.queue.name = 'changed-reply-queue'
+      expect(second.exchange.name).to.equal('')
+      expect(second.queue.name).to.equal('second-reply')
+      expect(original.exchange.name).to.equal(nodeConfigFixture.exchangeName)
+      expect(original.queue.name).to.equal(nodeConfigFixture.queueName)
+    })
+
     it('handles RPC timeout', async () => {
         const sendStub = sinon.stub();
         const deleteQueueStub = sinon.stub().resolves();
