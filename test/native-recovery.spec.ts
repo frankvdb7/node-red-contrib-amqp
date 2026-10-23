@@ -120,6 +120,70 @@ describe('native recovery ownership', () => {
     expect(raw.listenerCount('error')).to.equal(0)
     expect(raw.listenerCount('close')).to.equal(0)
   })
+  it('closes a blocked transport before local last-owner cleanup', async () => {
+    const shared = new SharedConnection('amqp://localhost')
+    const owner = { setup: sinon.stub().resolves(), connected: sinon.stub(),
+      disconnected: sinon.stub(), failed: sinon.stub() }
+    await shared.add(owner)
+    await recover()
+    wrapper.emit('blocked', 'memory alarm')
+
+    const calls = []
+    wrapper.close.callsFake(async () => { calls.push('transport close') })
+    await shared.remove(owner, async transportClosed => {
+      calls.push(`cleanup ${transportClosed}`)
+    })
+
+    expect(calls).to.deep.equal(['transport close', 'cleanup true'])
+  })
+  it('defers shared channel cleanup until a blocked connection unblocks', async () => {
+    const shared = new SharedConnection('amqp://localhost')
+    const owners = Array.from({ length: 2 }, () => ({
+      setup: sinon.stub().resolves(), connected: sinon.stub(),
+      disconnected: sinon.stub(), failed: sinon.stub(),
+    }))
+    await Promise.all(owners.map(owner => shared.add(owner)))
+    await recover()
+    wrapper.emit('blocked', 'memory alarm')
+
+    const cleanups = []
+    await shared.remove(owners[0], async transportClosed => {
+      cleanups.push(transportClosed)
+    })
+    expect(cleanups).to.deep.equal([])
+    expect(wrapper.close.called).to.equal(false)
+
+    wrapper.emit('unblocked')
+    await new Promise(resolve => setImmediate(resolve))
+    expect(cleanups).to.deep.equal([false])
+    expect(wrapper.close.called).to.equal(false)
+    await shared.remove(owners[1], async () => {})
+  })
+  it('skips deferred channel RPC cleanup when the last blocked owner leaves', async () => {
+    const shared = new SharedConnection('amqp://localhost')
+    const owners = Array.from({ length: 2 }, () => ({
+      setup: sinon.stub().resolves(), connected: sinon.stub(),
+      disconnected: sinon.stub(), failed: sinon.stub(),
+    }))
+    await Promise.all(owners.map(owner => shared.add(owner)))
+    await recover()
+    wrapper.emit('blocked', 'memory alarm')
+
+    const calls = []
+    wrapper.close.callsFake(async () => { calls.push('transport close') })
+    await shared.remove(owners[0], async transportClosed => {
+      calls.push(`first cleanup ${transportClosed}`)
+    })
+    await shared.remove(owners[1], async transportClosed => {
+      calls.push(`last cleanup ${transportClosed}`)
+    })
+
+    expect(calls).to.deep.equal([
+      'transport close',
+      'first cleanup true',
+      'last cleanup true',
+    ])
+  })
   it('clears the old publisher block during a vhost switch', async () => {
     const nextWrapper = Object.assign(new EventEmitter(), { close: sinon.stub().resolves() })
     const recoveries = []

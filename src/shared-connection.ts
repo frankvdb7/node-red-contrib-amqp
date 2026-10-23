@@ -37,6 +37,8 @@ interface ModelListeners {
   unblocked: () => void
 }
 
+type OwnerCleanup = (transportClosed?: boolean) => Promise<void>
+
 // One native recovery loop per broker/vhost. Channels belong to individual nodes.
 export default class SharedConnection {
   private owners = new Map<ConnectionOwner, Promise<boolean> | undefined>()
@@ -46,6 +48,7 @@ export default class SharedConnection {
   private blockedReason?: string
   private restarting?: Promise<void>
   private cleanup = Promise.resolve()
+  private deferredCleanups: OwnerCleanup[] = []
   private connection?: Promise<RecoveringChannelModel>
   private connectionListeners?: ConnectionListeners
   private modelListeners?: ModelListeners
@@ -70,10 +73,12 @@ export default class SharedConnection {
         error: error => this.notify('failed', error),
         connectFailed: error => {
           this.invalidate()
+          this.flushDeferredCleanups(true)
           this.notify('failed', error)
         },
         disconnect: error => {
           this.invalidate()
+          this.flushDeferredCleanups(true)
           this.notify('disconnected', error)
         },
         reconnectScheduled: ({ attempt, delay, error }) => {
@@ -125,28 +130,53 @@ export default class SharedConnection {
     )
   }
 
-  async remove(
-    owner: ConnectionOwner,
-    cleanup: () => Promise<void>,
-  ): Promise<void> {
+  async remove(owner: ConnectionOwner, cleanup: OwnerCleanup): Promise<void> {
+    const wasBlocked = this.blockedReason !== undefined
     this.owners.delete(owner)
     const lastOwner = this.owners.size === 0
     if (lastOwner) {
       this.stopped = true
       this.invalidate()
     }
-    const cleaning = this.cleanup.then(cleanup)
+
+    if (wasBlocked && !lastOwner) {
+      this.deferredCleanups.push(cleanup)
+      return
+    }
+
+    if (lastOwner && wasBlocked && this.connection) {
+      const cleanups = [...this.deferredCleanups.splice(0), cleanup]
+      let closeError: unknown
+      try {
+        // During a resource alarm RabbitMQ may not acknowledge channel.close().
+        // Closing the blocked transport first means channel cleanup must be local.
+        await (await this.connection).close()
+      } catch (error) {
+        closeError = error
+      } finally {
+        this.detachConnectionListeners()
+        this.detachModelListeners()
+        await Promise.all(
+          cleanups.map(item => item(true).catch(() => undefined)),
+        )
+      }
+      if (closeError) throw closeError
+      return
+    }
+
+    const cleanups = [...this.deferredCleanups.splice(0), cleanup]
+    const cleaning = this.cleanup.then(async () => {
+      for (const item of cleanups) await item(false)
+    })
     this.cleanup = cleaning.catch(() => undefined)
+
     try {
       await cleaning
     } finally {
       if (lastOwner && this.connection) {
-        try {
-          await (await this.connection).close()
-        } finally {
-          this.detachConnectionListeners()
-          this.detachModelListeners()
-        }
+        this.detachConnectionListeners()
+        this.detachModelListeners()
+        await (await this.connection).close()
       }
     }
   }
@@ -180,7 +210,10 @@ export default class SharedConnection {
       },
       close: () => {
         this.detachModelListeners(model)
-        if (this.model === model) this.invalidate()
+        if (this.model === model) {
+          this.invalidate()
+          this.flushDeferredCleanups(true)
+        }
       },
       blocked: reason => this.handleBlocked(reason),
       unblocked: () => this.handleUnblocked(),
@@ -257,6 +290,25 @@ export default class SharedConnection {
     if (this.stopped || this.blockedReason === undefined) return
     this.blockedReason = undefined
     for (const owner of this.owners.keys()) owner.unblocked?.()
+    this.flushDeferredCleanups(false)
+  }
+
+  private flushDeferredCleanups(transportClosed: boolean): void {
+    const cleanups = this.deferredCleanups.splice(0)
+    if (!cleanups.length) return
+
+    if (transportClosed) {
+      void Promise.all(
+        cleanups.map(cleanup => cleanup(true).catch(() => undefined)),
+      )
+      return
+    }
+
+    const cleaning = this.cleanup.then(async () => {
+      for (const cleanup of cleanups) await cleanup(false)
+    })
+    this.cleanup = cleaning.catch(() => undefined)
+    void cleaning.catch(() => undefined)
   }
 
   private detachConnectionListeners(): void {

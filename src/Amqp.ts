@@ -674,25 +674,39 @@ export default class Amqp {
   private async closeChannel(
     cleanupBindings = false,
     canUnbindQueue: (queueName: string) => boolean = () => true,
+    transportClosed = false,
   ): Promise<void> {
+    await this.prepareChannelCleanup(
+      cleanupBindings,
+      canUnbindQueue,
+    )(transportClosed)
+  }
+
+  private prepareChannelCleanup(
+    cleanupBindings = false,
+    canUnbindQueue: (queueName: string) => boolean = () => true,
+  ): (transportClosed?: boolean) => Promise<void> {
     if (this.channel) {
       const channel = this.channel
       const { channelErrorHandler, channelCloseHandler, channelReturnHandler } =
         this
       this.channel = undefined
-      try {
-        if (cleanupBindings && this.q && canUnbindQueue(this.q.queue)) {
-          await this.unbindQueues(channel)
+      channel.off?.('error', channelErrorHandler)
+      channel.off?.('close', channelCloseHandler)
+      channel.off?.('return', channelReturnHandler)
+      return async (transportClosed = false) => {
+        try {
+          if (transportClosed) return
+          if (cleanupBindings && this.q && canUnbindQueue(this.q.queue)) {
+            await this.unbindQueues(channel)
+          }
+          await channel.close()
+        } catch (e) {
+          this.node.error(`Error closing AMQP channel: ${e}`)
         }
-        await channel.close()
-      } catch (e) {
-        this.node.error(`Error closing AMQP channel: ${e}`)
-      } finally {
-        channel.off?.('error', channelErrorHandler)
-        channel.off?.('close', channelCloseHandler)
-        channel.off?.('return', channelReturnHandler)
       }
     }
+    return async () => {}
   }
 
   private async releaseConnection(): Promise<void> {
@@ -707,9 +721,11 @@ export default class Amqp {
       await this.closeChannel(true)
       return
     }
-    const release = entry.remove(this.recoveryOwner, () =>
-      this.closeChannel(true, queue => !entry.hasQueueConsumer(queue)),
+    const cleanup = this.prepareChannelCleanup(
+      true,
+      queue => !entry.hasQueueConsumer(queue),
     )
+    const release = entry.remove(this.recoveryOwner, cleanup)
     if (!entry.size && Amqp.connectionPool.get(key) === entry) {
       Amqp.connectionPool.delete(key)
     }
