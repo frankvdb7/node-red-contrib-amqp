@@ -159,6 +159,39 @@ describe('native recovery ownership', () => {
     expect(wrapper.close.called).to.equal(false)
     await shared.remove(owners[1], async () => {})
   })
+  it('flushes deferred publisher cleanup once after transport loss and recovers its peer', async () => {
+    const closing = client('closing', { waitForConfirms: true })
+    const surviving = client('surviving', { waitForConfirms: true })
+    await Promise.all([closing.amqp.connect(), surviving.amqp.connect()])
+    await recover()
+    const deadChannel = closing.amqp.channel
+    const oldSurvivorChannel = surviving.amqp.channel
+    const detach = sinon.spy(deadChannel, 'off')
+
+    wrapper.emit('blocked', 'memory alarm')
+    await closing.amqp.close()
+    expect(detach.callCount).to.equal(0)
+    expect(deadChannel.close.called).to.equal(false)
+
+    wrapper.emit('disconnect', new Error('transport lost before unblocking'))
+    await new Promise(resolve => setImmediate(resolve))
+    expect(detach.args.map(([event]) => event)).to.deep.equal([
+      'error', 'close', 'return',
+    ])
+    expect(deadChannel.close.called).to.equal(false)
+    expect(broker.nodeStates.surviving).to.equal('disconnected')
+
+    const replacement = model()
+    await options.setup(replacement)
+    wrapper.emit('connect', replacement)
+    await new Promise(resolve => setImmediate(resolve))
+    expect(broker.nodeStates.surviving).to.equal('connected')
+    expect(surviving.amqp.channel).not.to.equal(oldSurvivorChannel)
+
+    await surviving.amqp.publish('after transport recovery')
+    expect(surviving.amqp.channel.waitForConfirms.calledOnce).to.equal(true)
+    expect(wrapper.close.called).to.equal(false)
+  })
   it('skips deferred channel RPC cleanup when the last blocked owner leaves', async () => {
     const shared = new SharedConnection('amqp://localhost')
     const owners = Array.from({ length: 2 }, () => ({
