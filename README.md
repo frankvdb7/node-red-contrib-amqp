@@ -67,10 +67,40 @@ Sample flows are provided in [`examples/`](./examples):
 
 The broker config node exposes `/amqp-broker/health` from Node-RED admin HTTP:
 
-- Returns HTTP `200` when all known brokers are connected.
-- Returns HTTP `503` when one or more brokers are not connected.
+- Returns HTTP `200` when all known brokers are connected and no publisher is blocked.
+- Returns HTTP `503` when a broker is not connected or a publisher is blocked.
 
-Example response:
+This endpoint reports connection health observed by Node-RED; it does not query
+RabbitMQ's broker-wide memory or disk alarm state. A publisher that reconnects
+during an active resource alarm may still appear healthy until it attempts to
+publish. RabbitMQ can then block the connection and the endpoint will report
+`503`. Monitor [RabbitMQ resource alarms](https://www.rabbitmq.com/docs/alarms)
+and [RabbitMQ metrics](https://www.rabbitmq.com/docs/monitoring) separately for
+memory and disk alarm state.
+
+`status: "connected"` describes the transport and node setup. When RabbitMQ blocks
+publishing, the broker remains connected, `overallStatus` becomes `"degraded"`, and
+`publishBlocked` lists the affected publisher node IDs and the broker-provided reason:
+
+A blocked response looks like this:
+
+```json
+{
+  "overallStatus": "degraded",
+  "brokers": [
+    {
+      "id": "broker-node-id",
+      "name": "Primary RabbitMQ",
+      "status": "connected",
+      "publishBlocked": {
+        "publisher-node-id": "low on memory"
+      }
+    }
+  ]
+}
+```
+
+A healthy response looks like this:
 
 ```json
 {
@@ -103,8 +133,10 @@ Example response:
 The nodes use amqplib native recovery with unlimited retries and exponential backoff
 from 1 second to 30 seconds with 20% jitter. Each successful connection recreates
 channels, topology and consumers before reporting Connected or healthy. Nodes sharing
-a broker and vhost share one recovering connection. Closing a node releases only its
-resources; the last node closing cancels native recovery.
+a broker, vhost and role share one recovering connection. Publishers and consumers
+use separate connections, so a resource alarm blocking publisher traffic does not
+also suspend consumer acknowledgements. Closing a node releases only its resources;
+the last node of that role closing cancels native recovery.
 
 On shutdown or a vhost switch, a node removes its configured exchange bindings
 for non-auto-delete temporary queues it manages, including exclusive queues that
@@ -116,14 +148,14 @@ for named, non-exclusive queues are preserved. Automatic recovery does not unbin
 queues.
 
 A topology setup failure marks only the affected node as errored. Healthy nodes on
-the shared connection remain usable. Failed setup is attempted again on the next
-native connection recovery or a manual reconnect request.
+the same role's shared connection remain usable. Failed setup is attempted again on
+the next native connection recovery or a manual reconnect request.
 
-An unexpected channel closure after setup restarts the entire shared connection.
-All nodes using that broker and vhost temporarily lose their channels, including
-otherwise healthy publishers. With publisher confirms enabled, interrupted
-confirmations complete the affected inputs with an error; broker delivery may
-already have occurred. Recovery restores every owner's channels without replaying
+An unexpected channel closure after setup restarts the shared connection for that
+node's role. Nodes with the same broker, vhost and role temporarily lose their
+channels; nodes of the other role remain connected. With publisher confirms enabled,
+interrupted confirmations complete the affected inputs with an error; broker delivery
+may already have occurred. Recovery restores every owner's channels without replaying
 those messages.
 
 Publishing while disconnected fails through the node's error/completion path. Recovery
@@ -137,9 +169,9 @@ published. Native recovery continues for the destination, and closing the node
 cancels its pending readiness waits.
 
 Inbound `msg.payload.reconnectCall` remains a manual recovery request. While connected,
-it closes the shared transport to trigger native recovery for its broker/vhost. During
-an outage it leaves the existing native retry schedule running. Completion acknowledges
-the request, not broker readiness.
+it closes the shared transport for that node's role to trigger native recovery for its
+broker/vhost. During an outage it leaves the existing native retry schedule running.
+Completion acknowledges the request, not broker readiness.
 
 Older flows with the removed reconnect checkbox still load; the saved property is
 ignored. Recovery is now always enabled.

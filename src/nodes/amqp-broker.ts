@@ -6,6 +6,12 @@ import {
   NodeType,
 } from '../types'
 
+type EffectiveNodeData = {
+  brokerNode: AmqpBrokerNode
+  states: Record<string, BrokerNodeState>
+  publishBlocked: AmqpBrokerNode['publishBlocked']
+}
+
 export = (RED: NodeAPI): void => {
   const brokerNodes: AmqpBrokerNode[] = []
   const amqpNodeTypes = new Set<string>([
@@ -24,6 +30,7 @@ export = (RED: NodeAPI): void => {
     this.credsFromSettings = n.credsFromSettings
     this.nodeStates = n.nodeStates || {}
     this.lastError = n.lastError || {}
+    this.publishBlocked = {}
     brokerNodes.push(this)
 
     this.on('close', () => {
@@ -41,8 +48,9 @@ export = (RED: NodeAPI): void => {
   })
 
   RED.httpAdmin.get('/amqp-broker/health', (_req, res) => {
-    const brokerStatuses = brokerNodes.map(brokerNode => {
-      const states = getEffectiveNodeStates(brokerNode)
+    const effectiveNodeData = getEffectiveNodeData()
+    const brokerStatuses = effectiveNodeData.map(data => {
+      const { brokerNode, states, publishBlocked } = data
       const stateValues = Object.values(states)
       const uniqueStates = new Set(stateValues)
       const status: BrokerNodeState =
@@ -58,6 +66,7 @@ export = (RED: NodeAPI): void => {
         name: string
         status: BrokerNodeState
         lastError?: AmqpBrokerNode['lastError']
+        publishBlocked?: AmqpBrokerNode['publishBlocked']
       } = {
         id: brokerNode.id,
         name: brokerNode.name,
@@ -70,37 +79,64 @@ export = (RED: NodeAPI): void => {
         brokerStatus.lastError = activeLastError
       }
 
+      if (Object.keys(publishBlocked).length > 0) {
+        brokerStatus.publishBlocked = publishBlocked
+      }
+
       return brokerStatus
     })
 
     const hasBrokers = brokerStatuses.length > 0
     const allConnected =
       hasBrokers && brokerStatuses.every(b => b.status === 'connected')
+    const hasBlockedPublishers = brokerStatuses.some(
+      broker => Object.keys(broker.publishBlocked || {}).length > 0,
+    )
 
-    const statusCode = allConnected ? 200 : 503
+    const healthy = allConnected && !hasBlockedPublishers
+    const statusCode = healthy ? 200 : 503
     const response = {
-      overallStatus: allConnected ? 'healthy' : 'unhealthy',
+      overallStatus: healthy
+        ? 'healthy'
+        : allConnected && hasBlockedPublishers
+          ? 'degraded'
+          : 'unhealthy',
       brokers: brokerStatuses,
     }
 
     res.status(statusCode).json(response)
   })
 
-  function getEffectiveNodeStates(
-    brokerNode: AmqpBrokerNode,
-  ): Record<string, BrokerNodeState> {
-    const states: Record<string, BrokerNodeState> = {}
+  function getEffectiveNodeData(): EffectiveNodeData[] {
+    const effectiveNodeData: EffectiveNodeData[] = brokerNodes.map(
+      brokerNode => ({
+        brokerNode,
+        states: {},
+        publishBlocked: {},
+      }),
+    )
+    const effectiveNodeDataByBrokerId = new Map(
+      effectiveNodeData.map(data => [data.brokerNode.id, data] as const),
+    )
+
     RED.nodes.eachNode(node => {
-      if (
-        'broker' in node &&
-        node.broker === brokerNode.id &&
-        amqpNodeTypes.has(node.type)
-      ) {
-        states[node.id] = brokerNode.nodeStates?.[node.id] || 'disconnected'
+      if (!('broker' in node) || typeof node.broker !== 'string') return
+
+      const data = effectiveNodeDataByBrokerId.get(node.broker)
+      if (!data) return
+
+      if (amqpNodeTypes.has(node.type)) {
+        data.states[node.id] =
+          data.brokerNode.nodeStates?.[node.id] || 'disconnected'
+      }
+
+      if (node.type === NodeType.AmqpOut) {
+        const reason = data.brokerNode.publishBlocked?.[node.id]
+        if (reason !== undefined) data.publishBlocked[node.id] = reason
       }
     })
 
-    return states
+    return effectiveNodeData
   }
 
   function getActiveLastError(
