@@ -220,6 +220,51 @@ describe('native recovery ownership', () => {
     await surviving.amqp.publish('after unblocking')
     expect(surviving.amqp.channel.waitForConfirms.calledOnce).to.equal(true)
   })
+  it('does not let lost channel cleanup block a later owner shutdown', async () => {
+    const closing = client('closing', { waitForConfirms: true })
+    const surviving = client('surviving', { waitForConfirms: true })
+    await Promise.all([closing.amqp.connect(), surviving.amqp.connect()])
+    await recover()
+    const closingChannel = closing.amqp.channel
+    const survivingChannel = surviving.amqp.channel
+    const detach = sinon.spy(closingChannel, 'off')
+    let closeResolved = false
+    let finishClose
+    closingChannel.close.callsFake(() => new Promise(resolve => {
+      finishClose = () => {
+        closeResolved = true
+        resolve()
+      }
+    }))
+
+    const closingFirst = closing.amqp.close()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(closingChannel.close.calledOnce).to.equal(true)
+    wrapper.emit('blocked', 'memory alarm')
+    expect(await completesWithin(closingFirst)).to.equal(true)
+
+    wrapper.emit('disconnect', new Error('transport lost before Channel.CloseOk'))
+    await new Promise(resolve => setImmediate(resolve))
+    const listenersDetachedOnDisconnect = detach.args.map(([event]) => event)
+    expect(closeResolved).to.equal(false)
+    expect(broker.publishBlocked).to.deep.equal({})
+
+    const closingSecond = surviving.amqp.close()
+    const completedWithoutResolvingFirst = await completesWithin(closingSecond)
+    if (!completedWithoutResolvingFirst) finishClose?.()
+    await closingSecond
+
+    expect(completedWithoutResolvingFirst).to.equal(true)
+    expect(listenersDetachedOnDisconnect).to.deep.equal([
+      'error', 'close', 'return',
+    ])
+    expect(closingChannel.close.calledOnce).to.equal(true)
+    expect(closeResolved).to.equal(false)
+    expect(survivingChannel.close.called).to.equal(false)
+    expect(surviving.node.warn.calledOnce).to.equal(true)
+    expect(broker.publishBlocked).to.deep.equal({})
+    expect(wrapper.close.calledOnce).to.equal(true)
+  })
   it('flushes deferred publisher cleanup once after transport loss and recovers its peer', async () => {
     const closing = client('closing', { waitForConfirms: true })
     const surviving = client('surviving', { waitForConfirms: true })

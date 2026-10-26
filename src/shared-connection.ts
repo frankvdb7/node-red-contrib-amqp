@@ -48,6 +48,8 @@ export default class SharedConnection {
   private blockedReason?: string
   private restarting?: Promise<void>
   private cleanup = Promise.resolve()
+  private cleanupGeneration = 0
+  private activeCleanups = new Set<OwnerCleanup>()
   private deferredCleanups: OwnerCleanup[] = []
   private blockedWaiters = new Set<() => void>()
   private connection?: Promise<RecoveringChannelModel>
@@ -133,11 +135,22 @@ export default class SharedConnection {
 
   async remove(owner: ConnectionOwner, cleanup: OwnerCleanup): Promise<void> {
     const wasBlocked = this.blockedReason !== undefined
+    const transportClosed = this.model === undefined
     this.owners.delete(owner)
     const lastOwner = this.owners.size === 0
     if (lastOwner) {
       this.stopped = true
       this.invalidate()
+    }
+
+    if (transportClosed) {
+      if (lastOwner && this.connection) {
+        await this.closeFinalOwnerTransport(cleanup, this.connection)
+      } else {
+        this.flushDeferredCleanups(true)
+        await cleanup(true)
+      }
+      return
     }
 
     if (wasBlocked && !lastOwner) {
@@ -147,14 +160,14 @@ export default class SharedConnection {
 
     const connection = this.connection
     if (lastOwner && wasBlocked && connection) {
-      await this.closeBlockedFinalOwner(cleanup, connection)
+      await this.closeFinalOwnerTransport(cleanup, connection)
       return
     }
 
     await this.runRemovalCleanup(cleanup, lastOwner)
   }
 
-  private async closeBlockedFinalOwner(
+  private async closeFinalOwnerTransport(
     cleanup: OwnerCleanup,
     connection: Promise<RecoveringChannelModel>,
   ): Promise<void> {
@@ -163,7 +176,7 @@ export default class SharedConnection {
     try {
       // During a resource alarm RabbitMQ may not acknowledge channel.close().
       // Closing the blocked transport first means channel cleanup must be local.
-      await (await connection).close()
+      await this.closeTransport(connection)
     } catch (error) {
       closeError = error
     } finally {
@@ -179,10 +192,7 @@ export default class SharedConnection {
     lastOwner: boolean,
   ): Promise<void> {
     const cleanups = [...this.deferredCleanups.splice(0), cleanup]
-    const cleaning = this.cleanup.then(async () => {
-      for (const item of cleanups) await item(false)
-    })
-    this.cleanup = cleaning.catch(() => undefined)
+    const cleaning = this.queueCleanups(cleanups)
 
     if (lastOwner) {
       await this.finishFinalOwnerCleanup(cleaning)
@@ -213,15 +223,27 @@ export default class SharedConnection {
       ])
       if (!cleanupFinished && this.connection) {
         transportCloseStarted = true
-        await (await this.connection).close()
+        await this.closeTransport(this.connection)
       }
     } finally {
       blocked.cancel()
       if (this.connection) {
         this.detachConnectionListeners()
         this.detachModelListeners()
-        if (!transportCloseStarted) await (await this.connection).close()
+        if (!transportCloseStarted) await this.closeTransport(this.connection)
       }
+    }
+  }
+
+  private async closeTransport(
+    connection: Promise<RecoveringChannelModel>,
+  ): Promise<void> {
+    try {
+      await (await connection).close()
+    } finally {
+      // A closed transport cannot answer channel RPCs. Release the serialized
+      // queue so later owners do not wait behind cleanup from this connection.
+      this.flushDeferredCleanups(true)
     }
   }
 
@@ -360,20 +382,39 @@ export default class SharedConnection {
 
   private flushDeferredCleanups(transportClosed: boolean): void {
     const cleanups = this.deferredCleanups.splice(0)
-    if (!cleanups.length) return
 
     if (transportClosed) {
+      const pending = [...new Set([...this.activeCleanups, ...cleanups])]
+      this.cleanupGeneration += 1
+      this.cleanup = Promise.resolve()
+      this.activeCleanups.clear()
       void Promise.all(
-        cleanups.map(cleanup => cleanup(true).catch(() => undefined)),
+        pending.map(cleanup => cleanup(true).catch(() => undefined)),
       )
       return
     }
 
+    if (!cleanups.length) return
+    const cleaning = this.queueCleanups(cleanups)
+    void cleaning.catch(() => undefined)
+  }
+
+  private queueCleanups(cleanups: OwnerCleanup[]): Promise<void> {
+    const generation = this.cleanupGeneration
+    for (const cleanup of cleanups) this.activeCleanups.add(cleanup)
     const cleaning = this.cleanup.then(async () => {
-      for (const cleanup of cleanups) await cleanup(false)
+      for (const cleanup of cleanups) {
+        if (generation !== this.cleanupGeneration) return
+        try {
+          await cleanup(false)
+        } finally {
+          if (generation === this.cleanupGeneration)
+            this.activeCleanups.delete(cleanup)
+        }
+      }
     })
     this.cleanup = cleaning.catch(() => undefined)
-    void cleaning.catch(() => undefined)
+    return cleaning
   }
 
   private detachConnectionListeners(): void {

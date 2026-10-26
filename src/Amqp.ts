@@ -656,19 +656,25 @@ export default class Amqp {
     )
   }
 
-  private async unbindQueues(channel: Channel): Promise<void> {
+  private async unbindQueues(
+    channel: Channel,
+    transportClosed: () => boolean = () => false,
+  ): Promise<void> {
     const { name, type } = this.config.exchange
     const queue = this.q?.queue
     if (!name || !queue || !this.shouldUnbindQueueOnClose()) return
     const keys = this.canHaveRoutingKey(type) ? this.parseRoutingKeys() : ['']
     const args = type === ExchangeType.Headers ? this.config.headers : undefined
     for (const key of keys) {
+      if (transportClosed()) return
       try {
         await channel.unbindQueue(queue, name, key, args)
       } catch (error) {
-        this.node.error(
-          `Error unbinding queue for routing key ${key}: ${error}`,
-        )
+        if (!transportClosed()) {
+          this.node.error(
+            `Error unbinding queue for routing key ${key}: ${error}`,
+          )
+        }
       }
     }
   }
@@ -693,20 +699,39 @@ export default class Amqp {
       const { channelErrorHandler, channelCloseHandler, channelReturnHandler } =
         this
       this.channel = undefined
-      return async (transportClosed = false) => {
-        try {
-          if (transportClosed) return
-          if (cleanupBindings && this.q && canUnbindQueue(this.q.queue)) {
-            await this.unbindQueues(channel)
-          }
-          await channel.close()
-        } catch (e) {
-          this.node.error(`Error closing AMQP channel: ${e}`)
-        } finally {
-          channel.off?.('error', channelErrorHandler)
-          channel.off?.('close', channelCloseHandler)
-          channel.off?.('return', channelReturnHandler)
+      let transportClosed = false
+      let listenersDetached = false
+      let cleanup: Promise<void> | undefined
+      const detachListeners = () => {
+        if (listenersDetached) return
+        listenersDetached = true
+        channel.off?.('error', channelErrorHandler)
+        channel.off?.('close', channelCloseHandler)
+        channel.off?.('return', channelReturnHandler)
+      }
+      return (closed = false) => {
+        if (closed) {
+          transportClosed = true
+          detachListeners()
+          return Promise.resolve()
         }
+        cleanup ??= (async () => {
+          try {
+            if (transportClosed) return
+            if (cleanupBindings && this.q && canUnbindQueue(this.q.queue)) {
+              await this.unbindQueues(channel, () => transportClosed)
+            }
+            if (transportClosed) return
+            await channel.close()
+          } catch (e) {
+            if (!transportClosed) {
+              this.node.error(`Error closing AMQP channel: ${e}`)
+            }
+          } finally {
+            detachListeners()
+          }
+        })()
+        return cleanup
       }
     }
     return async () => {}
