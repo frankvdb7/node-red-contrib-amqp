@@ -51,7 +51,7 @@ export default class SharedConnection {
   private cleanupGeneration = 0
   private activeCleanups = new Set<OwnerCleanup>()
   private deferredCleanups: OwnerCleanup[] = []
-  private blockedWaiters = new Set<() => void>()
+  private cleanupWaiters = new Set<() => void>()
   private connection?: Promise<RecoveringChannelModel>
   private connectionListeners?: ConnectionListeners
   private modelListeners?: ModelListeners
@@ -199,34 +199,34 @@ export default class SharedConnection {
       return
     }
 
-    const blocked = this.waitForBlocked()
+    const interrupted = this.waitForCleanupInterruption()
     try {
-      // A block can arrive after channel cleanup starts. Stop waiting for that
-      // RPC so the removed owner can finish shutdown while its peer stays live.
-      await Promise.race([cleaning, blocked.promise])
+      // Blocking or transport loss can strand a channel RPC. Let this owner
+      // finish shutdown while the shared connection recovers for its peers.
+      await Promise.race([cleaning, interrupted.promise])
     } finally {
-      blocked.cancel()
+      interrupted.cancel()
     }
   }
 
   private async finishFinalOwnerCleanup(
     cleaning: Promise<void>,
   ): Promise<void> {
-    const blocked = this.waitForBlocked()
+    const interrupted = this.waitForCleanupInterruption()
     let transportCloseStarted = false
     try {
-      // If blocking starts during cleanup, close the transport to release the
-      // channel RPC instead of waiting for an acknowledgement RabbitMQ cannot send.
+      // If blocking or transport loss interrupts cleanup, close the recovering
+      // wrapper to release the channel RPC and cancel future reconnect attempts.
       const cleanupFinished = await Promise.race([
         cleaning.then(() => true),
-        blocked.promise.then(() => false),
+        interrupted.promise.then(() => false),
       ])
       if (!cleanupFinished && this.connection) {
         transportCloseStarted = true
         await this.closeTransport(this.connection)
       }
     } finally {
-      blocked.cancel()
+      interrupted.cancel()
       if (this.connection) {
         this.detachConnectionListeners()
         this.detachModelListeners()
@@ -349,28 +349,31 @@ export default class SharedConnection {
   private handleBlocked(reason: string): void {
     // Shutdown may have stopped owner notifications while cleanup still waits
     // on a channel RPC that the broker will no longer process.
-    this.notifyBlockedWaiters()
+    this.notifyCleanupWaiters()
     if (this.stopped || this.blockedReason === reason) return
     this.blockedReason = reason
     for (const owner of this.owners.keys()) owner.blocked?.(reason)
   }
 
-  private waitForBlocked(): { promise: Promise<void>; cancel: () => void } {
+  private waitForCleanupInterruption(): {
+    promise: Promise<void>
+    cancel: () => void
+  } {
     let resolve: () => void = () => {}
     const listener = () => resolve()
     const promise = new Promise<void>(done => {
       resolve = done
     })
-    this.blockedWaiters.add(listener)
+    this.cleanupWaiters.add(listener)
     return {
       promise,
-      cancel: () => this.blockedWaiters.delete(listener),
+      cancel: () => this.cleanupWaiters.delete(listener),
     }
   }
 
-  private notifyBlockedWaiters(): void {
-    for (const resolve of this.blockedWaiters) resolve()
-    this.blockedWaiters.clear()
+  private notifyCleanupWaiters(): void {
+    for (const resolve of this.cleanupWaiters) resolve()
+    this.cleanupWaiters.clear()
   }
 
   private handleUnblocked(): void {
@@ -384,6 +387,7 @@ export default class SharedConnection {
     const cleanups = this.deferredCleanups.splice(0)
 
     if (transportClosed) {
+      this.notifyCleanupWaiters()
       const pending = [...new Set([...this.activeCleanups, ...cleanups])]
       this.cleanupGeneration += 1
       this.cleanup = Promise.resolve()

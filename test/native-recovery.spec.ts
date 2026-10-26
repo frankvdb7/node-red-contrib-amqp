@@ -220,6 +220,64 @@ describe('native recovery ownership', () => {
     await surviving.amqp.publish('after unblocking')
     expect(surviving.amqp.channel.waitForConfirms.calledOnce).to.equal(true)
   })
+  it('finishes final-owner shutdown when transport disconnects during channel cleanup', async () => {
+    const { amqp } = client('closing', { waitForConfirms: true })
+    await amqp.connect()
+    await recover()
+    const closingChannel = amqp.channel
+    let closeResolved = false
+    let finishClose
+    closingChannel.close.callsFake(() => new Promise(resolve => {
+      finishClose = () => {
+        closeResolved = true
+        resolve()
+      }
+    }))
+
+    const shuttingDown = amqp.close()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(closingChannel.close.calledOnce).to.equal(true)
+    wrapper.emit('disconnect', new Error('transport lost before Channel.CloseOk'))
+
+    const completed = await completesWithin(shuttingDown)
+    if (!completed) finishClose?.()
+    await shuttingDown
+
+    expect(completed).to.equal(true)
+    expect(closeResolved).to.equal(false)
+    expect(wrapper.close.calledOnce).to.equal(true)
+  })
+  it('finishes shared-owner shutdown after transport disconnects during channel cleanup', async () => {
+    const closing = client('closing', { waitForConfirms: true })
+    const surviving = client('surviving', { waitForConfirms: true })
+    await Promise.all([closing.amqp.connect(), surviving.amqp.connect()])
+    await recover()
+    const closingChannel = closing.amqp.channel
+    let closeResolved = false
+    let finishClose
+    closingChannel.close.callsFake(() => new Promise(resolve => {
+      finishClose = () => {
+        closeResolved = true
+        resolve()
+      }
+    }))
+
+    const shuttingDown = closing.amqp.close()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(closingChannel.close.calledOnce).to.equal(true)
+    wrapper.emit('disconnect', new Error('transport lost before Channel.CloseOk'))
+
+    const completed = await completesWithin(shuttingDown)
+    if (!completed) finishClose?.()
+    await shuttingDown
+
+    expect(completed).to.equal(true)
+    expect(closeResolved).to.equal(false)
+    expect(wrapper.close.called).to.equal(false)
+    expect(broker.nodeStates.surviving).to.equal('disconnected')
+    await surviving.amqp.close()
+    expect(wrapper.close.calledOnce).to.equal(true)
+  })
   it('does not let lost channel cleanup block a later owner shutdown', async () => {
     const closing = client('closing', { waitForConfirms: true })
     const surviving = client('surviving', { waitForConfirms: true })
