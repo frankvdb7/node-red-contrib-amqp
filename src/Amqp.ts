@@ -414,7 +414,9 @@ export default class Amqp {
 
   public reject(msg: AssembledMessage): void {
     const channel = this.acknowledgementChannel(msg)
-    this.node.log(`Rejecting message with deliveryTag: ${msg.fields.deliveryTag}`)
+    this.node.log(
+      `Rejecting message with deliveryTag: ${msg.fields.deliveryTag}`,
+    )
     channel.reject(msg, msg.manualAck?.requeue ?? true)
   }
 
