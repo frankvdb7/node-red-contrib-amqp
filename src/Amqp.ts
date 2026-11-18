@@ -298,7 +298,9 @@ export default class Amqp {
             try {
               // Auto-ack must also use the channel that delivered the message.
               if (this.channel !== channel) {
-                throw new Error('AMQP channel changed before automatic acknowledgement')
+                throw new Error(
+                  'AMQP channel changed before automatic acknowledgement',
+                )
               }
               channel.ack(msg)
             } catch (error) {
@@ -379,7 +381,9 @@ export default class Amqp {
       !this.channel ||
       delivery.channelToken !== this.channelToken
     ) {
-      throw new Error('Stale AMQP delivery: channel has been replaced or disconnected')
+      throw new Error(
+        'Stale AMQP delivery: channel has been replaced or disconnected',
+      )
     }
     return this.channel
   }
