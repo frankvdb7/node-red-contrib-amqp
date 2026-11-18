@@ -363,6 +363,7 @@ export default class Amqp {
     if (
       !delivery ||
       typeof delivery.channelToken !== 'string' ||
+      delivery.channelToken.trim().length === 0 ||
       !Number.isSafeInteger(delivery.deliveryTag) ||
       delivery.deliveryTag <= 0 ||
       delivery.deliveryTag !== tag
@@ -371,7 +372,13 @@ export default class Amqp {
         'Invalid AMQP delivery metadata; return the original message to the manual-ack node',
       )
     }
-    if (!this.ready || !this.channel || delivery.channelToken !== this.channelToken) {
+    // This channel may receive deliveries before all shared owners report ready.
+    // Disconnect/recovery invalidates the token, regardless of readiness.
+    if (
+      this.closed ||
+      !this.channel ||
+      delivery.channelToken !== this.channelToken
+    ) {
       throw new Error('Stale AMQP delivery: channel has been replaced or disconnected')
     }
     return this.channel

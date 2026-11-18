@@ -333,7 +333,7 @@ describe('Amqp Class', () => {
     it('rejects missing or invalid metadata, including modified tags', () => {
       const invalid = [
         undefined, {}, { fields: { deliveryTag: 1 } },
-        delivery(1, ''), delivery(0), delivery(1.5),
+        delivery(1, ''), delivery(1, '  '), delivery(0), delivery(1.5),
         { ...delivery(1), fields: { deliveryTag: 2 } },
         { ...delivery(1), _amqpDelivery: { channelToken: 12, deliveryTag: 1 } },
       ]
@@ -341,17 +341,29 @@ describe('Amqp Class', () => {
       expect(channel.ack.called).to.equal(false)
     })
 
-    it('rejects batch operations without a current delivery and while disconnected', () => {
+    it('accepts a current delivery while shared transport readiness is pending', () => {
+      amqp.ready = false
+      const msg = delivery(5)
+      amqp.ack(msg)
+      sinon.assert.calledOnceWithExactly(channel.ack, msg, false)
+    })
+
+    it('rejects batch operations without a current delivery or after disconnection', () => {
       expect(() => amqp.ackAll()).to.throw(/Invalid AMQP delivery metadata/)
       expect(() => amqp.nackAll({})).to.throw(/Invalid AMQP delivery metadata/)
-      amqp.ready = false
+      amqp.disconnected(new Error('transport lost'))
+      expect(amqp.channelToken).to.equal(undefined)
       expect(() => amqp.ackAll(delivery(1))).to.throw(/Stale AMQP delivery/)
       expect(() => amqp.nackAll(delivery(1))).to.throw(/Stale AMQP delivery/)
       expect(channel.ackAll.called).to.equal(false)
       expect(channel.nackAll.called).to.equal(false)
+      amqp.channelToken = 'recovered'
       amqp.ready = true
-      amqp.ackAll(delivery(1))
-      amqp.nackAll({ ...delivery(2), manualAck: { requeue: false } })
+      amqp.ackAll(delivery(1, 'recovered'))
+      amqp.nackAll({
+        ...delivery(2, 'recovered'),
+        manualAck: { requeue: false },
+      })
       sinon.assert.calledOnce(channel.ackAll)
       sinon.assert.calledOnceWithExactly(channel.nackAll, false)
     })
