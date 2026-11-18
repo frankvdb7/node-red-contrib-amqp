@@ -99,6 +99,31 @@ describe('amqp-in-manual-ack Node', () => {
         done();
       });
     });
+    it('reports failed acknowledgements through the input completion path', async () => {
+      ackStub.throws(new Error('Stale AMQP delivery: channel replaced'))
+      await helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture)
+      const node = helper.getNode('n1')
+      const failures: Error[] = []
+      node.on('call:error', call => {
+        if (call.args[0] instanceof Error) failures.push(call.args[0])
+      })
+      node.receive({ payload: 'test', manualAck: { ackMode: ManualAckType.Ack } })
+      await new Promise(resolve => setTimeout(resolve, 30))
+      expect(failures.some(error => /Stale AMQP delivery/.test(error.message))).to.equal(true)
+    })
+
+    it('validates batch acknowledgements through the same completion path', async () => {
+      ackAllStub.throws(new Error('Invalid AMQP delivery metadata'))
+      await helper.load([amqpInManualAck, amqpBroker], amqpInManualAckFlowFixture, credentialsFixture)
+      const node = helper.getNode('n1')
+      const failures: Error[] = []
+      node.on('call:error', call => {
+        if (call.args[0] instanceof Error) failures.push(call.args[0])
+      })
+      node.receive({ payload: 'test', manualAck: { ackMode: ManualAckType.AckAll } })
+      await new Promise(resolve => setTimeout(resolve, 30))
+      expect(failures.some(error => /Invalid AMQP delivery metadata/.test(error.message))).to.equal(true)
+    })
   });
 
 })

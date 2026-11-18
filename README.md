@@ -47,7 +47,7 @@ The nodes support runtime control via `msg`:
 - `amqp-in-manual-ack`
   - `msg.manualAck.ackMode`: explicit ack mode (`ack`, `ackAll`, `nack`, `nackAll`, `reject`).
   - `msg.manualAck.requeue`: used by `nack`, `nackAll`, and `reject` (defaults to `true`).
-  - The node keeps the original AMQP message mapped by `deliveryTag`, so manual acknowledgment can operate correctly after flow processing.
+  - Keep `msg._amqpDelivery` and `msg.fields.deliveryTag` intact when returning a delivery to the input. The channel token survives Node-RED message cloning; stale or invalid acknowledgements fail through Node-RED's completion/error path. `ackAll` and `nackAll` require a current delivery and never apply to a replacement channel.
 
 ### Examples
 
@@ -252,14 +252,10 @@ passing tests. They remain unresolved until their dedicated fixes land.
 | --- | --- |
 | [#183](https://github.com/frankvdb7/node-red-contrib-amqp/issues/183) | Isolate concurrent `msg.vhost` routing. |
 | [#184](https://github.com/frankvdb7/node-red-contrib-amqp/issues/184) | Keep shared connections alive when one node closes. |
-| [#185](https://github.com/frankvdb7/node-red-contrib-amqp/issues/185) | Reject stale manual acknowledgements after channel replacement. |
 | [#186](https://github.com/frankvdb7/node-red-contrib-amqp/issues/186) | Validate invalid quorum declarations. |
 | [#187](https://github.com/frankvdb7/node-red-contrib-amqp/issues/187) | Preserve non-RPC `correlationId` and `replyTo`. |
 | [#188](https://github.com/frankvdb7/node-red-contrib-amqp/issues/188) | Report mandatory publisher returns. |
 | [#189](https://github.com/frankvdb7/node-red-contrib-amqp/issues/189) | Handle publisher backpressure and closed channels. |
-
-In particular, recovery coverage does not establish that manual acknowledgements
-from an earlier channel are safe after replacement. That remains tracked by #185.
 
 - The test suite currently has known pre-existing failures.
 - Changes should not add new test failures.
