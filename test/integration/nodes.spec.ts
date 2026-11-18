@@ -683,7 +683,38 @@ describe('compiled AMQP nodes against RabbitMQ', function () {
   // Known defects are intentionally pending until their dedicated fixes land.
   it.skip('isolates concurrent msg.vhost routing (#183)')
   it.skip('keeps shared connections alive when one node closes (#184)')
-  it.skip('rejects stale manual acknowledgements after channel replacement (#185)')
+  it('rejects stale manual acknowledgements after channel recovery and safely acks redelivery (#185)', async function () {
+    this.timeout(120000)
+    const topology = broker.topology()
+    await broker.load([
+      consumer(topology, { type: 'amqp-in-manual-ack', wires: [['sink']] }),
+      { id: 'sink', type: 'helper' },
+      { id: 'failed-acks', type: 'catch', scope: ['in'], wires: [['failures']] },
+      { id: 'failures', type: 'helper' },
+    ])
+    const receive = nextMessage(helper.getNode('sink'))
+    broker.channel.publish(topology.exchange, topology.key, Buffer.from('{"recovery":true}'))
+    await broker.channel.waitForConfirms()
+    const oldDelivery = await receive()
+    await until('first delivery remains unacknowledged', async () =>
+      (await broker.queue(topology.queue)).messages_unacknowledged === 1)
+    const node = helper.getNode('in')
+    node.receive({ payload: { reconnectCall: true } })
+    const replacement = await receive()
+    expect(replacement.fields.redelivered).to.equal(true)
+    expect(replacement.payload).to.deep.equal(oldDelivery.payload)
+    const failures = nextMessage(helper.getNode('failures'))
+    node.receive({ ...oldDelivery, manualAck: { ackMode: 'ackAll' } })
+    expect((await failures()).error.message).to.match(/Stale AMQP delivery/)
+    await until('redelivery remains outstanding after stale ackAll', async () =>
+      (await broker.queue(topology.queue)).messages_unacknowledged === 1)
+    node.receive({ ...replacement, manualAck: { ackMode: 'ack' } })
+    await until('redelivery acknowledged', async () => {
+      const state = await broker.queue(topology.queue)
+      return state.messages === 0 && state.messages_unacknowledged === 0
+    })
+    expect(await broker.channel.get(topology.queue)).to.equal(false)
+  })
   it.skip('validates invalid quorum declarations (#186)')
   it.skip('preserves non-RPC correlationId and replyTo (#187)')
   it.skip('reports mandatory publisher returns (#188)')

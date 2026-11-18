@@ -32,33 +32,35 @@ export = (RED: NodeAPI): void => {
       }
 
       const assembledMsg = msg as AssembledMessage
-      // handle manualAck
-      if (msg.manualAck) {
-        const ackMode = msg.manualAck.ackMode
-
-        switch (ackMode) {
-          case ManualAckType.AckAll:
-            amqp.ackAll()
-            break
-          case ManualAckType.Nack:
-            amqp.nack(assembledMsg)
-            break
-          case ManualAckType.NackAll:
-            amqp.nackAll(assembledMsg)
-            break
-          case ManualAckType.Reject:
-            amqp.reject(assembledMsg)
-            break
-          case ManualAckType.Ack:
-          default:
-            amqp.ack(assembledMsg)
-            break
+      try {
+        if (msg.manualAck) {
+          switch (msg.manualAck.ackMode) {
+            case ManualAckType.AckAll:
+              amqp.ackAll(assembledMsg)
+              break
+            case ManualAckType.Nack:
+              amqp.nack(assembledMsg)
+              break
+            case ManualAckType.NackAll:
+              amqp.nackAll(assembledMsg)
+              break
+            case ManualAckType.Reject:
+              amqp.reject(assembledMsg)
+              break
+            case ManualAckType.Ack:
+            default:
+              amqp.ack(assembledMsg)
+              break
+          }
+        } else {
+          amqp.ack(assembledMsg)
         }
-      } else {
-        amqp.ack(assembledMsg)
+        done?.()
+      } catch (error) {
+        // A failed ack is a failed Node-RED message, not a successful completion.
+        if (done) done(toError(error))
+        else this.error(toError(error), msg)
       }
-
-      done && done()
     }
     this.on('input', inputListener)
   }

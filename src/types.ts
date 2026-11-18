@@ -113,10 +113,16 @@ export type JsonArray = JsonValue[]
 export type JsonObject = { [key: string]: JsonValue }
 export type GenericJsonObject = JsonObject
 
+export interface AmqpDelivery {
+  channelToken: string
+  deliveryTag: number
+}
+
 export type AssembledMessage = ConsumeMessage &
   NodeMessage & {
     payload: JsonValue
     manualAck?: ManualAckFields
+    _amqpDelivery?: AmqpDelivery
   }
 
 export interface ManualAckFields {

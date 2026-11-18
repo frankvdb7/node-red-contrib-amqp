@@ -192,8 +192,8 @@
 </script>
 
 <script type="text/html" data-help-name="amqp-in-manual-ack">
-  <p>Connects to an AMQP broker, receives messages, and <strong>manually acknowledges receipt</strong>.</p>
-  <p>This node sets <em>noAck</em> to false by default. <em style="color: firebrick;">You must ack, nack, or reject by sending the same message object back through the node input.</em> If a message is not acknowledged, RabbitMQ will requeue it when the consumer disconnects.</p>
+  <p>Connects to an AMQP broker, receives messages, and <strong>manually acknowledges receipt</strong>. Bulk <code>ackAll</code> and <code>nackAll</code> actions also require a current delivery and only affect its channel.</p>
+  <p>This node sets <em>noAck</em> to false by default. <em style="color: firebrick;">Return the original delivery (or its Node-RED clone), keeping <code>msg.fields.deliveryTag</code> and <code>msg._amqpDelivery</code> intact.</em> Stale or invalid acknowledgements fail through Node-RED's error/completion path without touching a recovered channel. RabbitMQ requeues unacknowledged messages when the consumer disconnects.</p>
 
   <h3>Inputs</h3>
   <dl class="message-properties">
@@ -224,7 +224,7 @@
     <dt>msg.manualAck.allUpTo
       <span class="property-type">boolean</span>
     </dt>
-    <dd><code>allUpTo</code> option for (n)acking. If true will (n)ack all messages in the queue ahead of the current message. Defaults to false.</dd>
+    <dd><code>allUpTo</code> option for (n)acking. If true, (n)acks unacknowledged deliveries up to this tag on the same channel. Defaults to false.</dd>
   </dl>
   <dl class="message-properties">
     <dt>msg.manualAck.requeue

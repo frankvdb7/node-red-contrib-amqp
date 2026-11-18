@@ -279,53 +279,87 @@ describe('Amqp Class', () => {
     expect(assertExchangeStub.calledOnce).to.equal(false)
   })
 
-  it('nack() defaults to requeuing only the selected message', () => {
-    const msg = { fields: { deliveryTag: 5 } }
-    const nack = sinon.stub()
-    amqp.channel = { nack }
-    amqp.nack(msg)
-    sinon.assert.calledOnceWithExactly(nack, msg, false, true)
-  })
+  describe('manual acknowledgement delivery validation (#185)', () => {
+    let channel: any
+    const delivery = (tag: number, token = 'current') => ({
+      fields: { deliveryTag: tag },
+      _amqpDelivery: { channelToken: token, deliveryTag: tag },
+    })
 
-  it('nack() forwards explicit bulk and discard flags', () => {
-    const msg = {
-      fields: { deliveryTag: 5 },
-      manualAck: { allUpTo: true, requeue: false },
-    }
-    const nack = sinon.stub()
-    amqp.channel = { nack }
-    amqp.nack(msg)
-    sinon.assert.calledOnceWithExactly(nack, msg, true, false)
-  })
+    beforeEach(() => {
+      channel = {
+        ack: sinon.stub(), nack: sinon.stub(),
+        reject: sinon.stub(), ackAll: sinon.stub(), nackAll: sinon.stub(),
+      }
+      amqp.channel = channel
+      amqp.channelToken = 'current'
+    })
 
-  it('nack() reports a channel failure without throwing', () => {
-    const error = sinon.stub()
-    amqp.node = { ...nodeFixture, error }
-    amqp.channel = { nack: sinon.stub().throws(new Error('channel closed')) }
-    expect(() => amqp.nack({ fields: { deliveryTag: 5 } })).not.to.throw()
-    sinon.assert.calledOnceWithExactly(error, 'Could not nack message: Error: channel closed')
-  })
+    it('acks the same-channel delivery and accepts a Node-RED clone', () => {
+      const msg = structuredClone(delivery(5))
+      amqp.ack(msg)
+      sinon.assert.calledOnceWithExactly(channel.ack, msg, false)
+    })
 
-  it('nackAll() logs and delegates to channel', () => {
-    const msg = { content: 'foo', manualAck: { requeue: true } }
-    const nackAllStub = sinon.stub()
-    const logStub = sinon.stub()
-    amqp.channel = { nackAll: nackAllStub }
-    amqp.node = { log: logStub }
-    amqp.nackAll(msg)
-    sinon.assert.calledOnce(nackAllStub)
-    sinon.assert.calledWith(nackAllStub, true)
-  })
+    it('nacks or rejects only the validated delivery with configured flags', () => {
+      const msg = { ...delivery(5), manualAck: { allUpTo: true, requeue: false } }
+      amqp.nack(msg)
+      sinon.assert.calledOnceWithExactly(channel.nack, msg, true, false)
+      amqp.reject(msg)
+      sinon.assert.calledOnceWithExactly(channel.reject, msg, false)
+      amqp.nack(delivery(6))
+      sinon.assert.calledWithExactly(channel.nack, sinon.match.any, false, true)
+    })
 
-  it('reject() logs and delegates to channel', () => {
-    const msg = { content: 'foo', manualAck: { requeue: false } }
-    const rejectStub = sinon.stub()
-    const logStub = sinon.stub()
-    amqp.channel = { reject: rejectStub }
-    amqp.node = { log: logStub }
-    amqp.reject(msg)
-    sinon.assert.calledOnce(rejectStub)
-    sinon.assert.calledWith(rejectStub, msg, false)
+    it('rejects delayed acknowledgements after recovery even when delivery tags repeat', () => {
+      const stale = delivery(1)
+      amqp.channelToken = 'recovered'
+      for (const operation of [
+        () => amqp.ack(stale), () => amqp.nack(stale),
+        () => amqp.reject(stale), () => amqp.ackAll(stale),
+        () => amqp.nackAll(stale),
+      ]) {
+        expect(operation).to.throw(/Stale AMQP delivery/)
+      }
+      expect(channel.ack.called).to.equal(false)
+      expect(channel.nack.called).to.equal(false)
+      expect(channel.reject.called).to.equal(false)
+      expect(channel.ackAll.called).to.equal(false)
+      expect(channel.nackAll.called).to.equal(false)
+      amqp.ack(delivery(1, 'recovered'))
+      expect(channel.ack.calledOnce).to.equal(true)
+    })
+
+    it('rejects missing or invalid metadata, including modified tags', () => {
+      const invalid = [
+        undefined, {}, { fields: { deliveryTag: 1 } },
+        delivery(1, ''), delivery(0), delivery(1.5),
+        { ...delivery(1), fields: { deliveryTag: 2 } },
+        { ...delivery(1), _amqpDelivery: { channelToken: 12, deliveryTag: 1 } },
+      ]
+      for (const msg of invalid) expect(() => amqp.ack(msg)).to.throw(/Invalid AMQP delivery metadata/)
+      expect(channel.ack.called).to.equal(false)
+    })
+
+    it('rejects batch operations without a current delivery and while disconnected', () => {
+      expect(() => amqp.ackAll()).to.throw(/Invalid AMQP delivery metadata/)
+      expect(() => amqp.nackAll({})).to.throw(/Invalid AMQP delivery metadata/)
+      amqp.ready = false
+      expect(() => amqp.ackAll(delivery(1))).to.throw(/Stale AMQP delivery/)
+      expect(() => amqp.nackAll(delivery(1))).to.throw(/Stale AMQP delivery/)
+      expect(channel.ackAll.called).to.equal(false)
+      expect(channel.nackAll.called).to.equal(false)
+      amqp.ready = true
+      amqp.ackAll(delivery(1))
+      amqp.nackAll({ ...delivery(2), manualAck: { requeue: false } })
+      sinon.assert.calledOnce(channel.ackAll)
+      sinon.assert.calledOnceWithExactly(channel.nackAll, false)
+    })
+
+    it('propagates synchronous channel acknowledgement failures', () => {
+      channel.nack.throws(new Error('channel closed'))
+      expect(() => amqp.nack(delivery(5))).to.throw('channel closed')
+    })
   })
 
   it('consume()', async () => {
@@ -530,17 +564,6 @@ describe('Amqp Class', () => {
     expect(result).to.equal(amqpMessage)
     expect(result).to.have.property('payload', '{invalid')
     expect(errorStub.calledWithMatch('Invalid JSON payload')).to.be.true
-  })
-
-  it('ack() logs and delegates to channel', () => {
-    const logStub = sinon.stub()
-    const ackStub = sinon.stub()
-    amqp.node = { ...nodeFixture, log: logStub, error: sinon.stub() }
-    amqp.channel = { ack: ackStub }
-    const msg: any = { fields: { deliveryTag: 5 } }
-    amqp.ack(msg)
-    expect(ackStub.calledOnceWith(msg, false)).to.be.true
-    expect(logStub.calledWithMatch('Acking message')).to.be.true
   })
 
   describe('publish()', () => {

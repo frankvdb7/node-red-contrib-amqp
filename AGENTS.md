@@ -31,7 +31,7 @@ These instructions apply to the entire repository.
 ### Testing Node-RED Nodes
 - When testing Node-RED nodes, direct stubbing of node methods (e.g., `node.error()`) with Sinon can conflict with `node-red-node-test-helper`'s instrumentation. A more reliable pattern is to use the helper's event-based assertions, like `node.on('call:error', ...)`, to verify method calls and avoid race conditions.
 - When testing asynchronous operations that do not use `async/await`, use a `setTimeout` with a `done` callback to prevent race conditions and ensure assertions are checked after the operation completes.
-- The `amqp-in-manual-ack` node requires the original AMQP message for acknowledgment. The `Amqp` class caches the assembled message in a Map, keyed by its `deliveryTag`, to preserve the message across the Node-RED flow so it can be retrieved for acknowledgment operations.
+- The `amqp-in-manual-ack` node requires the original delivery (or its Node-RED clone), including `_amqpDelivery` and `fields.deliveryTag`. Channel tokens are validated without retaining an unbounded delivery Map.
 
 ## Git
 - Follow the [Conventional Commits](https.org/conventionalcommits.org/) specification for commit messages.

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type {
   Channel,
   ChannelModel,
@@ -31,6 +32,7 @@ export default class Amqp {
   private broker: AmqpBrokerNode
   private connection: RecoveringChannelModel
   private channel: Channel
+  private channelToken?: string
   private q: Replies.AssertQueue
   private vhostOverride?: string
   private static connectionPool = new Map<string, SharedConnection>()
@@ -205,6 +207,7 @@ export default class Amqp {
   private disconnected(error: unknown): void {
     if (this.closed) return
     this.ready = false
+    this.channelToken = undefined
     this.clearPublishingBlock()
     if (this.rpcTimeouts.size) {
       this.node.error(
@@ -280,12 +283,27 @@ export default class Amqp {
             return
           }
           const msg = this.assembleMessage(amqpMessage)
+          // Plain data survives Node-RED's message cloning and linked flows.
+          if (!noAck && this.isManualAck() && this.channelToken) {
+            msg._amqpDelivery = {
+              channelToken: this.channelToken,
+              deliveryTag: msg.fields.deliveryTag,
+            }
+          }
           this.node.log(
             `Received message with deliveryTag: ${msg?.fields?.deliveryTag}`,
           )
           this.node.send(msg)
           if (!noAck && !this.isManualAck()) {
-            this.ack(msg)
+            try {
+              // Auto-ack must also use the channel that delivered the message.
+              if (this.channel !== channel) {
+                throw new Error('AMQP channel changed before automatic acknowledgement')
+              }
+              channel.ack(msg)
+            } catch (error) {
+              this.node.error(`Could not ack message: ${error}`)
+            }
           }
         },
         { noAck },
@@ -339,60 +357,54 @@ export default class Amqp {
     }
   }
 
-  public ack(msg: AssembledMessage): void {
-    const allUpTo = !!msg.manualAck?.allUpTo
-    try {
-      this.node.log(
-        `Acking message with deliveryTag: ${msg?.fields?.deliveryTag}`,
+  private acknowledgementChannel(msg: AssembledMessage): Channel {
+    const delivery = msg?._amqpDelivery
+    const tag = msg?.fields?.deliveryTag
+    if (
+      !delivery ||
+      typeof delivery.channelToken !== 'string' ||
+      !Number.isSafeInteger(delivery.deliveryTag) ||
+      delivery.deliveryTag <= 0 ||
+      delivery.deliveryTag !== tag
+    ) {
+      throw new Error(
+        'Invalid AMQP delivery metadata; return the original message to the manual-ack node',
       )
-      this.channel.ack(msg, allUpTo)
-    } catch (e) {
-      this.node.error(`Could not ack message: ${e}`)
     }
+    if (!this.ready || !this.channel || delivery.channelToken !== this.channelToken) {
+      throw new Error('Stale AMQP delivery: channel has been replaced or disconnected')
+    }
+    return this.channel
   }
 
-  public ackAll(): void {
-    try {
-      this.node.log('Acking all outstanding messages')
-      this.channel.ackAll()
-    } catch (e) {
-      this.node.error(`Could not ackAll messages: ${e}`)
-    }
+  public ack(msg: AssembledMessage): void {
+    const channel = this.acknowledgementChannel(msg)
+    this.node.log(`Acking message with deliveryTag: ${msg.fields.deliveryTag}`)
+    channel.ack(msg, !!msg.manualAck?.allUpTo)
+  }
+
+  public ackAll(msg: AssembledMessage): void {
+    const channel = this.acknowledgementChannel(msg)
+    this.node.log('Acking all outstanding messages')
+    channel.ackAll()
   }
 
   public nack(msg: AssembledMessage): void {
-    const allUpTo = !!msg.manualAck?.allUpTo
-    const requeue = msg.manualAck?.requeue ?? true
-    try {
-      this.node.log(
-        `Nacking message with deliveryTag: ${msg?.fields?.deliveryTag}`,
-      )
-      this.channel.nack(msg, allUpTo, requeue)
-    } catch (e) {
-      this.node.error(`Could not nack message: ${e}`)
-    }
+    const channel = this.acknowledgementChannel(msg)
+    this.node.log(`Nacking message with deliveryTag: ${msg.fields.deliveryTag}`)
+    channel.nack(msg, !!msg.manualAck?.allUpTo, msg.manualAck?.requeue ?? true)
   }
 
   public nackAll(msg: AssembledMessage): void {
-    const requeue = msg.manualAck?.requeue ?? true
-    try {
-      this.node.log('Nacking all outstanding messages')
-      this.channel.nackAll(requeue)
-    } catch (e) {
-      this.node.error(`Could not nackAll messages: ${e}`)
-    }
+    const channel = this.acknowledgementChannel(msg)
+    this.node.log('Nacking all outstanding messages')
+    channel.nackAll(msg.manualAck?.requeue ?? true)
   }
 
   public reject(msg: AssembledMessage): void {
-    const requeue = msg.manualAck?.requeue ?? true
-    try {
-      this.node.log(
-        `Rejecting message with deliveryTag: ${msg?.fields?.deliveryTag}`,
-      )
-      this.channel.reject(msg, requeue)
-    } catch (e) {
-      this.node.error(`Could not reject message: ${e}`)
-    }
+    const channel = this.acknowledgementChannel(msg)
+    this.node.log(`Rejecting message with deliveryTag: ${msg.fields.deliveryTag}`)
+    channel.reject(msg, msg.manualAck?.requeue ?? true)
   }
 
   public async publish(
@@ -699,6 +711,7 @@ export default class Amqp {
       const { channelErrorHandler, channelCloseHandler, channelReturnHandler } =
         this
       this.channel = undefined
+      this.channelToken = undefined
       let transportClosed = false
       let listenersDetached = false
       let cleanup: Promise<void> | undefined
@@ -778,6 +791,7 @@ export default class Amqp {
       throw new Error('AMQP channel setup cancelled')
     }
     this.channel = channel
+    this.channelToken = randomUUID()
 
     this.channelErrorHandler = (e): void => {
       if (this.closed || this.channel !== channel) return
@@ -792,6 +806,7 @@ export default class Amqp {
     this.channelCloseHandler = (): void => {
       if (this.closed || this.channel !== channel) return
       this.channel = undefined
+      this.channelToken = undefined
       this.setupFailure = new Error('AMQP channel closed')
       this.disconnected(this.setupFailure)
       if (!this.settingUp) {
